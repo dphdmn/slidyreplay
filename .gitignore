@@ -8,6 +8,9 @@ ffmpeg/
 # Generated PyInstaller spec in project root
 /ReplayVideoGenerator.spec
 
+# Release script (contains token path)
+release.bat
+
 # Generated replay videos
 *.mp4
 

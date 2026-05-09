@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import filedialog, scrolledtext
 import threading
+import time
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -85,6 +86,10 @@ class ReplayGUI(tb.Window):
         self._executor = None
         self._batch_futures = []
         self._item_progress = {}
+        self._start_time = 0.0
+        self._last_poll_time = 0.0
+        self._last_poll_pct = 0.0
+        self._rolling_rate = 0.0
         self.cancel_flag = False
 
         self.quality_var = tk.DoubleVar(value=2.0)
@@ -341,6 +346,7 @@ class ReplayGUI(tb.Window):
 
         self.cancel_flag = False
         self._set_ui_busy(True)
+        self._start_time = time.time()
         self.progress_bar["value"] = 0
         self.progress_text.set("")
         self.replay_listbox.delete(0, "end")
@@ -467,21 +473,44 @@ class ReplayGUI(tb.Window):
                 running += 1
 
         overall_pct *= 100
-        self.progress_bar["value"] = overall_pct
+
+        # Rolling rate (EMA) for accurate ETA across fast/slow phases
+        now = time.time()
+        dt = now - self._last_poll_time
+        dp = overall_pct - self._last_poll_pct
+        if dt > 0.05 and dp >= 0:
+            inst = dp / dt
+            self._rolling_rate = inst if self._rolling_rate <= 0 else self._rolling_rate * 0.7 + inst * 0.3
+        self._last_poll_time = now
+        self._last_poll_pct = overall_pct
+
+        elapsed = time.time() - self._start_time
+        elapsed_str = f"{elapsed:.1f}s" if elapsed < 60 else f"{int(elapsed//60)}m {elapsed%60:.0f}s"
+
+        # Cap at 99% while items are still finalising (ffmpeg post-processing)
+        display_pct = min(overall_pct, 99.0) if running else overall_pct
+        self.progress_bar["value"] = display_pct
+
+        eta_str = ""
+        if overall_pct > 1 and running:
+            eta = (100 - overall_pct) / self._rolling_rate if self._rolling_rate > 0 else 0
+            if eta < 3600:
+                eta_str = f" — ETA {eta:.1f}s" if eta < 60 else f" — ETA {int(eta//60)}m {eta%60:.0f}s"
 
         parts = []
         if running:
             parts.append(f"{running} active")
         if done_count:
             parts.append(f"{done_count}/{total} completed")
-        label = " — ".join(parts) + f" ({overall_pct:.0f}%)" if parts else ""
-        self.progress_text.set(label)
-        self.status_var.set(label)
+        label = " — ".join(parts) + f" ({display_pct:.0f}%)" if parts else ""
+        self.progress_text.set(f"{label}{eta_str}")
+        self.status_var.set(f"{elapsed_str} {label}")
 
         if done_count == total:
             errors = sum(1 for p in self._item_progress.values() if p["error"])
             ok_count = done_count - errors
-            msg = f"Done — {ok_count} replay(s) generated." + (f" {errors} failed." if errors else "")
+            took = f"took {elapsed_str}"
+            msg = f"Done — {ok_count} replay(s) generated. {took}" + (f" {errors} failed." if errors else "")
             self.progress_text.set(msg)
             self.status_var.set(msg)
             self.progress_bar["value"] = 100

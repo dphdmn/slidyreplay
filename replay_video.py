@@ -20,6 +20,7 @@ import time as time_module
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 from typing import List, Tuple, Optional, Union, Dict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from replay_generator import (
     expand_solution, scramble_to_puzzle, puzzle_to_scramble,
@@ -866,6 +867,10 @@ def calculate_move_timings(solution: str, tps: int, width: int, height: int, spe
 
 # ─── Frame Generation ──────────────────────────────────────────────
 
+def _render_one_frame(params: dict) -> Image.Image:
+    return render_frame(**params)
+
+
 def generate_frames(
     matrix: List[List[int]],
     solution: str,
@@ -879,14 +884,14 @@ def generate_frames(
     custom_move_times: Optional[List[float]] = None,
     cumulative_data: Optional[dict] = None,
     progress_callback=None,
-    quality: float = 2.0
+    quality: float = 2.0,
+    parallel: bool = True
 ) -> List[Image.Image]:
     expanded = expand_solution(solution)
     sol_len = len(expanded)
     h = len(matrix)
     w = len(matrix[0])
 
-    # Compute grid stages for indicators
     grid_keys = sorted([k for k in grid_states.keys() if isinstance(k, (int, float))])
     filtered_stages = [0]
     for k in grid_keys:
@@ -897,7 +902,6 @@ def generate_frames(
             filtered_stages.append(k)
     filtered_stages.append(sol_len)
 
-    # Compute per-stage info for column display
     grid_stages_list = []
     last_moves = 0
     last_time = 0
@@ -938,7 +942,6 @@ def generate_frames(
         })
         last_moves = cum_moves
 
-    # Apply quality multiplier to tile sizes
     raw_tile = pick_tile_size(w, h)
     tile_size = max(raw_tile, int(raw_tile * quality))
     font_size = max(11, tile_size // 2)
@@ -952,7 +955,8 @@ def generate_frames(
     if not custom_move_times:
         custom_move_times = []
 
-    frames = []
+    # Phase 1: precompute all per-frame data sequentially
+    frame_params = []
 
     for frame_idx in range(sol_len + 1):
         state = get_grids_state(grid_states, frame_idx - 1) if frame_idx > 0 else grid_states[0]
@@ -1017,7 +1021,6 @@ def generate_frames(
             "cubic_estimate": None,
         }
 
-        # Grid stage info for column display
         move_idx = frame_idx - 1 if frame_idx > 0 else 0
         cur_stage_idx = max(0, sum(1 for s in filtered_stages if s <= move_idx) - 1)
         stats_data["grid_stages"] = grid_stages_list
@@ -1035,10 +1038,13 @@ def generate_frames(
         moves_done = "".join(expanded[:frame_idx])
         if len(moves_done) > max_sol_chars:
             moves_done = moves_done[-(max_sol_chars):]
-        frame = render_frame(
-            matrix=mc, grid_state=state,
+
+        frame_params.append(dict(
+            matrix=[row[:] for row in mc],
+            grid_state=state,
             all_fringe_schemes=all_fringe_schemes,
-            tile_size=tile_size, font_size=font_size,
+            tile_size=tile_size,
+            font_size=font_size,
             stats_data=stats_data,
             score_title_text=score_title_text,
             timer_text=timer_text,
@@ -1046,18 +1052,43 @@ def generate_frames(
             total_moves=sol_len,
             total_time_ms=round(total_time_ms),
             total_tps=total_tps,
-            solution_text=moves_done
-        )
-        frames.append(frame)
+            solution_text=moves_done,
+        ))
 
-        if progress_callback:
-            progress_callback(frame_idx, sol_len + 1)
-
-        # Apply next move to matrix (if not last frame)
         if frame_idx < sol_len:
             move = expanded[frame_idx]
             zp = find_zero(mc, w, h)
             mc = move_matrix(mc, move, zp, w, h)
+
+    # Phase 2: render frames in parallel
+    if parallel and len(frame_params) > 1:
+        workers = min(os.cpu_count() or 4, len(frame_params))
+        get_font(font_size)
+        get_font(14, bold=True)
+        get_font(12, mono=True)
+        get_font(12)
+        get_font(11, mono=True)
+        get_font(13, bold=True)
+        get_font(13, mono=True)
+        get_font(9)
+        get_font(22, bold=True)
+
+        frames = [None] * len(frame_params)
+        done = 0
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            fut_map = {pool.submit(_render_one_frame, p): i for i, p in enumerate(frame_params)}
+            for fut in as_completed(fut_map):
+                idx = fut_map[fut]
+                frames[idx] = fut.result()
+                done += 1
+                if progress_callback:
+                    progress_callback(done, len(frame_params))
+    else:
+        frames = []
+        for i, p in enumerate(frame_params):
+            frames.append(_render_one_frame(p))
+            if progress_callback:
+                progress_callback(i + 1, len(frame_params))
 
     return frames
 
