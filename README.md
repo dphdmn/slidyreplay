@@ -45,7 +45,6 @@ CLI flags:
 | `--gpu` | Force GPU acceleration |
 | `--no-gpu` | Disable GPU acceleration |
 | `--batch` | File with solutions/URLs (one per line) |
-| `--stats-path` | Write per-batch JSONL stats to this path (for benchmarking/debugging) |
 | `--log` | Enable debug logging to `logs/debug_\<timestamp\>.log` |
 
 ### Debug logging
@@ -118,11 +117,14 @@ If PyTorch is not installed or CUDA is unavailable, the program falls back to CP
 ### Benchmark script
 
 ```
-python benchmark.py
-python benchmark.py --skip-cpu
-```
+Benchmark GPU renderer with stats logging.
+All outputs saved to logs/ folder (only for performance testing).
 
-Scans `test_replays/` for all puzzle replays (4×4 through 10×10) and runs CPU + GPU rendering on each. Results are combined into a summary table and written into the Benchmarks section of this README. All outputs (MP4, JSONL stats, benchmark log) are saved to `logs/{run_id}/`.
+Usage:
+    python benchmark.py         # all puzzles: small (CPU+GPU) + big (GPU only)
+    python benchmark.py --small # small puzzles only (CPU+GPU)
+    python benchmark.py --big   # big puzzles only (GPU only)
+```
 
 ## Output filename format
 
@@ -131,6 +133,9 @@ Generated files follow the pattern: `<size>_<total_time>_<moves>_<tps>_movetimes
 Example: `8x8_23.564_707_30.003_movetimes_5.mp4`
 
 ## Build
+
+WIP
+
 
 ```
 build.bat
