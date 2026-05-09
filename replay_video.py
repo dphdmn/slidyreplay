@@ -20,7 +20,7 @@ import time as time_module
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 from typing import List, Tuple, Optional, Union, Dict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
 from replay_generator import (
     expand_solution, scramble_to_puzzle, puzzle_to_scramble,
@@ -30,6 +30,7 @@ from replay_generator import (
 )
 
 from splits import decompress_string_to_array, read_solve_data
+from gpu_renderer import GPURenderer, _render_timer_text, _render_solution_text, CancelError
 
 # ─── Constants ─────────────────────────────────────────────────────
 
@@ -89,6 +90,8 @@ TILE_BORDER_WIDTH = 1
 PADDING = 20
 STATS_PANEL_WIDTH = 330
 TIMER_HEIGHT = 30
+HEADER_H = 52
+INFO_H = 40
 
 # ─── Color Utilities (ported from fringeColors.js) ──────────────────
 
@@ -616,9 +619,9 @@ def pick_tile_size(width: int, height: int) -> int:
         return min(80, max(56, int(280 / min_dim)))
 
 
-def draw_rounded_rect(draw, bbox, color, radius):
+def draw_filled_rect(draw, bbox, color):
     x1, y1, x2, y2 = bbox
-    draw.rounded_rectangle(bbox, radius=radius, fill=color)
+    draw.rectangle(bbox, fill=color)
 
 
 def draw_multiline_text(draw, xy, text, fill, font, line_spacing=4):
@@ -642,7 +645,8 @@ def render_frame(
     total_moves: int,
     total_time_ms: int,
     total_tps: float,
-    solution_text: str = ""
+    solution_text: str = "",
+    gpu_grid: Optional[Image.Image] = None
 ) -> Image.Image:
     h = len(matrix)
     w = len(matrix[0])
@@ -660,7 +664,7 @@ def render_frame(
     timer_font = get_font(22, bold=True)
 
     timer_bg_bbox = (PADDING, PADDING, canvas_w - PADDING, PADDING + HEADER_H)
-    draw_rounded_rect(draw, timer_bg_bbox, TIMER_BG, 8)
+    draw_filled_rect(draw, timer_bg_bbox, TIMER_BG)
 
     tb = draw.textbbox((0, 0), timer_text, font=timer_font)
     tw = tb[2] - tb[0]
@@ -673,36 +677,39 @@ def render_frame(
     grid_x = PADDING
     grid_y = PADDING + HEADER_H + PADDING
 
-    for row_idx in range(h):
-        for col_idx in range(w):
-            num = matrix[row_idx][col_idx]
-            sx = grid_x + col_idx * tile_size
-            sy = grid_y + row_idx * tile_size
-            sq_bbox = (sx, sy, sx + tile_size, sy + tile_size)
+    if gpu_grid is not None:
+        canvas.paste(gpu_grid, (grid_x, grid_y))
+    else:
+        for row_idx in range(h):
+            for col_idx in range(w):
+                num = matrix[row_idx][col_idx]
+                sx = grid_x + col_idx * tile_size
+                sy = grid_y + row_idx * tile_size
+                sq_bbox = (sx, sy, sx + tile_size, sy + tile_size)
 
-            main_bg, sec_bg = get_tile_colors(num, grid_state, all_fringe_schemes, w)
-            bg_color = main_bg if main_bg else TILE_BG
-            draw_rounded_rect(draw, sq_bbox, bg_color, max(1, int(tile_size * 0.04)))
+                main_bg, sec_bg = get_tile_colors(num, grid_state, all_fringe_schemes, w)
+                bg_color = main_bg if main_bg else TILE_BG
+                draw_filled_rect(draw, sq_bbox, bg_color)
 
-            if tile_size > 1:
-                draw.rectangle(sq_bbox, outline=TILE_BORDER_COLOR, width=TILE_BORDER_WIDTH)
-
-            if sec_bg:
-                bar_h = max(2, int(tile_size * 0.1))
-                bar_y = sy + tile_size - bar_h - max(2, int(tile_size * 0.06))
-                bar_bbox = (sx + max(2, int(tile_size * 0.1)), bar_y,
-                            sx + tile_size - max(2, int(tile_size * 0.1)), bar_y + bar_h)
-                draw_rounded_rect(draw, bar_bbox, sec_bg, max(1, int(bar_h * 0.3)))
                 if tile_size > 1:
-                    draw.rectangle(bar_bbox, outline=TILE_BORDER_COLOR, width=1)
+                    draw.rectangle(sq_bbox, outline=TILE_BORDER_COLOR, width=TILE_BORDER_WIDTH)
 
-            if num != 0:
-                text = str(num)
-                tf = get_font(font_size)
-                tb = draw.textbbox((0, 0), text, font=tf)
-                tx = sx + tile_size // 2 - (tb[0] + tb[2]) // 2
-                ty = sy + tile_size // 2 - (tb[1] + tb[3]) // 2
-                draw.text((tx, ty), text, fill=TILE_TEXT_COLOR, font=tf)
+                if sec_bg:
+                    bar_h = max(2, int(tile_size * 0.1))
+                    bar_y = sy + tile_size - bar_h - max(2, int(tile_size * 0.06))
+                    bar_bbox = (sx + max(2, int(tile_size * 0.1)), bar_y,
+                                sx + tile_size - max(2, int(tile_size * 0.1)), bar_y + bar_h)
+                    draw_filled_rect(draw, bar_bbox, sec_bg)
+                    if tile_size > 1:
+                        draw.rectangle(bar_bbox, outline=TILE_BORDER_COLOR, width=1)
+
+                if num != 0:
+                    text = str(num)
+                    tf = get_font(font_size)
+                    tb = draw.textbbox((0, 0), text, font=tf)
+                    tx = sx + tile_size // 2 - (tb[0] + tb[2]) // 2
+                    ty = sy + tile_size // 2 - (tb[1] + tb[3]) // 2
+                    draw.text((tx, ty), text, fill=TILE_TEXT_COLOR, font=tf)
 
     # ─── Solution text below puzzle ────────────────────────────
     info_y = grid_y + puzzle_h + 4
@@ -719,10 +726,10 @@ def render_frame(
         panel_bbox = (panel_x, panel_y, panel_x + panel_w, panel_y + panel_h)
         panel_img = Image.new('RGBA', (canvas_w, canvas_h), (0, 0, 0, 0))
         pdraw = ImageDraw.Draw(panel_img)
-        pdraw.rounded_rectangle(panel_bbox, radius=8, fill=(*PANEL_BG, int(255 * PANEL_ALPHA)))
+        pdraw.rectangle(panel_bbox, fill=(*PANEL_BG, int(255 * PANEL_ALPHA)))
         panel_overlay = Image.new('RGBA', (canvas_w, canvas_h), (0, 0, 0, 0))
         pdraw2 = ImageDraw.Draw(panel_overlay)
-        pdraw2.rounded_rectangle(panel_bbox, radius=8, outline=CYAN, width=1)
+        pdraw2.rectangle(panel_bbox, outline=CYAN, width=1)
         canvas = Image.alpha_composite(canvas.convert('RGBA'), panel_img)
         canvas = Image.alpha_composite(canvas, panel_overlay)
         draw = ImageDraw.Draw(canvas)
@@ -865,10 +872,125 @@ def calculate_move_timings(solution: str, tps: int, width: int, height: int, spe
     return delays, fake_times
 
 
+
 # ─── Frame Generation ──────────────────────────────────────────────
 
 def _render_one_frame(params: dict) -> Image.Image:
+    params.pop("colors", None)
+    params.pop("timer_img", None)
+    params.pop("sol_img", None)
+    params.pop("stats_img", None)
     return render_frame(**params)
+
+
+def _make_stats_text(stats_data, is_movetimes_accurate, panel_w):
+    inner_w = panel_w - 20
+    label_w = 65
+    data_w = (inner_w - label_w) // 2
+    col_x = label_w
+    all_col_x = col_x + data_w
+
+    data_font = get_font(12, mono=True)
+    label_font = get_font(12)
+    line_bbox = data_font.getbbox("Xy")
+    line_h = (line_bbox[3] - line_bbox[1]) + 4
+    row_h = max(28, line_h * 2)
+    px = 10
+    py = 10 + row_h
+
+    lines = []
+
+    def add(x, y, text, fill, font, **kw):
+        lines.append((x, y, text, fill, font))
+
+    hf = get_font(14, bold=True)
+    add(10, 10, "Stats", CYAN, hf)
+
+    th = get_font(12)
+    lbl_font = th
+    total_label = "Total"
+    cur_label = "Current"
+    tb = lbl_font.getbbox(total_label)
+    thw = tb[2] - tb[0]
+    cb = lbl_font.getbbox(cur_label)
+    chw = cb[2] - cb[0]
+    add(col_x + (data_w - thw) // 2, 10, total_label, GRAY, lbl_font)
+    add(all_col_x + (data_w - chw) // 2, 10, cur_label, GRAY, lbl_font)
+
+    stats_rows = [
+        ("Time", stats_data.get("time_all", "0.000"), stats_data.get("time_cur", "0.000")),
+        ("Moves", stats_data.get("moves_all", "0"), stats_data.get("moves_cur", "0")),
+        ("MD", stats_data.get("md_all", "0"), stats_data.get("md_cur", "0")),
+        ("M/MD", stats_data.get("mmd_all", "0.000"), stats_data.get("mmd_cur", "0.000")),
+        ("TPS", stats_data.get("tps_all", "0.000"), stats_data.get("tps_cur", "0.000")),
+    ]
+
+    row_y = py
+    for label, all_val, cur_val in stats_rows:
+        all_lines = all_val.split('\n')
+        cur_lines = cur_val.split('\n')
+        max_lines = max(len(all_lines), len(cur_lines))
+        r_h = max(row_h, max_lines * line_h)
+        add(px, row_y, label, LIGHT_GRAY, label_font)
+        for i, vl in enumerate(all_lines):
+            vb = data_font.getbbox(vl)
+            add(col_x + (data_w - (vb[2] - vb[0])) // 2, row_y + i * line_h, vl, WHITE, data_font)
+        for i, vl in enumerate(cur_lines):
+            vb = data_font.getbbox(vl)
+            add(all_col_x + (data_w - (vb[2] - vb[0])) // 2, row_y + i * line_h, vl, CYAN, data_font)
+        row_y += r_h
+
+    acc_text = "Movetimes accurate" if is_movetimes_accurate else "NOT movetimes accurate"
+    acc_color = ACCURATE_COLOR if is_movetimes_accurate else INACCURATE_COLOR
+    acc_font = get_font(11, mono=True)
+    add(px, row_y + 4, acc_text, acc_color, acc_font)
+    row_y += 18
+
+    stages = stats_data.get("grid_stages", [])
+    cur_stage = stats_data.get("grid_current", 0)
+    if stages:
+        hf2 = get_font(13, bold=True)
+        hb2 = hf2.getbbox("Grid stages")
+        htw2 = hb2[2] - hb2[0]
+        inner_w_actual = panel_w - 20
+        add(px + (inner_w_actual - htw2) // 2, row_y, "Grid stages", CYAN, hf2)
+        row_y += 20
+        lf = get_font(13, mono=True)
+        raw_lines = []
+        for st in stages:
+            if st["cum_time"] > 0:
+                cum_s = format_time_str(st['cum_time'])
+                split_s = format_time_str(st['split_time'])
+                mvtps_s = f"({st['split_moves']}/{st['split_tps']:.1f})"
+            else:
+                cum_s = str(st['cum_moves'])
+                split_s = f"(+{st['split_moves']})"
+                mvtps_s = ""
+            raw_lines.append((cum_s, split_s, mvtps_s, st['label']))
+        if raw_lines:
+            w1 = max(len(l[0]) for l in raw_lines)
+            w2 = max(len(l[1]) for l in raw_lines)
+            w3 = max(len(l[2]) for l in raw_lines) if any(l[2] for l in raw_lines) else 0
+        for i, (cum_s, split_s, mvtps_s, label) in enumerate(raw_lines):
+            if '.' in cum_s:
+                line = f"{cum_s:>{w1}} | {split_s:>{w2}} {mvtps_s:<{w3}} | {label:<{w3}}"
+            else:
+                line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w3}}"
+            color = CYAN if i == cur_stage else WHITE
+            add(px + (inner_w_actual - lf.getbbox(line)[2]) // 2, row_y, line, color, lf)
+            row_y += 18
+
+    if stats_data.get("cubic_estimate"):
+        ce = stats_data["cubic_estimate"]
+        add(px, row_y + 4, f"Cubic est: {ce}", GRAY, get_font(11))
+
+    # Render all collected lines onto an RGBA image
+    total_h = row_y + 30
+    im = Image.new("RGBA", (panel_w, total_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(im)
+    for x, y, text, fill, font in lines:
+        draw.text((x, y), text, fill=(*fill, 255), font=font)
+    return im
 
 
 def generate_frames(
@@ -885,7 +1007,11 @@ def generate_frames(
     cumulative_data: Optional[dict] = None,
     progress_callback=None,
     quality: float = 2.0,
-    parallel: bool = True
+    memory_usage: float = 0.5,
+    stats_path: str = None,
+    parallel: bool = True,
+    use_gpu: bool = True,
+    cancel_check=None
 ) -> List[Image.Image]:
     expanded = expand_solution(solution)
     sol_len = len(expanded)
@@ -958,9 +1084,25 @@ def generate_frames(
     # Phase 1: precompute all per-frame data sequentially
     frame_params = []
 
+    # Optional GPU acceleration for tile grid rendering
+    gpu = GPURenderer(w, h, raw_tile, quality, memory_usage=memory_usage)
+    use_gpu = use_gpu and gpu.available
+
     for frame_idx in range(sol_len + 1):
+        if cancel_check and cancel_check():
+            raise CancelError()
         state = get_grids_state(grid_states, frame_idx - 1) if frame_idx > 0 else grid_states[0]
         current_moves = frame_idx
+
+        # Precompute per-tile colors for this frame
+        tile_colors = []
+        for row_idx in range(h):
+            row_colors = []
+            for col_idx in range(w):
+                num = mc[row_idx][col_idx]
+                main_bg, sec_bg = get_tile_colors(num, state, all_fringe_schemes, w)
+                row_colors.append((main_bg or TILE_BG, sec_bg))
+            tile_colors.append(row_colors)
         current_moves_percent = (current_moves * 100 / sol_len) if sol_len > 0 else 0
 
         if frame_idx == 0:
@@ -1053,6 +1195,7 @@ def generate_frames(
             total_time_ms=round(total_time_ms),
             total_tps=total_tps,
             solution_text=moves_done,
+            colors=tile_colors,
         ))
 
         if frame_idx < sol_len:
@@ -1060,7 +1203,37 @@ def generate_frames(
             zp = find_zero(mc, w, h)
             mc = move_matrix(mc, move, zp, w, h)
 
-    # Phase 2: render frames in parallel
+    # ── Complete GPU frame rendering (text pre-rendered on CPU, composited on GPU) ──
+    if use_gpu and len(frame_params) > 1:
+        puzzle_w = w * tile_size
+        puzzle_h = h * tile_size
+        canvas_w = (puzzle_w + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
+        canvas_h = (HEADER_H + puzzle_h + PADDING * 3 + INFO_H + 1) // 2 * 2
+        panel_x = PADDING + puzzle_w + PADDING
+        panel_w_val = canvas_w - panel_x - PADDING
+        panel_y = PADDING + HEADER_H + PADDING
+        panel_h_val = canvas_h - INFO_H - panel_y - PADDING
+
+        for p in frame_params:
+            if cancel_check and cancel_check():
+                raise CancelError()
+            stats = p["stats_data"]
+            timer_img = _render_timer_text(p["timer_text"])
+            sol_img = _render_solution_text(p["solution_text"])
+            stats_img = _make_stats_text(stats, p["is_movetimes_accurate"], panel_w_val)
+            p["timer_img"] = timer_img
+            p["sol_img"] = sol_img
+            p["stats_img"] = stats_img
+
+        gpu_frames = gpu.render_frames(
+            frame_params,
+            progress_callback=lambda cur, tot, **kw: progress_callback(cur, tot, **kw),
+            cancel_check=cancel_check,
+            stats_path=stats_path
+        )
+        return gpu_frames
+
+    # Phase 2: render frames in parallel (CPU path only)
     if parallel and len(frame_params) > 1:
         workers = min(os.cpu_count() or 4, len(frame_params))
         get_font(font_size)
@@ -1077,15 +1250,23 @@ def generate_frames(
         done = 0
         with ThreadPoolExecutor(max_workers=workers) as pool:
             fut_map = {pool.submit(_render_one_frame, p): i for i, p in enumerate(frame_params)}
-            for fut in as_completed(fut_map):
-                idx = fut_map[fut]
-                frames[idx] = fut.result()
-                done += 1
-                if progress_callback:
-                    progress_callback(done, len(frame_params))
+            remaining = set(fut_map.keys())
+            while remaining:
+                if cancel_check and cancel_check():
+                    raise CancelError()
+                done_set, _ = wait(remaining, timeout=0.2, return_when=FIRST_COMPLETED)
+                for fut in done_set:
+                    idx = fut_map[fut]
+                    frames[idx] = fut.result()
+                    done += 1
+                    remaining.remove(fut)
+                    if progress_callback:
+                        progress_callback(done, len(frame_params))
     else:
         frames = []
         for i, p in enumerate(frame_params):
+            if cancel_check and cancel_check():
+                raise CancelError()
             frames.append(_render_one_frame(p))
             if progress_callback:
                 progress_callback(i + 1, len(frame_params))
@@ -1203,6 +1384,7 @@ class TerminalProgress:
         self.window_rate = 0.0
         self.last_draw = 0
         self.width = 40
+        self._gpu_stats = None
 
     def update(self, current: int):
         now = time_module.time()
@@ -1229,16 +1411,22 @@ class TerminalProgress:
         else:
             eta_str = f"{eta:.0f}s"
         line = f"\r{self.desc}: [{bar}] {pct:.0f}% | {current}/{self.total} | {rate:.1f} fr/s | ETA: {eta_str}"
+        if self._gpu_stats and self._gpu_stats.get("batch_size"):
+            s = self._gpu_stats
+            line += f" | GPU: {s.get('gpu_name', '?')} | Mem: {s.get('mem_used_mb', 0)}/{s.get('total_mem_mb', 0)}MB | Batch: {s.get('batch_size', 0)}"
         # Pad with spaces to clear previous line
-        print(line.ljust(80), end="", flush=True)
+        print(line.ljust(100), end="", flush=True)
         if current >= self.total:
             print()
 
     def set_desc(self, desc: str):
         self.desc = desc
 
-    def __call__(self, current, total):
+    def __call__(self, current, total, **kwargs):
         self.total = total
+        gpu_stats = kwargs.get("gpu_stats")
+        if gpu_stats is not None:
+            self._gpu_stats = gpu_stats
         self.update(current)
 
 
@@ -1262,7 +1450,11 @@ class ReplayVideoGenerator:
         show_progress: bool = True,
         speed_factor: float = 1.0,
         quality: float = 2.0,
-        external_progress_cb = None
+        memory_usage: float = 0.5,
+        stats_path: str = None,
+        external_progress_cb = None,
+        use_gpu: bool = True,
+        cancel_check=None
     ):
         if tps is not None and time is not None:
             raise ValueError("Provide either tps or time, not both")
@@ -1359,11 +1551,11 @@ class ReplayVideoGenerator:
         else:
             prog = None
 
-        def progress_cb(cur, tot):
+        def progress_cb(cur, tot, **kwargs):
             if prog:
-                prog(cur, tot)
+                prog(cur, tot, **kwargs)
             if external_progress_cb:
-                external_progress_cb(cur, tot)
+                external_progress_cb(cur, tot, **kwargs)
 
         # Generate frames
         if show_progress and prog:
@@ -1382,7 +1574,11 @@ class ReplayVideoGenerator:
             custom_move_times=custom_move_times,
             cumulative_data=None,
             progress_callback=progress_cb if (show_progress or external_progress_cb) else None,
-            quality=quality
+            quality=quality,
+            memory_usage=memory_usage,
+            stats_path=stats_path,
+            use_gpu=use_gpu,
+            cancel_check=cancel_check
         )
 
         if show_progress:

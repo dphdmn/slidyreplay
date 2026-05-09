@@ -33,3 +33,5 @@ env/
 # OS files
 Thumbs.db
 .DS_Store
+
+benchmark_log.json

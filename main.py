@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 
-from replay_video import ReplayVideoGenerator, parse_replay_url
+from replay_video import ReplayVideoGenerator, parse_replay_url, CancelError
 from replay_generator import expand_solution, parse_scramble_guess
 
 if getattr(sys, 'frozen', False):
@@ -93,10 +93,12 @@ class ReplayGUI(tb.Window):
         self.cancel_flag = False
 
         self.quality_var = tk.DoubleVar(value=2.0)
+        self.mem_usage_var = tk.DoubleVar(value=50)
         self.force_fringe_var = tk.BooleanVar(value=False)
         self.out_folder_var = tk.StringVar(
             value=os.path.join(script_dir, "replays"))
-        self.status_var = tk.StringVar(value="Ready")
+        self.progress_text = tk.StringVar(value="Ready")
+        self._gpu_info_var = tk.StringVar(value="")
 
         self.tps_var = tk.StringVar()
         self.time_var = tk.StringVar()
@@ -117,7 +119,7 @@ class ReplayGUI(tb.Window):
 
         # ── Two-column layout using grid ──
         root.grid_columnconfigure(0, weight=1, minsize=400)
-        root.grid_columnconfigure(1, weight=0, minsize=300)
+        root.grid_columnconfigure(1, weight=1, minsize=440)
         root.grid_rowconfigure(1, weight=1)
 
         # ======== LEFT COLUMN ========
@@ -151,6 +153,18 @@ class ReplayGUI(tb.Window):
                        bootstyle="round-toggle").pack(side="left")
         r += 1
 
+        tb.Label(sinner, text="GPU mem usage", font=("Segoe UI", 9)).grid(row=r, column=0, sticky="w")
+        mf = tb.Frame(sinner)
+        mf.grid(row=r, column=1, sticky="ew", padx=(6, 0))
+        self.mem_usage_scale = tb.Scale(mf, from_=10, to=95,
+                                        variable=self.mem_usage_var, orient="horizontal", length=180)
+        self.mem_usage_scale.pack(side="left")
+        self.mem_usage_label = tb.Label(mf, text="50%", width=5, font=("Segoe UI", 9))
+        self.mem_usage_label.pack(side="left", padx=(6, 0))
+        self.mem_usage_var.trace_add("write",
+                                     lambda *a: self.mem_usage_label.config(text=f"{self.mem_usage_var.get():.0f}%"))
+        r += 1
+
         out_row = tb.Frame(sinner)
         out_row.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         out_row.grid_columnconfigure(1, weight=1)
@@ -159,6 +173,45 @@ class ReplayGUI(tb.Window):
         self.out_entry.grid(row=0, column=1, sticky="ew", padx=(0, 4))
         tb.Button(out_row, text="Browse...", command=self._browse_output,
                   bootstyle="secondary-outline", width=9).grid(row=0, column=2)
+        r += 1
+
+        # ── GPU Acceleration toggle ──
+        gpu_row = tb.Frame(sinner)
+        gpu_row.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        gpu_row.grid_columnconfigure(0, weight=0)
+
+        self._gpu_available = False
+        self._gpu_name = ""
+        try:
+            import torch
+            self._gpu_available = torch.cuda.is_available()
+            if self._gpu_available:
+                self._gpu_name = torch.cuda.get_device_name(0)
+        except ImportError:
+            pass
+        self.use_gpu_var = tk.BooleanVar(value=self._gpu_available)
+
+        def _on_gpu_toggle():
+            if self.use_gpu_var.get():
+                if self._gpu_available:
+                    gpu_info_lbl.config(text=f"GPU ON ({self._gpu_name})", bootstyle="success")
+                else:
+                    gpu_info_lbl.config(text="GPU not available — install CUDA (see README)", bootstyle="secondary")
+            else:
+                gpu_info_lbl.config(text="GPU OFF (CPU)", bootstyle="secondary")
+
+        self.gpu_toggle = tb.Checkbutton(
+            gpu_row, text="GPU acceleration", variable=self.use_gpu_var,
+            bootstyle="round-toggle success", command=_on_gpu_toggle
+        )
+        self.gpu_toggle.pack(side="left")
+
+        gpu_info_lbl = tb.Label(gpu_row, font=("Segoe UI", 8))
+        gpu_info_lbl.pack(side="left", padx=(8, 0))
+        if self._gpu_available:
+            gpu_info_lbl.config(text=f"({self._gpu_name})", bootstyle="success")
+        else:
+            gpu_info_lbl.config(text="Not available — install CUDA (see README)", bootstyle="secondary")
 
         # ── Notebook (below settings) ──
         nb = tb.Notebook(left, bootstyle="dark")
@@ -243,21 +296,25 @@ class ReplayGUI(tb.Window):
         prog_frame = tb.LabelFrame(right, text="Progress")
         prog_frame.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         prog_frame.pack_propagate(False)
-        prog_frame.configure(height=100)
+        prog_frame.configure(height=120)
 
         self.progress_bar = tb.Progressbar(prog_frame, mode="determinate",
                                            bootstyle="success-striped")
         self.progress_bar.pack(fill="x", padx=8, pady=(8, 2))
 
-        self.progress_text = tk.StringVar(value="")
         prog_label = tb.Label(prog_frame, textvariable=self.progress_text,
                               font=("Segoe UI", 9), anchor="w")
-        prog_label.pack(fill="x", padx=8, pady=(0, 6))
+        prog_label.pack(fill="x", padx=8, pady=(0, 0))
+
+        self._gpu_info_var = tk.StringVar(value="")
+        gpu_label = tb.Label(prog_frame, textvariable=self._gpu_info_var,
+                             font=("Segoe UI", 8), anchor="w", foreground="#aaaaaa")
+        gpu_label.pack(fill="x", padx=8, pady=(0, 6))
 
         # ── Generated replays ──
         lst_frame = tb.LabelFrame(right, text="Generated Replays")
         lst_frame.grid(row=1, column=0, sticky="nsew")
-        lst_frame.grid_rowconfigure(0, weight=1)
+        right.grid_rowconfigure(1, weight=1)
         lst_frame.grid_columnconfigure(0, weight=1)
 
         self.replay_listbox = tk.Listbox(
@@ -281,10 +338,7 @@ class ReplayGUI(tb.Window):
         tb.Button(lst_actions, text="Clear", command=self._clear_list,
                   bootstyle="secondary-outline", width=8).pack(side="left")
 
-        # ── Separator + status at bottom of right column ──
-        tb.Separator(right).grid(row=2, column=0, sticky="ew", pady=(6, 4))
-        tb.Label(right, textvariable=self.status_var,
-                 font=("Segoe UI", 9, "bold"), bootstyle="secondary").grid(row=3, column=0, sticky="w")
+
 
     def _center_window(self):
         self.update_idletasks()
@@ -341,7 +395,7 @@ class ReplayGUI(tb.Window):
                 items.append(("manual", line))
 
         if not items:
-            self.status_var.set("No valid entries.")
+            self.progress_text.set("No valid entries.")
             return
 
         self.cancel_flag = False
@@ -361,7 +415,8 @@ class ReplayGUI(tb.Window):
         for idx in range(total):
             self._item_progress[idx] = {"phase": 0, "prev_cur": 0,
                                         "adjusted_cur": 0, "adjusted_tot": 1,
-                                        "done": False, "path": None, "error": None}
+                                        "done": False, "path": None, "error": None,
+                                        "cancelled": False}
 
         self._batch_futures = []
         self._executor = ThreadPoolExecutor(max_workers=4)
@@ -369,6 +424,8 @@ class ReplayGUI(tb.Window):
         def on_done(idx, fut):
             try:
                 fut.result()
+            except CancelError:
+                self._item_progress[idx]["cancelled"] = True
             except Exception as e:
                 self._item_progress[idx]["error"] = str(e)
             self._item_progress[idx]["done"] = True
@@ -386,6 +443,7 @@ class ReplayGUI(tb.Window):
             params = {
                 "force_fringe": self.force_fringe_var.get(),
                 "quality": self.quality_var.get(),
+                "memory_usage": self.mem_usage_var.get() / 100.0,
             }
 
             if mode == "url":
@@ -425,35 +483,51 @@ class ReplayGUI(tb.Window):
                 params.get("movetimes", -1), params.get("size"))
             out_path = _pick_output_filename(output_dir, base_name)
 
-            def on_progress(cur, tot):
-                self._on_item_progress(idx, cur, tot)
+            def on_progress(cur, tot, **kwargs):
+                self._on_item_progress(idx, cur, tot, **kwargs)
 
             gen = ReplayVideoGenerator(cleanup_frames=False)
             gen.generate_simple_replay(
                 solution=solution, output_path=out_path,
-                show_progress=False, external_progress_cb=on_progress, **params)
+                show_progress=False, external_progress_cb=on_progress,
+                use_gpu=self.use_gpu_var.get(),
+                cancel_check=lambda: self.cancel_flag, **params)
 
             if not self.cancel_flag:
                 self._item_progress[idx]["path"] = out_path
                 self.after(0, lambda p=out_path: self._add_to_list(p))
+        except CancelError:
+            raise  # re-raise so future stores it → on_done sets cancelled flag
         except Exception as e:
             self._item_progress[idx]["error"] = str(e)
-            self.after(0, lambda m=f"Item {idx+1} failed: {e}": self.status_var.set(m))
+            self.after(0, lambda m=f"Item {idx+1} failed: {e}": self.progress_text.set(m))
+            raise  # re-raise so future stores it
 
-    def _on_item_progress(self, idx, raw_cur, raw_tot):
+    def _on_item_progress(self, idx, raw_cur, raw_tot, **kwargs):
         item = self._item_progress[idx]
+        if kwargs.get("gpu_stats"):
+            item["gpu_stats"] = kwargs["gpu_stats"]
         if raw_cur < item["prev_cur"]:
             item["phase"] += 1
+            if item["phase"] == 1:
+                item["phase1_base"] = item["adjusted_cur"]
         item["prev_cur"] = raw_cur
-        # fixed denominator: always 2 phases (frames + encode)
-        item["adjusted_cur"] = raw_cur + item["phase"] * raw_tot
-        item["adjusted_tot"] = raw_tot * 2
+        if item["phase"] == 0:
+            if "phase0_tot" not in item:
+                item["phase0_tot"] = raw_tot
+            item["adjusted_cur"] = raw_cur
+            item["adjusted_tot"] = item["phase0_tot"] * 2
+        else:
+            p0_tot = item["phase0_tot"]
+            base = item.get("phase1_base", p0_tot)
+            item["adjusted_cur"] = base + (raw_cur - 1)
+            item["adjusted_tot"] = p0_tot * 2
 
     def _cancel(self):
         self.cancel_flag = True
         if self._executor:
             self._executor.shutdown(wait=False)
-        self.status_var.set("Cancelling...")
+        self.progress_text.set("Cancelling...")
 
     def _poll_batch(self):
         if not self._batch_futures:
@@ -487,32 +561,46 @@ class ReplayGUI(tb.Window):
         elapsed = time.time() - self._start_time
         elapsed_str = f"{elapsed:.1f}s" if elapsed < 60 else f"{int(elapsed//60)}m {elapsed%60:.0f}s"
 
-        # Cap at 99% while items are still finalising (ffmpeg post-processing)
-        display_pct = min(overall_pct, 99.0) if running else overall_pct
-        self.progress_bar["value"] = display_pct
+        # Don't overwrite "Cancelling..." while cancelled
+        if not self.cancel_flag:
+            display_pct = min(overall_pct, 99.0) if running else overall_pct
+            self.progress_bar["value"] = display_pct
 
-        eta_str = ""
-        if overall_pct > 1 and running:
-            eta = (100 - overall_pct) / self._rolling_rate if self._rolling_rate > 0 else 0
-            if eta < 3600:
-                eta_str = f" — ETA {eta:.1f}s" if eta < 60 else f" — ETA {int(eta//60)}m {eta%60:.0f}s"
+            eta_str = ""
+            if overall_pct > 1 and running:
+                eta = (100 - overall_pct) / self._rolling_rate if self._rolling_rate > 0 else 0
+                if eta < 3600:
+                    eta_str = f" — ETA {eta:.1f}s" if eta < 60 else f" — ETA {int(eta//60)}m {eta%60:.0f}s"
 
-        parts = []
-        if running:
-            parts.append(f"{running} active")
-        if done_count:
-            parts.append(f"{done_count}/{total} completed")
-        label = " — ".join(parts) + f" ({display_pct:.0f}%)" if parts else ""
-        self.progress_text.set(f"{label}{eta_str}")
-        self.status_var.set(f"{elapsed_str} {label}")
+            gpu_str = ""
+            for p in self._item_progress.values():
+                gs = p.get("gpu_stats")
+                if gs and gs.get("batch_size"):
+                    gpu_str = f"GPU: {gs.get('gpu_name', '?')} | VRAM: {gs.get('mem_used_mb', 0)}/{gs.get('total_mem_mb', 0)} MB | Batch: {gs.get('batch_size', 0)} frames"
+                    break
+            self._gpu_info_var.set(gpu_str)
+            parts = []
+            if running:
+                parts.append(f"{running} active")
+            if done_count:
+                parts.append(f"{done_count}/{total} completed")
+            label = " — ".join(parts) + f" ({display_pct:.0f}%)" if parts else ""
+            self.progress_text.set(f"{elapsed_str} — {label}{eta_str}")
 
         if done_count == total:
             errors = sum(1 for p in self._item_progress.values() if p["error"])
-            ok_count = done_count - errors
+            cancelled = sum(1 for p in self._item_progress.values() if p.get("cancelled"))
+            ok_count = done_count - errors - cancelled
             took = f"took {elapsed_str}"
-            msg = f"Done — {ok_count} replay(s) generated. {took}" + (f" {errors} failed." if errors else "")
+            parts = []
+            if ok_count:
+                parts.append(f"{ok_count} replay(s) generated")
+            if cancelled:
+                parts.append(f"{cancelled} cancelled")
+            if errors:
+                parts.append(f"{errors} failed")
+            msg = " — ".join(parts) + f". {took}" if parts else f"Cancelled. {took}"
             self.progress_text.set(msg)
-            self.status_var.set(msg)
             self.progress_bar["value"] = 100
             self._set_ui_busy(False)
             if self._executor:
@@ -534,7 +622,7 @@ class ReplayGUI(tb.Window):
             if os.path.exists(path):
                 os.startfile(path)
             else:
-                self.status_var.set(f"File not found: {path}")
+                self.progress_text.set(f"File not found: {path}")
 
     def _open_folder(self):
         if self.generated_files:
@@ -547,7 +635,7 @@ class ReplayGUI(tb.Window):
     def _set_ui_busy(self, busy):
         st = "disabled" if busy else "normal"
         self.gen_btn.config(state=st)
-        self.cancel_btn.config(state=st if busy else "disabled")
+        self.cancel_btn.config(state="normal" if busy else "disabled")
 
     def _on_close(self):
         self.cancel_flag = True
@@ -557,4 +645,99 @@ class ReplayGUI(tb.Window):
 
 
 if __name__ == "__main__":
-    ReplayGUI().mainloop()
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Sliding Puzzle Replay Video Generator",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python main.py --solution R2D2L2U2 --size 3x3 --tps 10 -o replay.mp4
+  python main.py --url "https://slidysim.github.io/?replay=..." -o replay.mp4
+  python main.py --batch urls.txt --gpu
+  python main.py                    # launch GUI
+        """
+    )
+    parser.add_argument("--solution", "-s", help="Solution string (e.g. R2D2L2U2)")
+    parser.add_argument("--url", "-u", help="Slidysim replay URL")
+    parser.add_argument("--tps", type=float, help="Tiles per second")
+    parser.add_argument("--time", type=float, help="Total time in seconds")
+    parser.add_argument("--size", help="Puzzle size (e.g. 3x3, 5x5)")
+    parser.add_argument("--scramble", help="Scramble string")
+    parser.add_argument("--output", "-o", default="replay.mp4", help="Output file path")
+    parser.add_argument("--quality", type=float, default=2.0, help="Render quality (1.0-4.0)")
+    parser.add_argument("--memory-usage", type=float, default=0.5,
+                        help="GPU memory usage fraction (0.1-1.0, default 0.5)")
+    parser.add_argument("--gpu", action="store_true", default=None,
+                        help="Enable GPU acceleration (default: auto-detect)")
+    parser.add_argument("--no-gpu", action="store_true", default=None,
+                        help="Disable GPU acceleration")
+    parser.add_argument("--batch", help="File with solutions/URLs (one per line)")
+    parser.add_argument("--stats-path", help="Path to write per-batch GPU render stats (JSONL)")
+
+    args = parser.parse_args()
+
+    if len(sys.argv) <= 1:
+        ReplayGUI().mainloop()
+        sys.exit(0)
+
+    use_gpu = True
+    try:
+        import torch
+        torch_avail = torch.cuda.is_available()
+    except ImportError:
+        torch_avail = False
+    if args.no_gpu:
+        use_gpu = False
+    elif args.gpu:
+        use_gpu = True
+    else:
+        use_gpu = torch_avail
+
+    if use_gpu and torch_avail:
+        gpu_str = f"GPU ON ({torch.cuda.get_device_name(0)})"
+    else:
+        gpu_str = "GPU OFF (CPU fallback)"
+    print(f"[ReplayVideoGenerator] {gpu_str}")
+
+    def run_single(solution, output, **kwargs):
+        gen = ReplayVideoGenerator(cleanup_frames=True)
+        gen.generate_simple_replay(
+            solution=solution, output_path=output,
+            show_progress=True, use_gpu=use_gpu, **kwargs
+        )
+
+    items = []
+    if args.batch:
+        with open(args.batch, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    items.append(line)
+    elif args.url:
+        items.append(("url", args.url))
+    elif args.solution:
+        items.append(("manual", args.solution))
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+    for item in items:
+        if isinstance(item, tuple):
+            mode, val = item
+        else:
+            mode, val = "manual", item
+
+        if mode == "url":
+            sol, tps, scramble, movetimes = parse_replay_url(val)
+            run_single(sol, args.output or "replay.mp4",
+                       tps=tps or args.tps, scramble=scramble,
+                       movetimes=movetimes, quality=args.quality,
+                       memory_usage=args.memory_usage,
+                       stats_path=args.stats_path)
+        else:
+            run_single(val, args.output or "replay.mp4",
+                       tps=args.tps, time=args.time,
+                       scramble=args.scramble, size=args.size,
+                       quality=args.quality, memory_usage=args.memory_usage,
+                       stats_path=args.stats_path)

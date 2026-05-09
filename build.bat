@@ -37,6 +37,7 @@ python -m PyInstaller --onefile --windowed --name "ReplayVideoGenerator" ^
     --hidden-import "PIL" ^
     --hidden-import "PIL._tkinter_finder" ^
     --hidden-import "tkinter" ^
+    --hidden-import "gpu_renderer" ^
     "main.py"
 
 REM Clean up build artifacts and generated spec (only keep dist)
