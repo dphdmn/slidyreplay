@@ -93,7 +93,6 @@ class ReplayGUI(tb.Window):
         self.cancel_flag = False
 
         self.quality_var = tk.DoubleVar(value=2.0)
-        self.mem_usage_var = tk.DoubleVar(value=50)
         self.force_fringe_var = tk.BooleanVar(value=False)
         self.out_folder_var = tk.StringVar(
             value=os.path.join(script_dir, "replays"))
@@ -151,18 +150,6 @@ class ReplayGUI(tb.Window):
         fringe_row.grid(row=r, column=0, columnspan=2, sticky="w", pady=(4, 0))
         tb.Checkbutton(fringe_row, text="Force fringe", variable=self.force_fringe_var,
                        bootstyle="round-toggle").pack(side="left")
-        r += 1
-
-        tb.Label(sinner, text="GPU mem usage", font=("Segoe UI", 9)).grid(row=r, column=0, sticky="w")
-        mf = tb.Frame(sinner)
-        mf.grid(row=r, column=1, sticky="ew", padx=(6, 0))
-        self.mem_usage_scale = tb.Scale(mf, from_=10, to=95,
-                                        variable=self.mem_usage_var, orient="horizontal", length=180)
-        self.mem_usage_scale.pack(side="left")
-        self.mem_usage_label = tb.Label(mf, text="50%", width=5, font=("Segoe UI", 9))
-        self.mem_usage_label.pack(side="left", padx=(6, 0))
-        self.mem_usage_var.trace_add("write",
-                                     lambda *a: self.mem_usage_label.config(text=f"{self.mem_usage_var.get():.0f}%"))
         r += 1
 
         out_row = tb.Frame(sinner)
@@ -443,7 +430,6 @@ class ReplayGUI(tb.Window):
             params = {
                 "force_fringe": self.force_fringe_var.get(),
                 "quality": self.quality_var.get(),
-                "memory_usage": self.mem_usage_var.get() / 100.0,
             }
 
             if mode == "url":
@@ -666,8 +652,6 @@ Examples:
     parser.add_argument("--scramble", help="Scramble string")
     parser.add_argument("--output", "-o", default="replay.mp4", help="Output file path")
     parser.add_argument("--quality", type=float, default=2.0, help="Render quality (1.0-4.0)")
-    parser.add_argument("--memory-usage", type=float, default=0.5,
-                        help="GPU memory usage fraction (0.1-1.0, default 0.5)")
     parser.add_argument("--gpu", action="store_true", default=None,
                         help="Enable GPU acceleration (default: auto-detect)")
     parser.add_argument("--no-gpu", action="store_true", default=None,
@@ -733,11 +717,10 @@ Examples:
             run_single(sol, args.output or "replay.mp4",
                        tps=tps or args.tps, scramble=scramble,
                        movetimes=movetimes, quality=args.quality,
-                       memory_usage=args.memory_usage,
                        stats_path=args.stats_path)
         else:
             run_single(val, args.output or "replay.mp4",
                        tps=args.tps, time=args.time,
-                       scramble=args.scramble, size=args.size,
-                       quality=args.quality, memory_usage=args.memory_usage,
-                       stats_path=args.stats_path)
+                        scramble=args.scramble, size=args.size,
+                        quality=args.quality,
+                        stats_path=args.stats_path)

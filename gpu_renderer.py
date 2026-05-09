@@ -93,11 +93,16 @@ def _render_solution_text(solution_text: str) -> Image.Image:
 
 
 class GPURenderer:
-    def __init__(self, width: int, height: int, tile_size: int, quality: float = 2.0,
-                 memory_usage: float = 0.5):
+    def __init__(self, width: int, height: int, tile_size: int, quality: float = 2.0):
+        """
+        GPU renderer with automatic optimal batching.
+
+        Self‑calibrates on the first frame, then uses as large a batch as the
+        available free memory allows, while respecting a soft 50% VRAM ceiling.
+        No knobs required.
+        """
         self.w = width
         self.h = height
-        self.memory_usage = max(0.05, min(memory_usage, 0.95))
         ts = max(tile_size, int(tile_size * quality))
         self.tile_size = ts
         self.font_size = max(11, ts // 2)
@@ -154,21 +159,21 @@ class GPURenderer:
                 num_batch[num] = arr
             self._num_batch = num_batch
 
-            # Tile mask: full rectangle (all ones) — no rounded corners
+            # Tile mask (all ones) and its complement
             mask = torch.ones(ts, ts, 1, device=cuda_dev, dtype=torch.float32)
             self._tile_mask = mask
-            self._tile_mask_inv = 1.0 - mask  # precomputed inverted mask
+            self._tile_mask_inv = 1.0 - mask
 
-            # Tile border mask: 1px border around tile
+            # Tile border mask: 1 px border
             border = torch.zeros(ts, ts, 1, device=cuda_dev, dtype=torch.float32)
             border[0, :] = 1
             border[ts - 1, :] = 1
             border[:, 0] = 1
             border[:, ts - 1] = 1
             self._border_mask = border
-            self._border_mask_inv = 1.0 - border  # precomputed inverted border mask
+            self._border_mask_inv = 1.0 - border
 
-            # Secondary color bar mask + border
+            # Secondary colour bar masks
             bar_h = max(2, int(ts * 0.1))
             bar_off = max(2, int(ts * 0.06))
             bar_inset = max(2, int(ts * 0.1))
@@ -193,7 +198,7 @@ class GPURenderer:
             self._bar_fill = bar_fill
             self._bar_border = bar_border
 
-            # Pre-render static timer bar background
+            # Timer bar background
             tx1, ty1, tx2, ty2 = self.timer_bbox
             tw = tx2 - tx1
             th = ty2 - ty1
@@ -202,7 +207,7 @@ class GPURenderer:
                 np.array(timer_bg_pil)
             ).to(cuda_dev).float() / 255.0
 
-            # Pre-render static panel background + border only (no text)
+            # Stats panel background + border
             if self.panel_w > 0 and self.panel_h > 0:
                 panel_pil = Image.new("RGBA", (self.panel_w, self.panel_h), (0, 0, 0, 0))
                 pdraw = ImageDraw.Draw(panel_pil)
@@ -225,7 +230,7 @@ class GPURenderer:
 
     @staticmethod
     def _blend_rgba_inplace(dst: torch.Tensor, src_rgba: torch.Tensor, x0: int, y0: int):
-        """Blend src RGBA image onto dst at (x0, y0) using in-place operations."""
+        """Blend src RGBA onto dst at (x0, y0), modifying dst in-place."""
         h = min(src_rgba.shape[0], dst.shape[0] - y0)
         w = min(src_rgba.shape[1], dst.shape[1] - x0)
         if h <= 0 or w <= 0:
@@ -258,7 +263,7 @@ class GPURenderer:
 
         dev = self._device
         num_tex = self._num_batch
-        # Expand masks to 6D: (1, 1, 1, ts, ts, 1)
+        # 6‑D broadcast views for blending
         tm = self._tile_mask[None, None, None, :, :, :]
         tm_inv = self._tile_mask_inv[None, None, None, :, :, :]
         bm = self._border_mask[None, None, None, :, :, :]
@@ -276,68 +281,57 @@ class GPURenderer:
         tile_bg_t = torch.tensor(TILE_BG, device=dev, dtype=torch.float32) / 255.0
 
         total_mem = torch.cuda.get_device_properties(dev).total_memory
-        target_used_mem = int(total_mem * self.memory_usage)
+        batch_has_colors = any(p.get("colors") is not None for p in frame_params_list)
+
+        # Soft 50% VRAM ceiling – we’ll exceed it if needed, bounded by free memory
+        target_mem_fraction = 0.50
+        target_used_mem = int(total_mem * target_mem_fraction)
+
         per_frame_ema = 0.0
         batch_size = 1
-        batch_has_colors = any(p.get("colors") is not None for p in frame_params_list)
 
         self._stats["batch_size"] = batch_size
         self._stats["batch_mem_mb"] = 0
         self._stats["per_frame_ema_mb"] = 0.0
         self._stats["target_used_mem_mb"] = target_used_mem // (1024 * 1024)
 
-        # Row-chunked rendering: process tile rows in chunks to reduce peak memory
-        # For small puzzles, we can render all rows at once; but for larger ones, chunk.
-        # We'll auto-detect based on tile count or puzzle size; a simple heuristic:
-        # chunk_rows = 2 is safe; for very small puzzles (<=6 rows) use all rows.
+        # Row‑chunked rendering: 2 rows per chunk for large puzzles
         chunk_rows = 2 if h > 6 else h
 
         frames = []
         batch_start = 0
 
-        # Use inference_mode for performance (no autograd tracking)
+        # Permanent reserved memory right after static tensors are loaded
+        reserved_permanent = torch.cuda.memory_reserved(dev)
+
         with torch.inference_mode():
             while batch_start < n:
                 if cancel_check and cancel_check():
                     raise CancelError()
 
-                # ── Determine batch size BEFORE allocating GPU tensors ──
                 remaining = n - batch_start
 
-                # Get memory picture using RESERVED (not allocated) as primary metric
+                # ── Memory‑aware batching ──
                 reserved_mem = torch.cuda.memory_reserved(dev)
-                alloc_mem = torch.cuda.memory_allocated(dev)
                 free_mem, _ = torch.cuda.mem_get_info(dev)
 
-                # Periodic cache cleanup - LESS frequent and CONDITIONAL
-                needs_clean = False
-                if self._batch_counter >= 1 and self._batch_counter % 10 == 0:
-                    needs_clean = True
-                if reserved_mem > int(target_used_mem * 1.15):
-                    needs_clean = True
+                # 256 MB safety margin to avoid edge‑cases
+                reserve_margin = 256 * 1024 * 1024
 
-                if needs_clean:
-                    torch.cuda.empty_cache()
-                    # Re-read after cleanup for accurate baseline
-                    reserved_mem = torch.cuda.memory_reserved(dev)
-                    alloc_mem = torch.cuda.memory_allocated(dev)
-                    free_mem, _ = torch.cuda.mem_get_info(dev)
+                # Soft target headroom – if reserved_mem exceeds the target we ignore it
+                # and rely solely on physical headroom.
+                target_headroom = target_used_mem - reserved_mem - reserve_margin
+                physical_headroom = int(free_mem * 0.90)
 
-                # Cached = allocator-held but currently unused
-                cached_mem = max(0, reserved_mem - alloc_mem)
+                if target_headroom > 0:
+                    usable = min(target_headroom, physical_headroom)
+                else:
+                    usable = physical_headroom
 
-                # Fixed reserve margin: ~3% of VRAM or min 128 MB
-                reserve_margin = max(int(total_mem * 0.03), 128 * 1024 * 1024)
-
-                # SIMPLIFIED BUDGET
-                # Use alloc_mem (live tensors only), NOT reserved_mem (which includes cache)
-                # Cache is reusable without going to OS, so headroom is based on live tensors only
-                max_extra = target_used_mem - alloc_mem - reserve_margin
-                pool_available = cached_mem + int(free_mem * 0.90)
-                usable = max(0, int(min(max_extra, pool_available)))
+                if usable < 0:
+                    usable = 0
 
                 if per_frame_ema > 0:
-                    # Jump directly to budget (no conservative cap)
                     max_by_budget = max(1, int(usable / per_frame_ema))
                     batch_size = max(1, min(remaining, max_by_budget))
                 else:
@@ -349,8 +343,8 @@ class GPURenderer:
                 self._stats["batch_size"] = batch_size
                 self._stats["batch_mem_mb"] = (ch * cw * 3 * 4 * batch_size) // (1024 * 1024)
 
-                # Fallback: single frame doesn't fit → CPU
-                if batch_n == 1 and usable < per_frame_ema and per_frame_ema > 0:
+                # Fallback to CPU only if physical memory cannot fit a single frame
+                if batch_n == 1 and per_frame_ema > 0 and usable < per_frame_ema:
                     if stats_path:
                         with open(stats_path, "a") as _sf:
                             _sf.write(json.dumps({
@@ -358,7 +352,8 @@ class GPURenderer:
                                 "t": _time_module.time(),
                                 "frames_remaining": remaining
                             }) + "\n")
-                    return self._cpu_fallback(frame_params_list[batch_start:], progress_callback, cancel_check)
+                    return self._cpu_fallback(frame_params_list[batch_start:],
+                                              progress_callback, cancel_check)
 
                 self._stats["free_mem_mb"] = free_mem // (1024 * 1024)
                 self._stats["mem_used_mb"] = self._stats["total_mem_mb"] - self._stats["free_mem_mb"]
@@ -382,7 +377,7 @@ class GPURenderer:
                             "per_frame_ema_mb": round(per_frame_ema / (1024 * 1024), 2),
                         }) + "\n")
 
-                # ── Load this batch's data onto GPU ──
+                # ── Upload batch data ──
                 batch_params = frame_params_list[batch_start:batch_end]
                 mats_np = np.stack([p["matrix"] for p in batch_params], axis=0)
                 mats = torch.from_numpy(mats_np).to(dev, non_blocking=True)
@@ -413,11 +408,9 @@ class GPURenderer:
                     sec = torch.zeros(batch_n, h, w, 3, device=dev, dtype=torch.float32)
                     has_sec = torch.zeros(batch_n, h, w, 1, 1, 1, device=dev, dtype=torch.float32)
 
-                # Reset peak stats AFTER loading batch data
                 torch.cuda.reset_peak_memory_stats(dev)
-                alloc_baseline = torch.cuda.memory_allocated(dev)
 
-                # ── Canvas (largest single allocation) ──
+                # ── Canvas ──
                 canvas = torch.empty(batch_n, ch, cw, 3, device=dev, dtype=torch.float32)
                 canvas[:] = c_bg.view(1, 1, 1, 3)
                 canvas[:, ty1:ty2, tx1:tx2] = timer_bg.view(1, th, tw, 3)
@@ -433,9 +426,8 @@ class GPURenderer:
                     row_end = min(row_start + chunk_rows, h)
                     n_rows = row_end - row_start
 
-                    # Slice input matrices and colors for this chunk
-                    mats_chunk = mats[:, row_start:row_end, :]  # (B, n_rows, W)
-                    nums_chunk = num_tex[mats_chunk]             # (B, n_rows, W, ts, ts, 4)
+                    mats_chunk = mats[:, row_start:row_end, :]
+                    nums_chunk = num_tex[mats_chunk]   # (B, n_rows, W, ts, ts, 4)
                     text_rgb_chunk = nums_chunk[..., :3]
                     text_a_chunk = nums_chunk[..., 3:]
 
@@ -447,39 +439,31 @@ class GPURenderer:
                         sec_chunk = None
                         has_sec_chunk = None
 
-                    # Tile blending (in-place where possible)
+                    # In‑place tile blending
                     colored = cols_chunk.view(batch_n, n_rows, w, 1, 1, 3) * tm
-                    # Add background where mask=0, using precomputed inverted mask
                     colored.addcmul_(c_bg_6d, tm_inv)
-                    # Border: colored = colored * (1-bm) + c_border * bm
                     colored.mul_(bm_inv).addcmul_(c_border_6d, bm)
 
                     if batch_has_colors:
                         bar_fill_factor = has_sec_chunk * bar_fill_mask
                         bar_border_factor = has_sec_chunk * bar_border_mask
 
-                        # Bar fill
                         colored.mul_(1 - bar_fill_factor)
                         sec_contrib = sec_chunk.view(batch_n, n_rows, w, 1, 1, 3) * bar_fill_mask
                         colored.add_(sec_contrib * bar_fill_factor)
                         del sec_contrib
 
-                        # Bar border
                         colored.mul_(1 - bar_border_factor)
                         colored.addcmul_(c_border_6d, bar_border_factor)
 
-                    # Text overlay
                     tile_chunk = text_rgb_chunk * text_a_chunk + colored * (1 - text_a_chunk)
-
-                    # Permute and reshape to canvas coordinates
                     tile_chunk = tile_chunk.permute(0, 1, 3, 2, 4, 5).reshape(batch_n, n_rows * ts, pw, 3)
                     canvas_y = gy + row_start * ts
                     canvas[:, canvas_y:canvas_y + n_rows * ts, gx:gx + pw] = tile_chunk
 
-                    # Free chunk intermediates
                     del nums_chunk, text_rgb_chunk, text_a_chunk, colored, tile_chunk
 
-                # ── Per-frame overlay compositing (in-place) ──
+                # ── Overlays (in‑place) ──
                 for i in range(batch_n):
                     fi = batch_start + i
                     fc = canvas[i]
@@ -488,9 +472,8 @@ class GPURenderer:
                     timer_arr = params.get("timer_arr")
                     if timer_arr is not None:
                         tt = torch.from_numpy(timer_arr).to(dev, non_blocking=True).float() / 255.0
-                        ti_h, ti_w = tt.shape[:2]
-                        dx = max(tx1, tx1 + ((tx2 - tx1) - ti_w) // 2)
-                        dy = max(ty1, ty1 + ((ty2 - ty1) - ti_h) // 2)
+                        dx = max(tx1, tx1 + ((tx2 - tx1) - tt.shape[1]) // 2)
+                        dy = max(ty1, ty1 + ((ty2 - ty1) - tt.shape[0]) // 2)
                         self._blend_rgba_inplace(fc, tt, dx, dy)
 
                     sol_arr = params.get("sol_arr")
@@ -503,7 +486,7 @@ class GPURenderer:
                         stt = torch.from_numpy(stats_arr).to(dev, non_blocking=True).float() / 255.0
                         self._blend_rgba_inplace(fc, stt, px, py)
 
-                # ── Copy to CPU (uint8 conversion on GPU first) ──
+                # ── GPU → CPU (uint8) ──
                 batch_u8 = canvas.mul(255.0).clamp_(0, 255).to(torch.uint8).cpu().numpy()
                 for i in range(batch_n):
                     img = Image.fromarray(batch_u8[i])
@@ -514,17 +497,15 @@ class GPURenderer:
                     if progress_callback:
                         progress_callback(batch_start + i + 1, n, gpu_stats=dict(self._stats))
 
-                # ── Measure peak memory cost ──
+                # ── One‑shot calibration (first batch only) ──
                 torch.cuda.synchronize(dev)
-                alloc_peak = torch.cuda.max_memory_allocated(dev)
-                batch_cost = alloc_peak - alloc_baseline
-                if batch_cost > 0 and batch_n > 0:
-                    per_frame = batch_cost / batch_n
-                    if per_frame_ema == 0.0:
-                        per_frame_ema = per_frame
-                    else:
-                        per_frame_ema = per_frame_ema * 0.7 + per_frame * 0.3
-                    self._stats["per_frame_ema_mb"] = per_frame_ema / (1024 * 1024)
+                reserved_peak = torch.cuda.memory_reserved(dev)
+
+                if self._batch_counter == 1 and batch_n == 1 and per_frame_ema == 0.0:
+                    marginal_cost = reserved_peak - reserved_permanent
+                    if marginal_cost > 0:
+                        per_frame_ema = marginal_cost
+                        self._stats["per_frame_ema_mb"] = per_frame_ema / (1024 * 1024)
 
                 if stats_path:
                     with open(stats_path, "a") as _sf:
@@ -532,22 +513,19 @@ class GPURenderer:
                             "event": "batch_done",
                             "t": _time_module.time(),
                             "batch_idx": self._stats["batch_idx"],
-                            "batch_cost_mb": batch_cost // (1024 * 1024),
+                            "batch_cost_mb": (reserved_peak - reserved_permanent) // (1024 * 1024),
                             "per_frame_ema_mb": round(per_frame_ema / (1024 * 1024), 2),
-                            "alloc_peak_mb": alloc_peak // (1024 * 1024),
+                            "reserved_peak_mb": reserved_peak // (1024 * 1024),
                         }) + "\n")
 
-                # ── Free batch GPU tensors ──
+                # ── Free batch tensors ──
                 del canvas, mats
-                # (nums, etc. already deleted inside row loop)
                 if batch_has_colors:
                     del cols, sec, has_sec
 
                 batch_start = batch_end
 
-        # Final cleanup after all frames
         torch.cuda.empty_cache()
-
         return frames if not frame_handler else []
 
     def _cpu_fallback(self, frame_params_list, progress_callback, cancel_check=None):

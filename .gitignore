@@ -39,3 +39,5 @@ benchmark_stats/*
 benchmark_log*
 ai_brainstorm/*
 deepseek*
+logs/*
+.opencode/*

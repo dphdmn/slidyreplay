@@ -1205,7 +1205,6 @@ def generate_frames(
     cumulative_data: Optional[dict] = None,
     progress_callback=None,
     quality: float = 2.0,
-    memory_usage: float = 0.5,
     stats_path: str = None,
     parallel: bool = True,
     use_gpu: bool = True,
@@ -1293,7 +1292,7 @@ def generate_frames(
         _log(event="stage_params_start", total_frames=sol_len + 1)
 
     # Optional GPU acceleration for tile grid rendering
-    gpu = GPURenderer(w, h, raw_tile, quality, memory_usage=memory_usage)
+    gpu = GPURenderer(w, h, raw_tile, quality)  # memory_usage removed: now auto-calibrated
     use_gpu = use_gpu and gpu.available
 
     for frame_idx in range(sol_len + 1):
@@ -1722,9 +1721,8 @@ class ReplayVideoGenerator:
         force_fringe: bool = False,
         show_progress: bool = True,
         speed_factor: float = 1.0,
-        quality: float = 2.0,
-        memory_usage: float = 0.5,
-        stats_path: str = None,
+    quality: float = 2.0,
+    stats_path: str = None,
         external_progress_cb = None,
         use_gpu: bool = True,
         cancel_check=None
@@ -1848,7 +1846,6 @@ class ReplayVideoGenerator:
             cumulative_data=None,
             progress_callback=progress_cb if (show_progress or external_progress_cb) else None,
             quality=quality,
-            memory_usage=memory_usage,
             stats_path=stats_path,
             use_gpu=use_gpu,
             cancel_check=cancel_check,

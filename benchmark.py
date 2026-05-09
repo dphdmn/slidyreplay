@@ -1,9 +1,13 @@
 """
-Benchmark GPU vs CPU + GPU memory scaling using test_input.txt.
-Saves a detailed log (benchmark_log.json) with per-batch render stats.
+Benchmark GPU renderer comparing two modes:
+  - "logged" = with --stats-path (per-batch JSONL logging)
+  - "stripped" = without logging (pure render time)
+
+All outputs saved to logs/ folder (nothing left in root).
 
 Usage:
     python benchmark.py
+    python benchmark.py --skip-cpu
 """
 
 import subprocess
@@ -14,21 +18,32 @@ import json
 import shutil
 
 
-def run_bench(label: str, extra_args: list, output_name: str, stats_path: str, run_id: str = "") -> tuple:
+def run_bench(label: str, extra_args: list, output_path: str, stats_path: str = None) -> tuple:
     script_dir = os.path.dirname(os.path.abspath(__file__))
     url = open(os.path.join(script_dir, "test_input.txt")).read().strip()
+    
     cmd = [
         sys.executable, os.path.join(script_dir, "main.py"),
         "--url", url,
         "--quality", "2.0",
-        "--output", os.path.join(script_dir, output_name),
-        "--stats-path", stats_path,
-    ] + extra_args
+        "--output", output_path,
+    ]
+    
+    if stats_path:
+        cmd.extend(["--stats-path", stats_path])
+    
+    cmd.extend(extra_args)
 
     detail = {
-        "label": label, "extra_args": extra_args, "output": output_name,
-        "stats_path": os.path.abspath(stats_path), "returncode": None, "elapsed": None,
-        "gpu_info": "", "stats": [], "error_lines": [], "run_id": run_id,
+        "label": label,
+        "extra_args": extra_args,
+        "output": os.path.basename(output_path),
+        "stats_path": os.path.abspath(stats_path) if stats_path else None,
+        "returncode": None,
+        "elapsed": None,
+        "gpu_info": "",
+        "stats": [],
+        "error_lines": [],
     }
 
     print(f"  {label}...", end=" ", flush=True)
@@ -44,14 +59,12 @@ def run_bench(label: str, extra_args: list, output_name: str, stats_path: str, r
             print(f"[{line.strip()}]")
             break
 
-    # Read per-batch stats file if it exists
-    if os.path.exists(stats_path):
+    if stats_path and os.path.exists(stats_path):
         with open(stats_path) as f:
             for line in f:
                 line = line.strip()
                 if line:
                     detail["stats"].append(json.loads(line))
-        pass  # Keep raw stats file in benchmark_stats/{run_id}/
 
     if result.returncode != 0:
         print(f"FAILED ({elapsed:.1f}s)")
@@ -66,7 +79,7 @@ def run_bench(label: str, extra_args: list, output_name: str, stats_path: str, r
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Run GPU vs CPU benchmark")
+    parser = argparse.ArgumentParser(description="Run GPU benchmark: logged vs stripped modes")
     parser.add_argument("--skip-cpu", action="store_true",
                         help="Skip CPU baseline (GPU tests only)")
     args = parser.parse_args()
@@ -93,6 +106,7 @@ def main():
 
     import datetime
     run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
     puzzle_info = {
         "run_id": run_id,
         "puzzle_size": f"{len(matrix)}x{len(matrix[0])}",
@@ -103,61 +117,81 @@ def main():
         "tps_from_url": tps,
     }
 
-    print("=" * 55)
+    print("=" * 60)
     print(f"  Puzzle: {puzzle_info['puzzle_size']}")
     print(f"  Moves: {puzzle_info['moves']}")
     print(f"  Frames: {puzzle_info['frames']}")
-    print(f"  Movetimes: {puzzle_info['movetimes_count']} entries {'(accurate timing)' if has_mt else '(no movetimes)'}")
-    print(f"  TPS (from URL): {tps}")
-    print("=" * 55)
+    print(f"  Run ID: {run_id}")
+    print("=" * 60)
 
-    mem_levels = [50, 70, 90]
+    logs_dir = os.path.join(script_dir, "logs", run_id)
+    os.makedirs(logs_dir, exist_ok=True)
+
     results = []
     details = []
 
-    stats_dir = os.path.join(script_dir, "benchmark_stats", run_id)
-    os.makedirs(stats_dir, exist_ok=True)
-
     if not args.skip_cpu:
-        t, d = run_bench("CPU baseline", ["--no-gpu"], "bench_cpu.mp4",
-                          os.path.join(stats_dir, f"stats_cpu_{run_id}.jsonl"), run_id)
-        results.append(("CPU", None, t))
+        cpu_out = os.path.join(logs_dir, "bench_cpu.mp4")
+        cpu_stats = os.path.join(logs_dir, "stats_cpu.jsonl")
+        t, d = run_bench("CPU baseline", ["--no-gpu"], cpu_out, cpu_stats)
+        results.append(("CPU baseline", t))
         if d: details.append(d)
 
-    for pct in mem_levels:
-        label = f"GPU mem={pct}%"
-        out = f"bench_gpu_{pct}pct.mp4"
-        stats_file = os.path.join(stats_dir, f"stats_gpu_{pct}pct_{run_id}.jsonl")
-        t, d = run_bench(label, ["--gpu", "--memory-usage", f"{pct / 100:.2f}"], out, stats_file, run_id)
-        results.append((f"GPU @ {pct}% mem", pct / 100, t))
-        if d: details.append(d)
+    stripped_out = os.path.join(logs_dir, "bench_gpu_stripped.mp4")
+    t1, d1 = run_bench("GPU (stripped, no logging)", ["--gpu"], stripped_out, None)
+    results.append(("GPU (stripped)", t1))
+    if d1: details.append(d1)
 
-    # Print results table
-    cpu_result = results[0] if results[0][0] == "CPU" else None
-    cpu_time = cpu_result[2] if cpu_result else None
+    logged_out = os.path.join(logs_dir, "bench_gpu_logged.mp4")
+    logged_stats = os.path.join(logs_dir, "stats_gpu_logged.jsonl")
+    t2, d2 = run_bench("GPU (logged, JSONL per-batch)", ["--gpu"], logged_out, logged_stats)
+    results.append(("GPU (logged)", t2))
+    if d2: details.append(d2)
+
+    cpu_result = results[0] if results[0][0].startswith("CPU") else None
+    cpu_time = cpu_result[1] if cpu_result else None
     has_cpu = cpu_time is not None
 
-    print("-" * 55)
+    print("-" * 60)
+    print(f"  {'Mode':<30} {'Time':>8s}", end="")
     if has_cpu:
-        print(f"  {'Method':<20} {'Time':>8s} {'vs CPU':>8s}")
-        print(f"  {'-'*20} {'-'*8} {'-'*8}")
-    else:
-        print(f"  {'Method':<20} {'Time':>8s}")
-        print(f"  {'-'*20} {'-'*8}")
-    for name, _, t in results:
-        if t is not None:
-            ratio = cpu_time / t if cpu_time else 0
-            if has_cpu:
-                print(f"  {name:<20} {t:>7.1f}s {ratio:>7.1f}x")
-            else:
-                print(f"  {name:<20} {t:>7.1f}s")
-        else:
-            print(f"  {name:<20} {'FAILED':>8s}")
-    print("=" * 55)
+        print(f" {'vs CPU':>8s}", end="")
+    print()
+    print(f"  {'-'*30} {'-'*8}", end="")
+    if has_cpu:
+        print(f" {'-'*8}", end="")
+    print()
 
-    # Build detailed log
-    log = {"puzzle": puzzle_info, "results": []}
-    for (name, mem, elapsed), d in zip(results, details):
+    for name, t in results:
+        if t is not None:
+            ratio = cpu_time / t if cpu_time and t > 0 else 0
+            print(f"  {name:<30} {t:>7.1f}s", end="")
+            if has_cpu and ratio > 0:
+                print(f" {ratio:>7.1f}x", end="")
+            print()
+        else:
+            print(f"  {name:<30} {'FAILED':>8s}")
+
+    if t1 and t2:
+        diff = t2 - t1
+        diff_pct = (diff / t1 * 100) if t1 > 0 else 0
+        print("-" * 60)
+        print(f"  Logging overhead: {diff:.1f}s ({diff_pct:+.1f}%)")
+
+    print("=" * 60)
+
+    log = {
+        "puzzle": puzzle_info,
+        "comparison": {
+            "gpu_stripped_sec": t1,
+            "gpu_logged_sec": t2,
+            "logging_overhead_sec": t2 - t1 if (t1 and t2) else None,
+            "logging_overhead_pct": (t2 - t1) / t1 * 100 if (t1 and t2 and t1 > 0) else None,
+        },
+        "results": [],
+    }
+
+    for (name, elapsed), d in zip(results, details):
         stats = [s for s in d.get("stats", []) if s.get("event") == "batch_start"]
         batch_count = len(stats)
         batch_sizes = [s.get("batch_size", 0) for s in stats]
@@ -168,18 +202,16 @@ def main():
             if "total_mem_mb" in s:
                 total_mem = s["total_mem_mb"]
                 break
+
         entry = {
             "method": name,
-            "memory_fraction": mem,
             "elapsed_seconds": elapsed,
             "batch_count": batch_count,
-            "stats_log_path": d.get("stats_path"),
             "batch_sizes": batch_sizes,
             "free_mem_mb_per_batch": free_mems,
             "used_mem_mb_per_batch": [s.get("used_mem_mb", 0) for s in stats],
             "total_mem_mb": total_mem,
             "batch_mem_mb_per_batch": [s.get("batch_mem_mb", 0) for s in stats],
-            "alloc_baseline_mb_per_batch": [s.get("alloc_baseline_mb") for s in stats],
             "returncode": d.get("returncode"),
             "gpu_info": d.get("gpu_info", ""),
         }
@@ -189,12 +221,12 @@ def main():
             entry["speedup_vs_cpu"] = None
         log["results"].append(entry)
 
-    log_path = os.path.join(script_dir, f"benchmark_log_{run_id}.json")
+    log_path = os.path.join(logs_dir, "benchmark_log.json")
     with open(log_path, "w") as f:
         json.dump(log, f, indent=2)
-    print(f"\nDetailed log saved to: {log_path}")
 
-    print(f"\nPer-run stats saved in: {stats_dir}")
+    print(f"\nRun summary saved to: {log_path}")
+    print(f"All outputs in: {logs_dir}")
 
 
 if __name__ == "__main__":
