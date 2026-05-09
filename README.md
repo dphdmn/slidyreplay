@@ -69,7 +69,7 @@ Frame rendering is GPU-accelerated via PyTorch/CUDA:
 
 ### Benchmarks (NVIDIA GeForce GTX 1660 SUPER)
 
-**Run ID:** `20260509_224603` — quality=2.0
+**Run IDs:** `20260509_224603` (4×4–10×10), `20260509_233957` (12×12, 16×16) — quality=2.0
 
 | Puzzle | Moves | Frames | CPU | GPU | Speedup |
 |--------|-------|--------|-----|-----|---------|
@@ -80,8 +80,10 @@ Frame rendering is GPU-accelerated via PyTorch/CUDA:
 | 8×8    | 707   | 708    | 96.7s  | 16.3s  | 5.9× |
 | 9×9    | 1251  | 1252   | 208.4s | 30.5s  | 6.8× |
 | 10×10  | 1569  | 1570   | 284.9s | 33.1s  | 8.6× |
+| 12×12  | 2883  | 2884   | —       | 63.7s  | — |
+| 16×16  | 7132  | 7133   | —       | 341.6s | — |
 
-GPU acceleration scales significantly with puzzle size. The speedup grows from **1.4×** at 4×4 to **8.6×** at 10×10, as the fixed CPU overhead is amortized over more work per frame and larger batches fit in VRAM. At 10×10, GPU renders ~48 fps equivalent vs CPU's ~5.5 fps.
+Puzzles 12×12 and above are GPU-only — CPU rendering would be impractically slow. GPU acceleration scales significantly with puzzle size: the speedup grows from **1.4×** at 4×4 to **8.6×** at 10×10, as fixed overhead is amortized over more work per frame and larger batches fit in VRAM.
 
 ### Installing GPU support
 

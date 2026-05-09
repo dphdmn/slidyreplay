@@ -646,6 +646,7 @@ Examples:
     )
     parser.add_argument("--solution", "-s", help="Solution string (e.g. R2D2L2U2)")
     parser.add_argument("--url", "-u", help="Slidysim replay URL")
+    parser.add_argument("--url-file", help="File containing a Slidysim replay URL (bypasses CLI length limit)")
     parser.add_argument("--tps", type=float, help="Tiles per second")
     parser.add_argument("--time", type=float, help="Total time in seconds")
     parser.add_argument("--size", help="Puzzle size (e.g. 3x3, 5x5)")
@@ -698,6 +699,9 @@ Examples:
                 line = line.strip()
                 if line and not line.startswith("#"):
                     items.append(line)
+    elif args.url_file:
+        with open(args.url_file, "r") as f:
+            items.append(("url", f.read().strip()))
     elif args.url:
         items.append(("url", args.url))
     elif args.solution:

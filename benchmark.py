@@ -3,8 +3,9 @@ Benchmark GPU renderer with stats logging.
 All outputs saved to logs/ folder.
 
 Usage:
-    python benchmark.py
-    python benchmark.py --skip-cpu
+    python benchmark.py         # all puzzles: small (CPU+GPU) + big (GPU only)
+    python benchmark.py --small # small puzzles only (CPU+GPU)
+    python benchmark.py --big   # big puzzles only (GPU only)
 """
 
 import subprocess
@@ -13,14 +14,19 @@ import sys
 import os
 import json
 import re
+import tempfile
 
 
 def run_bench(label: str, url: str, extra_args: list, output_path: str, stats_path: str) -> tuple:
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
+    url_file = tempfile.NamedTemporaryFile(mode="w", suffix=".url", delete=False)
+    url_file.write(url)
+    url_file.close()
+
     cmd = [
         sys.executable, os.path.join(script_dir, "main.py"),
-        "--url", url,
+        "--url-file", url_file.name,
         "--quality", "2.0",
         "--output", output_path,
         "--stats-path", stats_path,
@@ -44,6 +50,10 @@ def run_bench(label: str, url: str, extra_args: list, output_path: str, stats_pa
     elapsed = time.time() - start
     detail["elapsed"] = round(elapsed, 3)
     detail["returncode"] = result.returncode
+    try:
+        os.unlink(url_file.name)
+    except OSError:
+        pass
 
     for line in result.stdout.splitlines():
         if "GPU ON" in line or "GPU OFF" in line:
@@ -88,60 +98,10 @@ def parse_puzzle_info(url: str):
     }
 
 
-def update_readme(readme_path, summary, run_id):
-    with open(readme_path, encoding="utf-8") as f:
-        content = f.read()
-
-    gpu_info = ""
-    for d in summary:
-        if d.get("gpu_info"):
-            m = re.search(r'GPU ON \((.+)\)', d["gpu_info"])
-            if m:
-                gpu_info = m.group(1)
-                break
-
-    header = f"### Benchmarks ({gpu_info})" if gpu_info else "### Benchmarks"
-    header += f"\n\n**Run ID:** `{run_id}`  — quality=2.0\n\n"
-
-    table = "| Puzzle | Size | Moves | Frames | CPU | GPU | Speedup |\n"
-    table += "|--------|------|-------|--------|-----|-----|---------|\n"
-    for d in summary:
-        cpu_s = f"{d['cpu_time_seconds']:.1f}s" if d["cpu_time_seconds"] else "N/A"
-        gpu_s = f"{d['gpu_time_seconds']:.1f}s" if d["gpu_time_seconds"] else "N/A"
-        spd = f"{d['speedup_vs_cpu']:.1f}x" if d["speedup_vs_cpu"] else "N/A"
-        table += f"| {d['puzzle']} | {d['size']} | {d['moves']} | {d['frames']} | {cpu_s} | {gpu_s} | {spd} |\n"
-
-    section = header + table
-
-    start_marker = "### Benchmarks"
-    end_marker = "### Installing GPU support"
-    start_idx = content.find(start_marker)
-    end_idx = content.find(end_marker)
-
-    if start_idx != -1 and end_idx != -1:
-        before = content[:start_idx]
-        after = content[end_idx:]
-        content = before + section.strip() + "\n\n\n" + after
-    else:
-        content += "\n\n" + section
-
-    with open(readme_path, "w", encoding="utf-8") as f:
-        f.write(content)
-
-
-def main():
-    import argparse
-    parser = argparse.ArgumentParser(description="Run GPU benchmark with stats logging")
-    parser.add_argument("--skip-cpu", action="store_true",
-                        help="Skip CPU baseline (GPU test only)")
-    args = parser.parse_args()
-
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    replays_dir = os.path.join(script_dir, "test_replays")
-
+def process_replays(replays_dir, logs_dir, gpu_only):
+    """Scan a replay directory, run benchmarks, return list of result dicts."""
     if not os.path.isdir(replays_dir):
-        print(f"Error: {replays_dir} not found")
-        sys.exit(1)
+        return []
 
     replay_files = sorted(
         (f for f in os.listdir(replays_dir)
@@ -149,16 +109,7 @@ def main():
         key=lambda x: [int(n) for n in re.findall(r"\d+", x)] if re.findall(r"\d+", x) else [0],
     )
 
-    if not replay_files:
-        print(f"Error: no replay files found in {replays_dir}")
-        sys.exit(1)
-
-    import datetime
-    run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    logs_dir = os.path.join(script_dir, "logs", run_id)
-    os.makedirs(logs_dir, exist_ok=True)
-
-    all_results = []
+    results_list = []
 
     for replay_file in replay_files:
         filepath = os.path.join(replays_dir, replay_file)
@@ -169,7 +120,10 @@ def main():
 
         puzzle_label = replay_file
         print(f"\n{'=' * 60}")
-        print(f"  Puzzle: {puzzle_label}")
+        print(f"  Puzzle: {puzzle_label}", end="")
+        if gpu_only:
+            print(" (GPU only)", end="")
+        print()
         print(f"{'=' * 60}")
 
         puzzle_info = parse_puzzle_info(url)
@@ -178,7 +132,7 @@ def main():
         results = []
         details = []
 
-        if not args.skip_cpu:
+        if not gpu_only:
             cpu_out = os.path.join(logs_dir, f"{puzzle_label}_cpu.mp4")
             cpu_stats = os.path.join(logs_dir, f"{puzzle_label}_stats_cpu.jsonl")
             t, d = run_bench(f"{puzzle_label} CPU", url, ["--no-gpu"], cpu_out, cpu_stats)
@@ -193,9 +147,7 @@ def main():
         if d:
             details.append(d)
 
-        all_results.append((puzzle_info, results, details))
-
-        cpu_result = results[0] if results[0][0].startswith("CPU") else None
+        cpu_result = results[0] if results and results[0][0].startswith("CPU") else None
         cpu_time = cpu_result[1] if cpu_result else None
         has_cpu = cpu_time is not None
 
@@ -219,48 +171,84 @@ def main():
             else:
                 print(f"  {name:<25} {'FAILED':>8s}")
 
+        # Extract times for summary
+        gpu_time = None
+        gpu_info = ""
+        for (name, t), d in zip(results, details):
+            if name.startswith("GPU") and t is not None:
+                gpu_time = t
+            if d and d.get("gpu_info"):
+                gpu_info = d["gpu_info"]
+
+        speedup = cpu_time / gpu_time if cpu_time and gpu_time and gpu_time > 0 else 0
+
+        results_list.append({
+            "puzzle": puzzle_label,
+            "size": puzzle_info["puzzle_size"],
+            "moves": puzzle_info["moves"],
+            "frames": puzzle_info["frames"],
+            "cpu_time_seconds": cpu_time,
+            "gpu_time_seconds": gpu_time,
+            "speedup_vs_cpu": round(speedup, 2) if speedup else None,
+            "gpu_info": gpu_info,
+            "gpu_only": gpu_only,
+        })
+
+    return results_list
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Run GPU benchmark with stats logging")
+    parser.add_argument("--small", action="store_true",
+                        help="Run small puzzles (test_replays/, CPU+GPU)")
+    parser.add_argument("--big", action="store_true",
+                        help="Run big puzzles (test_replays_gpu/, GPU only)")
+    args = parser.parse_args()
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    import datetime
+    run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    logs_dir = os.path.join(script_dir, "logs", run_id)
+    os.makedirs(logs_dir, exist_ok=True)
+
+    do_small = not args.big or args.small
+    do_big = not args.small or args.big
+
+    summary_data = []
+
+    if do_small:
+        summary_data += process_replays(
+            os.path.join(script_dir, "test_replays"),
+            logs_dir, gpu_only=False,
+        )
+
+    if do_big:
+        summary_data += process_replays(
+            os.path.join(script_dir, "test_replays_gpu"),
+            logs_dir, gpu_only=True,
+        )
+
+    if not summary_data:
+        print("No benchmarks were run.")
+        sys.exit(1)
+
     print(f"\n\n{'=' * 60}")
     print(f"  OVERALL BENCHMARK SUMMARY")
     print(f"{'=' * 60}")
     print(f"  {'Puzzle':<10} {'Moves':<7} {'Frames':<7} {'CPU':>8s} {'GPU':>8s} {'Speedup':>8s} {'GPU Info'}")
     print(f"  {'-' * 10} {'-' * 7} {'-' * 7} {'-' * 8} {'-' * 8} {'-' * 8} {'-' * 30}")
 
-    summary_data = []
-
-    for puzzle_info, results, details in all_results:
-        cpu_time = None
-        gpu_time = None
-        gpu_info = ""
-
-        for (name, t), d in zip(results, details):
-            if name.startswith("CPU") and t is not None:
-                cpu_time = t
-            elif name.startswith("GPU") and t is not None:
-                gpu_time = t
-            if d and d.get("gpu_info"):
-                gpu_info = d["gpu_info"]
-
-        label = puzzle_info["label"]
-        moves = puzzle_info["moves"]
-        frames = puzzle_info["frames"]
-        speedup = cpu_time / gpu_time if cpu_time and gpu_time and gpu_time > 0 else 0
-
-        cpu_str = f"{cpu_time:.1f}s" if cpu_time else "FAILED"
-        gpu_str = f"{gpu_time:.1f}s" if gpu_time else "FAILED"
-        speedup_str = f"{speedup:.1f}x" if speedup > 0 else ""
-
+    for d in summary_data:
+        label = d["puzzle"]
+        moves = d["moves"]
+        frames = d["frames"]
+        cpu_str = f"{d['cpu_time_seconds']:.1f}s" if d["cpu_time_seconds"] else "—"
+        gpu_str = f"{d['gpu_time_seconds']:.1f}s" if d["gpu_time_seconds"] else "—"
+        speedup_str = f"{d['speedup_vs_cpu']:.1f}x" if d["speedup_vs_cpu"] else "—"
+        gpu_info = d.get("gpu_info", "")
         print(f"  {label:<10} {moves:<7} {frames:<7} {cpu_str:>8s} {gpu_str:>8s} {speedup_str:>8s} {gpu_info}")
-
-        summary_data.append({
-            "puzzle": label,
-            "size": puzzle_info["puzzle_size"],
-            "moves": moves,
-            "frames": frames,
-            "cpu_time_seconds": cpu_time,
-            "gpu_time_seconds": gpu_time,
-            "speedup_vs_cpu": round(speedup, 2) if speedup else None,
-            "gpu_info": gpu_info,
-        })
 
     print("=" * 60)
 
@@ -275,11 +263,6 @@ def main():
 
     print(f"\nRun summary saved to: {log_path}")
     print(f"All outputs in: {logs_dir}")
-
-    readme_path = os.path.join(script_dir, "README.md")
-    if os.path.exists(readme_path):
-        update_readme(readme_path, summary_data, run_id)
-        print(f"README.md benchmarks section updated.")
 
 
 if __name__ == "__main__":
