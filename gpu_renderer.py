@@ -89,7 +89,7 @@ def _render_timer_text(timer_text: str) -> Image.Image:
 
 
 class GPURenderer:
-    def __init__(self, width: int, height: int, tile_size: int, quality: float = 2.0, min_canvas_h: int = None):
+    def __init__(self, width: int, height: int, tile_size: int, quality: float = 1.0, min_canvas_h: int = None):
         """
         GPU renderer with automatic optimal batching.
 

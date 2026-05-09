@@ -29,12 +29,16 @@ def _generate_filename(solution, tps, time_v, movetimes, size_arg=None, index=0)
         display_tps = None
     if isinstance(movetimes, list) and len(movetimes) > 1:
         time_s = movetimes[-1] / 1000.0 if movetimes[-1] > 0 else 0
+        is_movetimes_accurate = True
     elif time_v and time_v > 0:
         time_s = time_v
+        is_movetimes_accurate = False
     elif display_tps and display_tps > 0:
         time_s = moves / display_tps
+        is_movetimes_accurate = False
     else:
         time_s = 0
+        is_movetimes_accurate = False
     if size_arg:
         if isinstance(size_arg, tuple):
             w, h = size_arg
@@ -47,10 +51,15 @@ def _generate_filename(solution, tps, time_v, movetimes, size_arg=None, index=0)
             w, h = len(matrix[0]), len(matrix)
         except Exception:
             w, h = "?", "?"
-    tps_str = f"{display_tps:.3f}tps" if display_tps else ""
-    time_str = f"{time_s:.2f}s" if time_s else ""
-    parts = [f"{w}x{h}", tps_str, f"{moves}mov", time_str]
-    name = "_".join(p for p in parts if p).rstrip("_") or "replay"
+    parts = [f"{w}x{h}"]
+    if time_s:
+        parts.append(f"{time_s:.3f}")
+    parts.append(str(moves))
+    if display_tps:
+        parts.append(f"{display_tps:.3f}")
+    if is_movetimes_accurate:
+        parts.append("movetimes")
+    name = "_".join(parts)
     name = name.translate(str.maketrans("", "", '\\/:*?\"<>|'))
     if index:
         name = f"{name}_{index}"
@@ -92,7 +101,8 @@ class ReplayGUI(tb.Window):
         self._rolling_rate = 0.0
         self.cancel_flag = False
 
-        self.quality_var = tk.DoubleVar(value=2.0)
+        self.quality_var = tk.DoubleVar(value=1.0)
+        self.fps_var = tk.IntVar(value=60)
         self.force_fringe_var = tk.BooleanVar(value=False)
         self.out_folder_var = tk.StringVar(
             value=os.path.join(script_dir, "replays"))
@@ -104,6 +114,7 @@ class ReplayGUI(tb.Window):
         self.size_var = tk.StringVar()
         self.scramble_var = tk.StringVar()
         self.movetimes_var = tk.StringVar()
+        self.file_path_var = tk.StringVar()
 
         os.makedirs(self.out_folder_var.get(), exist_ok=True)
 
@@ -140,10 +151,22 @@ class ReplayGUI(tb.Window):
         self.quality_scale = tb.Scale(qf, from_=1.0, to=4.0,
                                       variable=self.quality_var, orient="horizontal", length=180)
         self.quality_scale.pack(side="left")
-        self.quality_label = tb.Label(qf, text="2.0x", width=5, font=("Segoe UI", 9))
+        self.quality_label = tb.Label(qf, text="1.0x", width=5, font=("Segoe UI", 9))
         self.quality_label.pack(side="left", padx=(6, 0))
         self.quality_var.trace_add("write",
                                    lambda *a: self.quality_label.config(text=f"{self.quality_var.get():.1f}x"))
+        r += 1
+
+        tb.Label(sinner, text="FPS", font=("Segoe UI", 9)).grid(row=r, column=0, sticky="w")
+        fps_frame = tb.Frame(sinner)
+        fps_frame.grid(row=r, column=1, sticky="ew", padx=(6, 0))
+        self.fps_scale = tb.Scale(fps_frame, from_=1, to=1000,
+                                  variable=self.fps_var, orient="horizontal", length=180)
+        self.fps_scale.pack(side="left")
+        self.fps_label = tb.Label(fps_frame, text="60", width=5, font=("Segoe UI", 9))
+        self.fps_label.pack(side="left", padx=(6, 0))
+        self.fps_var.trace_add("write",
+                                lambda *a: self.fps_label.config(text=f"{self.fps_var.get():d}"))
         r += 1
 
         fringe_row = tb.Frame(sinner)
@@ -206,9 +229,28 @@ class ReplayGUI(tb.Window):
         self.nb = nb
 
         url_tab = tb.Frame(nb, padding=8)
+        file_tab = tb.Frame(nb, padding=8)
         manual_tab = tb.Frame(nb, padding=8)
         nb.add(url_tab, text="URL")
+        nb.add(file_tab, text="File")
         nb.add(manual_tab, text="Manual")
+
+        # -- File tab --
+        tb.Label(file_tab, text="Single input file (solution or replay URL):",
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 4))
+        file_row = tb.Frame(file_tab)
+        file_row.pack(fill="x", pady=(0, 4))
+        file_row.grid_columnconfigure(0, weight=1)
+        self.file_path_var = tk.StringVar()
+        self.file_entry = tb.Entry(file_row, textvariable=self.file_path_var)
+        self.file_entry.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        tb.Button(file_row, text="Browse...", command=self._browse_file,
+                  bootstyle="secondary-outline", width=9).grid(row=0, column=1)
+        self.file_meta_var = tk.StringVar(value="No file selected.")
+        self.file_meta_label = tb.Label(file_tab, textvariable=self.file_meta_var,
+                                        font=("Segoe UI", 9), foreground="#aaaaaa",
+                                        anchor="w", wraplength=500)
+        self.file_meta_label.pack(fill="x", anchor="w")
 
         # -- URL tab --
         tb.Label(url_tab, text="Replay URLs (one per line):",
@@ -303,6 +345,7 @@ class ReplayGUI(tb.Window):
         lst_frame.grid(row=1, column=0, sticky="nsew")
         right.grid_rowconfigure(1, weight=1)
         lst_frame.grid_columnconfigure(0, weight=1)
+        lst_frame.grid_rowconfigure(0, weight=1)
 
         self.replay_listbox = tk.Listbox(
             lst_frame, font=("Consolas", 9), activestyle="none",
@@ -355,6 +398,45 @@ class ReplayGUI(tb.Window):
         if path:
             self.out_folder_var.set(path)
 
+    def _browse_file(self):
+        path = filedialog.askopenfilename(
+            title="Select input file",
+            filetypes=[("All files", "*.*")]
+        )
+        if not path:
+            return
+        self.file_path_var.set(path)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = f.read().strip()
+            if not raw:
+                self.file_meta_var.set("Empty file.")
+                return
+            if raw.startswith(("http://", "https://")):
+                solution, tps, scramble, movetimes = parse_replay_url(raw)
+                time_s = movetimes[-1] / 1000.0 if isinstance(movetimes, list) and movetimes[-1] > 0 else 0
+                matrix = parse_scramble_guess(scramble) if scramble else parse_scramble_guess(solution)
+                size_str = f"{len(matrix[0])}x{len(matrix)}"
+                moves = len(expand_solution(solution))
+                accurate = isinstance(movetimes, list) and len(movetimes) > 1
+                if time_s and tps:
+                    meta = f"{size_str} | {time_s:.3f} ({moves} / {tps:.3f})"
+                elif time_s:
+                    meta = f"{size_str} | {time_s:.3f} ({moves})"
+                else:
+                    meta = f"{size_str} | {moves} moves"
+                if accurate:
+                    meta += " | movetimes accurate"
+            else:
+                solution = raw
+                moves = len(expand_solution(solution))
+                matrix = parse_scramble_guess(solution)
+                size_str = f"{len(matrix[0])}x{len(matrix)}"
+                meta = f"{size_str} | {moves} moves"
+            self.file_meta_var.set(meta)
+        except Exception as e:
+            self.file_meta_var.set(f"Parse error: {e}")
+
     def _active_tab(self):
         return self.nb.index(self.nb.select())
 
@@ -373,6 +455,17 @@ class ReplayGUI(tb.Window):
                     continue
                 if line.startswith(("http://", "https://")):
                     items.append(("url", line))
+        elif tab == 1:
+            path = self.file_path_var.get().strip()
+            if not path or not os.path.exists(path):
+                self.progress_text.set("No file selected.")
+                return
+            with open(path, "r", encoding="utf-8") as f:
+                raw = f.read().strip()
+            if raw.startswith(("http://", "https://")):
+                items.append(("url", raw))
+            else:
+                items.append(("manual", raw))
         else:
             raw = self.solution_text.get("1.0", "end-1c").strip()
             for line in raw.splitlines():
@@ -430,6 +523,7 @@ class ReplayGUI(tb.Window):
             params = {
                 "force_fringe": self.force_fringe_var.get(),
                 "quality": self.quality_var.get(),
+                "fps": self.fps_var.get(),
             }
 
             if mode == "url":
@@ -652,7 +746,8 @@ Examples:
     parser.add_argument("--size", help="Puzzle size (e.g. 3x3, 5x5)")
     parser.add_argument("--scramble", help="Scramble string")
     parser.add_argument("--output", "-o", default="replay.mp4", help="Output file path")
-    parser.add_argument("--quality", type=float, default=2.0, help="Render quality (1.0-4.0)")
+    parser.add_argument("--quality", type=float, default=1.0, help="Render quality (1.0-4.0)")
+    parser.add_argument("--fps", type=int, default=60, help="Output video frame rate (default: 60)")
     parser.add_argument("--gpu", action="store_true", default=None,
                         help="Enable GPU acceleration (default: auto-detect)")
     parser.add_argument("--no-gpu", action="store_true", default=None,
@@ -689,7 +784,8 @@ Examples:
         gen = ReplayVideoGenerator(cleanup_frames=True)
         gen.generate_simple_replay(
             solution=solution, output_path=output,
-            show_progress=True, use_gpu=use_gpu, **kwargs
+            show_progress=True, use_gpu=use_gpu,
+            fps=kwargs.pop("fps", 60), **kwargs
         )
 
     items = []
@@ -721,10 +817,10 @@ Examples:
             run_single(sol, args.output or "replay.mp4",
                        tps=tps or args.tps, scramble=scramble,
                        movetimes=movetimes, quality=args.quality,
-                       stats_path=args.stats_path)
+                       fps=args.fps, stats_path=args.stats_path)
         else:
             run_single(val, args.output or "replay.mp4",
                        tps=args.tps, time=args.time,
                         scramble=args.scramble, size=args.size,
                         quality=args.quality,
-                        stats_path=args.stats_path)
+                        fps=args.fps, stats_path=args.stats_path)

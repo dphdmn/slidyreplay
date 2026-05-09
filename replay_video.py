@@ -1167,13 +1167,15 @@ def generate_frames(
     custom_move_times: Optional[List[float]] = None,
     cumulative_data: Optional[dict] = None,
     progress_callback=None,
-    quality: float = 2.0,
+    quality: float = 1.0,
     stats_path: str = None,
     parallel: bool = True,
     use_gpu: bool = True,
     cancel_check=None,
     output_path: str = None,
+    fps: int = 60,
 ) -> Tuple[List[Image.Image], List[int]]:
+    quality = quality + 1.0
     expanded = expand_solution(solution)
     sol_len = len(expanded)
     h = len(matrix)
@@ -1365,8 +1367,7 @@ def generate_frames(
     _log(event="stage_params_done", total_frames=sol_len + 1)
 
     # ── Compute frame-to-state mapping for accurate playback ──
-    FPS = 60
-    frame_time_ms = 1000.0 / FPS
+    frame_time_ms = 1000.0 / fps
     preview_ms = 500.0
     final_ms = 1000.0
 
@@ -1418,6 +1419,8 @@ def generate_frames(
 
         # Only pre-render overlays for states that will actually be rendered
         workers = min(os.cpu_count() or 4, len(states_needed))
+        overlay_done = 0
+        overlay_total = len(states_needed)
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futs = {pool.submit(_render_overlays, i, frame_params[i]): i for i in states_needed}
             for fut in as_completed(futs):
@@ -1429,6 +1432,9 @@ def generate_frames(
                 p["stats_img"] = stats_img
                 p["timer_arr"] = np.array(timer_img)
                 p["stats_arr"] = np.array(stats_img)
+                overlay_done += 1
+                if progress_callback:
+                    progress_callback(overlay_done, overlay_total)
         _log(event="stage_overlays_done", total_frames=len(states_needed))
 
         # Pre-compute how many video frames each puzzle state spans
@@ -1437,7 +1443,7 @@ def generate_frames(
             state_to_count[state_idx] = state_to_count.get(state_idx, 0) + 1
 
         # Open ffmpeg pipe, then render — handler pipes frames concurrently with GPU
-        nvenc_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h)
+        nvenc_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h, fps=fps)
         unique_params = [frame_params[i] for i in states_needed]
         _log(event="stage_gpu_render_start", total_frames=len(unique_params))
 
@@ -1510,7 +1516,7 @@ def generate_frames(
     canvas_w, canvas_h = first_rendered.size
 
     # Pipe to ffmpeg in frame_state order
-    ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h)
+    ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h, fps=fps)
     for state_idx in frame_state:
         ffmpeg_proc.stdin.write(np.array(state_images[state_idx]).tobytes())
     ffmpeg_proc.stdin.close()
@@ -1597,11 +1603,12 @@ class ReplayVideoGenerator:
         force_fringe: bool = False,
         show_progress: bool = True,
         speed_factor: float = 1.0,
-    quality: float = 2.0,
+    quality: float = 1.0,
     stats_path: str = None,
         external_progress_cb = None,
         use_gpu: bool = True,
-        cancel_check=None
+        cancel_check=None,
+        fps: int = 60,
     ):
         if tps is not None and time is not None:
             raise ValueError("Provide either tps or time, not both")
@@ -1726,6 +1733,7 @@ class ReplayVideoGenerator:
             use_gpu=use_gpu,
             cancel_check=cancel_check,
             output_path=output_path,
+            fps=fps,
         )
 
         if show_progress:
@@ -1751,8 +1759,9 @@ def main():
     parser.add_argument("--size", type=str, default=None, help="Puzzle size (e.g. 4x4)")
     parser.add_argument("--output", type=str, default="replay.mp4", help="Output video path")
     parser.add_argument("--force-fringe", action="store_true", default=False, help="Force fringe colors (disable grids detection)")
-    parser.add_argument("--quality", type=float, default=2.0, help="Render quality multiplier (default: 2.0 for crisp HD)")
+    parser.add_argument("--quality", type=float, default=1.0, help="Render quality multiplier")
     parser.add_argument("--speed", type=float, default=1.0, help="Speed factor")
+    parser.add_argument("--fps", type=int, default=60, help="Output video frame rate (default: 60)")
     parser.add_argument("--temp-dir", type=str, default=None, help="Temp directory for frames")
 
     args = parser.parse_args()
@@ -1785,6 +1794,7 @@ def main():
         force_fringe=args.force_fringe,
         speed_factor=args.speed,
         quality=args.quality,
+        fps=args.fps,
         show_progress=True
     )
 

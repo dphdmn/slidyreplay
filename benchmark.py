@@ -27,7 +27,7 @@ def run_bench(label: str, url: str, extra_args: list, output_path: str, stats_pa
     cmd = [
         sys.executable, os.path.join(script_dir, "main.py"),
         "--url-file", url_file.name,
-        "--quality", "2.0",
+        "--quality", "1.0",
         "--output", output_path,
         "--stats-path", stats_path,
     ] + extra_args
