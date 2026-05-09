@@ -1,0 +1,32 @@
+# Build output
+dist/
+build/
+
+# ffmpeg binary (bundled at build time, not tracked)
+ffmpeg/
+
+# Generated PyInstaller spec in project root
+/ReplayVideoGenerator.spec
+
+# Generated replay videos
+*.mp4
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+Thumbs.db
+.DS_Store
