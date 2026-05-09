@@ -1,4 +1,3 @@
 - Add  file input support everywhere in gui and readme etc
-- Fix the replay playback duration
 - Clear the project for import in google collabs and linux support (especially ffmpeg)
 - Speedup feature

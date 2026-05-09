@@ -1,6 +1,6 @@
 # SlidyReplay
 
-Generates MP4 videos of sliding puzzle replays from [slidysim](https://slidysim.github.io/) replay URLs or manual solution strings.
+Generates MP4 videos of sliding puzzle replays from [slidysim](https://slidysim.github.io/) replay URLs, input files, or manual solution strings.
 
 ## GUI
 
@@ -10,18 +10,22 @@ python main.py
 
 Launches a dark-themed GUI with:
 - **URL tab** — paste replay URLs (one per line) and hit Generate
+- **File tab** — select a single file containing a replay URL or solution string (auto-detects format)
 - **Manual tab** — enter solution strings, TPS, time, size, scramble, movetimes
-- **Quality** slider (1.0–4.0) controls output resolution
+- **FPS** slider (1–1000) controls output framerate
 - **Force fringe** toggle to disable grids color detection
 - **GPU acceleration** toggle with status indicator (shows GPU name when available)
 - **Progress** panel with ETA, active/completed counts, elapsed time
 - **Generated Replays** list — double-click to open a video, Folder to open the directory
+
+Items are processed one at a time (no concurrent renders).
 
 ## CLI
 
 ```
 python main.py --solution R2D2L2U2 --size 3x3 --tps 10 -o replay.mp4
 python main.py --url "https://slidysim.github.io/?replay=..." -o replay.mp4
+python main.py --url-file url.txt -o replay.mp4
 python main.py --batch solutions.txt
 ```
 
@@ -30,26 +34,30 @@ CLI flags:
 |------|-------------|
 | `--solution` / `-s` | Solution string |
 | `--url` / `-u` | Replay URL |
+| `--url-file` | File containing a replay URL (bypasses CLI length limit) |
 | `--tps` | Tiles per second |
 | `--time` | Total time in seconds |
 | `--size` | Puzzle size (e.g. `3x3`, `10x10`) |
 | `--scramble` | Scramble string |
 | `--output` / `-o` | Output file (default: `replay.mp4`) |
-| `--quality` | Render quality 1.0–4.0 (default: 2.0) |
+| `--quality` | Render quality 1.0–4.0 (default: 1.0) |
+| `--fps` | Output framerate (default: 60) |
 | `--gpu` | Force GPU acceleration |
 | `--no-gpu` | Disable GPU acceleration |
 | `--batch` | File with solutions/URLs (one per line) |
 | `--stats-path` | Write per-batch JSONL stats to this path (for benchmarking/debugging) |
+| `--log` | Enable debug logging to `logs/debug_\<timestamp\>.log` |
 
-Example batch file (`urls.txt`):
-```
-https://slidysim.github.io/?replay=...
-https://slidysim.github.io/?replay=...
-```
+### Debug logging
+
+Logging is **disabled by default**. Pass `--log` to enable file-based debug logging:
 
 ```
-python main.py --batch urls.txt --gpu
+python main.py --log                       # GUI with logging
+python main.py --solution R2D2L2U2 --log   # CLI with logging
 ```
+
+Logs are written to `logs/debug_YYYYMMDD_HHMMSS.log`.
 
 ## GPU Acceleration
 
@@ -66,6 +74,8 @@ Frame rendering is GPU-accelerated via PyTorch/CUDA:
 - **In-place blending**: All tile compositing (background colors, borders, number text) happens in-place on GPU tensors.
 
 - **Static/dynamic stats optimization**: The stats panel is split into static and dynamic parts. Static values (Time total, Moves total, TPS total, Cubic estimate, MD total, M/MD total, grid stages) are rendered **once**. Dynamic values (Predicted moves, MD current, M/MD current, current stage highlight) are rendered per frame.
+
+- **Per-run cleanup**: GPU tensors are explicitly freed after each render, preventing memory accumulation across sequential runs.
 
 ### Benchmarks (NVIDIA GeForce GTX 1660 SUPER)
 
@@ -114,6 +124,11 @@ python benchmark.py --skip-cpu
 
 Scans `test_replays/` for all puzzle replays (4×4 through 10×10) and runs CPU + GPU rendering on each. Results are combined into a summary table and written into the Benchmarks section of this README. All outputs (MP4, JSONL stats, benchmark log) are saved to `logs/{run_id}/`.
 
+## Output filename format
+
+Generated files follow the pattern: `<size>_<total_time>_<moves>_<tps>_movetimes.mp4`
+
+Example: `8x8_23.564_707_30.003_movetimes_5.mp4`
 
 ## Build
 

@@ -84,8 +84,6 @@ class ReplayGUI(tb.Window):
     def __init__(self):
         super().__init__(themename="darkly")
         self.withdraw()
-        log_path = init_logfile()
-        log.info(f"=== GUI STARTED === log_path={log_path}")
         self.title("Replay Video Generator")
         self.minsize(960, 640)
 
@@ -792,12 +790,23 @@ Examples:
                         help="Disable GPU acceleration")
     parser.add_argument("--batch", help="File with solutions/URLs (one per line)")
     parser.add_argument("--stats-path", help="Path to write per-batch GPU render stats (JSONL)")
+    parser.add_argument("--log", action="store_true", default=False,
+                        help="Enable debug logging to file (logs/debug_<timestamp>.log)")
 
     args = parser.parse_args()
 
-    if len(sys.argv) <= 1:
-        ReplayGUI().mainloop()
+    log_path = None
+    if args.log:
+        log_path = init_logfile()
+
+    if not any([args.solution, args.url, args.url_file, args.batch]):
+        gui = ReplayGUI()
+        if log_path:
+            log.info(f"=== GUI STARTED === log_path={log_path}")
+        gui.mainloop()
         sys.exit(0)
+    elif log_path:
+        log.info(f"=== CLI STARTED === log_path={log_path}")
 
     use_gpu = True
     try:
