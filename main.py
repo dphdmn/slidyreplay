@@ -101,7 +101,6 @@ class ReplayGUI(tb.Window):
         self._rolling_rate = 0.0
         self.cancel_flag = False
 
-        self.quality_var = tk.DoubleVar(value=1.0)
         self.fps_var = tk.IntVar(value=60)
         self.force_fringe_var = tk.BooleanVar(value=False)
         self.out_folder_var = tk.StringVar(
@@ -145,18 +144,6 @@ class ReplayGUI(tb.Window):
         sinner.pack(fill="both", expand=True, padx=8, pady=6)
 
         r = 0
-        tb.Label(sinner, text="Quality", font=("Segoe UI", 9)).grid(row=r, column=0, sticky="w")
-        qf = tb.Frame(sinner)
-        qf.grid(row=r, column=1, sticky="ew", padx=(6, 0))
-        self.quality_scale = tb.Scale(qf, from_=1.0, to=4.0,
-                                      variable=self.quality_var, orient="horizontal", length=180)
-        self.quality_scale.pack(side="left")
-        self.quality_label = tb.Label(qf, text="1.0x", width=5, font=("Segoe UI", 9))
-        self.quality_label.pack(side="left", padx=(6, 0))
-        self.quality_var.trace_add("write",
-                                   lambda *a: self.quality_label.config(text=f"{self.quality_var.get():.1f}x"))
-        r += 1
-
         tb.Label(sinner, text="FPS", font=("Segoe UI", 9)).grid(row=r, column=0, sticky="w")
         fps_frame = tb.Frame(sinner)
         fps_frame.grid(row=r, column=1, sticky="ew", padx=(6, 0))
@@ -522,7 +509,6 @@ class ReplayGUI(tb.Window):
         try:
             params = {
                 "force_fringe": self.force_fringe_var.get(),
-                "quality": self.quality_var.get(),
                 "fps": self.fps_var.get(),
             }
 
