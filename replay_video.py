@@ -31,6 +31,9 @@ from replay_generator import (
 
 from splits import decompress_string_to_array, read_solve_data
 from gpu_renderer import GPURenderer, _render_timer_text, CancelError
+from debug_log import get_logger
+
+log = get_logger()
 
 # ─── Constants ─────────────────────────────────────────────────────
 
@@ -1151,6 +1154,7 @@ def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60
         '-vsync', 'cfr',
         output_path,
     ]
+    log.info(f"_create_ffmpeg_pipe: cmd={' '.join(cmd)}")
     return subprocess.Popen(cmd, stdin=subprocess.PIPE)
 
 
@@ -1180,6 +1184,7 @@ def generate_frames(
     sol_len = len(expanded)
     h = len(matrix)
     w = len(matrix[0])
+    log.info(f"generate_frames: {w}x{h}, sol_len={sol_len}, quality={quality}, fps={fps}, use_gpu={use_gpu}, output_path={output_path}")
 
     grid_keys = sorted([k for k in grid_states.keys() if isinstance(k, (int, float))])
     filtered_stages = [0]
@@ -1234,6 +1239,7 @@ def generate_frames(
     raw_tile = pick_tile_size(w, h)
     tile_size = max(raw_tile, int(raw_tile * quality))
     font_size = max(11, tile_size // 2)
+    log.info(f"  tile_size={tile_size}, raw_tile={raw_tile}, font_size={font_size}")
 
     mc = [row[:] for row in matrix]
     all_md = calculate_manhattan_distance(mc)
@@ -1264,6 +1270,7 @@ def generate_frames(
     min_canvas_h = HEADER_H + PADDING + stats_h_est + PADDING
     gpu = GPURenderer(w, h, raw_tile, quality, min_canvas_h=min_canvas_h)
     use_gpu = use_gpu and gpu.available
+    log.info(f"  canvas={gpu.canvas_w}x{gpu.canvas_h}, GPU available={gpu.available}, use_gpu={use_gpu}, max_batch_pixels={getattr(gpu, '_max_pixels_per_batch', '?')}")
 
     for frame_idx in range(sol_len + 1):
         if cancel_check and cancel_check():
@@ -1365,6 +1372,7 @@ def generate_frames(
             mc = move_matrix(mc, move, zp, w, h)
 
     _log(event="stage_params_done", total_frames=sol_len + 1)
+    log.info(f"  frame_params created: {len(frame_params)} entries")
 
     # ── Compute frame-to-state mapping for accurate playback ──
     frame_time_ms = 1000.0 / fps
@@ -1394,6 +1402,9 @@ def generate_frames(
         frame_state.append(max(0, min(idx, sol_len)))
 
     states_needed = sorted(set(frame_state))
+    log.info(f"  frame_state: total_frames={total_frames}, unique_states={len(states_needed)}, frame_time_ms={frame_time_ms:.3f}")
+    log.info(f"  starts[-1]={starts[-1]}, total_duration_ms={move_times[-1] if move_times else 0}")
+    log.info(f"  states_needed sample: first_10={states_needed[:10]}, last_10={states_needed[-10:] if len(states_needed) > 10 else states_needed}")
 
     # ── GPU path: render unique states, pipe via frame mapping ──
     if use_gpu and len(frame_params) > 1:
@@ -1421,6 +1432,7 @@ def generate_frames(
         workers = min(os.cpu_count() or 4, len(states_needed))
         overlay_done = 0
         overlay_total = len(states_needed)
+        log.info(f"  OVERLAY PRE-RENDER: {overlay_total} states, {workers} workers")
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futs = {pool.submit(_render_overlays, i, frame_params[i]): i for i in states_needed}
             for fut in as_completed(futs):
@@ -1436,41 +1448,52 @@ def generate_frames(
                 if progress_callback:
                     progress_callback(overlay_done, overlay_total)
         _log(event="stage_overlays_done", total_frames=len(states_needed))
+        log.info(f"  OVERLAY PRE-RENDER DONE: {overlay_done}/{overlay_total}")
 
         # Pre-compute how many video frames each puzzle state spans
         state_to_count = {}
         for state_idx in frame_state:
             state_to_count[state_idx] = state_to_count.get(state_idx, 0) + 1
+        log.info(f"  state_to_count: {len(state_to_count)} unique states, counts={list(state_to_count.values())[:20]}...")
 
         # Open ffmpeg pipe, then render — handler pipes frames concurrently with GPU
+        log.info(f"  OPENING FFMPEG PIPE: output={output_path}, canvas={canvas_w}x{canvas_h}, fps={fps}")
         nvenc_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h, fps=fps)
         unique_params = [frame_params[i] for i in states_needed]
         _log(event="stage_gpu_render_start", total_frames=len(unique_params))
+        log.info(f"  GPU RENDER START: {len(unique_params)} unique frames to render")
 
         def handler(img, idx_in_unique, total):
             count = state_to_count[states_needed[idx_in_unique]]
             data = img.tobytes()
+            log.info(f"  HANDLER: idx_in_unique={idx_in_unique}, state={states_needed[idx_in_unique]}, count={count}, data_size={len(data)} bytes")
             for _ in range(count):
                 nvenc_proc.stdin.write(data)
 
-        gpu.render_frames(
-            unique_params,
-            progress_callback=lambda cur, tot, **kw: progress_callback(cur, tot, **kw) if progress_callback else None,
-            cancel_check=cancel_check,
-            stats_path=stats_path,
-            frame_handler=handler,
-        )
+        try:
+            gpu.render_frames(
+                unique_params,
+                progress_callback=lambda cur, tot, **kw: progress_callback(cur, tot, **kw) if progress_callback else None,
+                cancel_check=cancel_check,
+                stats_path=stats_path,
+                frame_handler=handler,
+            )
+        finally:
+            gpu.cleanup()
 
         nvenc_proc.stdin.close()
         nvenc_proc.wait()
         _log(event="stage_ffmpeg_done")
+        log.info(f"  FFMPEG PIPE CLOSED: returncode={nvenc_proc.returncode}")
 
         if stats_path:
             _sf.close()
 
+        log.info(f"  GPU PATH COMPLETE: returning {len(frame_state)} frame_state entries")
         return [], frame_state
 
     # ── CPU path: render only states_needed, pipe via frame mapping ──
+    log.info(f"  CPU PATH: {len(states_needed)} unique states to render")
     get_font(font_size)
     get_font(24, bold=True)
     get_font(20, mono=True)
@@ -1514,13 +1537,18 @@ def generate_frames(
     # Derive canvas dimensions from first rendered image
     first_rendered = next(img for img in state_images if img is not None)
     canvas_w, canvas_h = first_rendered.size
+    log.info(f"  CPU RENDER DONE: canvas={canvas_w}x{canvas_h}")
 
     # Pipe to ffmpeg in frame_state order
+    log.info(f"  CPU FFMPEG PIPE: output={output_path}, total_frames={len(frame_state)}")
     ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h, fps=fps)
+    written = 0
     for state_idx in frame_state:
         ffmpeg_proc.stdin.write(np.array(state_images[state_idx]).tobytes())
+        written += 1
     ffmpeg_proc.stdin.close()
     ffmpeg_proc.wait()
+    log.info(f"  CPU FFMPEG DONE: {written} frames written, returncode={ffmpeg_proc.returncode}")
     _log(event="stage_ffmpeg_done")
 
     return [], frame_state
@@ -1610,6 +1638,9 @@ class ReplayVideoGenerator:
         cancel_check=None,
         fps: int = 60,
     ):
+        log.info(f"generate_simple_replay: output={output_path}, force_fringe={force_fringe}, fps={fps}, quality={quality}, use_gpu={use_gpu}")
+        log.info(f"  tps={tps}, time={time}, scramble_len={len(scramble) if scramble else 0}, size={size}")
+        log.info(f"  movetimes_type={type(movetimes).__name__}, sol_len_approx={len(expand_solution(solution)) if isinstance(solution, str) else '?'}")
         if tps is not None and time is not None:
             raise ValueError("Provide either tps or time, not both")
 
@@ -1633,6 +1664,7 @@ class ReplayVideoGenerator:
 
         solution_expanded = expand_solution(solution)
         sol_len = len(solution_expanded)
+        log.info(f"  matrix={width}x{height}, sol_len={sol_len}")
 
         # Compute TPS and movetimes
         real_tps = None
@@ -1656,6 +1688,7 @@ class ReplayVideoGenerator:
             tps_val = 15
 
         tps_int = int(tps_val * 1000) if tps_val < 1000 else int(tps_val)
+        log.info(f"  tps_val={tps_val}, tps_int={tps_int}, is_movetimes_accurate={is_movetimes_accurate}, custom_move_times={'list' if isinstance(custom_move_times, list) else None}")
 
         # Grids analysis
         cycled_numbers = get_cycles_numbers(matrix, solution_expanded)

@@ -4,6 +4,9 @@ import time as _time_module
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from typing import List, Optional
+from debug_log import get_logger
+
+log = get_logger()
 
 class CancelError(Exception):
     pass
@@ -141,6 +144,9 @@ class GPURenderer:
             "batch_mem_mb": 0,
         }
         self._batch_counter = 0
+        log.info(f"GPURenderer.__init__: {width}x{height}, tile_size={ts}, canvas={self.canvas_w}x{self.canvas_h}, device={self._device}")
+        if self._stats["total_mem_mb"]:
+            log.info(f"  GPU: {self._stats['gpu_name']}, total_mem={self._stats['total_mem_mb']}MB")
         if self._device is not None and self._device.type == "cuda":
             total = torch.cuda.get_device_properties(self._device).total_memory
             self._stats["gpu_name"] = torch.cuda.get_device_name(self._device)
@@ -300,6 +306,7 @@ class GPURenderer:
 
         # Permanent reserved memory right after static tensors are loaded
         reserved_permanent = torch.cuda.memory_reserved(dev)
+        log.info(f"render_frames: {n} frames, canvas={cw}x{ch}, chunk_rows={chunk_rows}, reserved_static={reserved_permanent // (1024*1024)}MB, target_used_mem={target_used_mem // (1024*1024)}MB")
 
         with torch.inference_mode():
             while batch_start < n:
@@ -340,8 +347,11 @@ class GPURenderer:
                 self._stats["batch_size"] = batch_size
                 self._stats["batch_mem_mb"] = (ch * cw * 3 * 4 * batch_size) // (1024 * 1024)
 
+                log.info(f"  BATCH: batch_start={batch_start}, batch_n={batch_n}, batch_size={batch_size}, free_mem={free_mem // (1024*1024)}MB, usable={usable // (1024*1024)}MB, per_frame_ema={per_frame_ema // (1024*1024) if per_frame_ema > 0 else 'N/A'}MB")
+
                 # Fallback to CPU only if physical memory cannot fit a single frame
                 if batch_n == 1 and per_frame_ema > 0 and usable < per_frame_ema:
+                    log.warning(f"  GPU OOM FALLBACK: remaining={remaining}, usable={usable}, per_frame_ema={per_frame_ema}")
                     if stats_path:
                         with open(stats_path, "a") as _sf:
                             _sf.write(json.dumps({
@@ -517,8 +527,25 @@ class GPURenderer:
 
                 batch_start = batch_end
 
+        log.info(f"render_frames: DONE. total_batches={self._batch_counter}, frames_rendered={batch_start}")
         torch.cuda.empty_cache()
         return frames if not frame_handler else []
+
+    def cleanup(self):
+        if self._device is not None and self._device.type == "cuda":
+            attrs = [
+                "_num_batch", "_tile_mask", "_tile_mask_inv",
+                "_border_mask", "_border_mask_inv",
+                "_bar_fill", "_bar_border",
+                "_timer_bg", "_panel_bg", "_panel_bg_rgb", "_panel_bg_a",
+            ]
+            for attr in attrs:
+                t = getattr(self, attr, None)
+                if t is not None:
+                    del t
+                    setattr(self, attr, None)
+            torch.cuda.empty_cache()
+            log.info("GPURenderer.cleanup: CUDA tensors freed")
 
     def _cpu_fallback(self, frame_params_list, progress_callback, cancel_check=None):
         frames = []

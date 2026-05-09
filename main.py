@@ -11,6 +11,9 @@ from ttkbootstrap.constants import *
 
 from replay_video import ReplayVideoGenerator, parse_replay_url, CancelError
 from replay_generator import expand_solution, parse_scramble_guess
+from debug_log import get_logger, init_logfile
+
+log = get_logger()
 
 if getattr(sys, 'frozen', False):
     base = sys._MEIPASS
@@ -81,6 +84,8 @@ class ReplayGUI(tb.Window):
     def __init__(self):
         super().__init__(themename="darkly")
         self.withdraw()
+        log_path = init_logfile()
+        log.info(f"=== GUI STARTED === log_path={log_path}")
         self.title("Replay Video Generator")
         self.minsize(960, 640)
 
@@ -429,38 +434,53 @@ class ReplayGUI(tb.Window):
 
     def _generate(self):
         if self._executor and not all(f.done() for f in self._batch_futures):
+            log.info("_generate: skipped — previous batch still running")
             return
 
         tab = self._active_tab()
         items = []
+        log.info(f"_generate: tab={tab} ('URL' if tab==0 else 'File' if tab==1 else 'Manual')")
 
         if tab == 0:
             raw = self.url_text.get("1.0", "end-1c").strip()
+            log.info(f"  URL tab raw len={len(raw)}, first_100={repr(raw[:100])}")
             for line in raw.splitlines():
                 line = line.strip()
                 if not line or line.startswith("#"):
+                    log.info(f"  SKIP line: {repr(line[:80])}")
                     continue
                 if line.startswith(("http://", "https://")):
+                    log.info(f"  ADD url item: len={len(line)}, preview={repr(line[:100])}")
                     items.append(("url", line))
+                else:
+                    log.info(f"  SKIP (not http): {repr(line[:80])}")
         elif tab == 1:
             path = self.file_path_var.get().strip()
+            log.info(f"  File tab path={repr(path)} exists={os.path.exists(path)}")
             if not path or not os.path.exists(path):
                 self.progress_text.set("No file selected.")
                 return
             with open(path, "r", encoding="utf-8") as f:
                 raw = f.read().strip()
+            log.info(f"  File tab raw len={len(raw)} starts_http={raw.startswith('http')}")
             if raw.startswith(("http://", "https://")):
+                log.info(f"  ADD url item from file: len={len(raw)}")
                 items.append(("url", raw))
             else:
+                log.info(f"  ADD manual item from file: len={len(raw)}")
                 items.append(("manual", raw))
         else:
             raw = self.solution_text.get("1.0", "end-1c").strip()
+            n_lines = 0
             for line in raw.splitlines():
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
                 items.append(("manual", line))
+                n_lines += 1
+            log.info(f"  Manual tab: {n_lines} solution lines")
 
+        log.info(f"_generate: total items={len(items)}")
         if not items:
             self.progress_text.set("No valid entries.")
             return
@@ -475,6 +495,7 @@ class ReplayGUI(tb.Window):
 
         raw_folder = self.out_folder_var.get().strip()
         output_dir = os.path.abspath(raw_folder) if raw_folder else os.path.join(script_dir, "replays")
+        log.info(f"_generate: output_dir={output_dir}")
         os.makedirs(output_dir, exist_ok=True)
 
         total = len(items)
@@ -486,7 +507,7 @@ class ReplayGUI(tb.Window):
                                         "cancelled": False}
 
         self._batch_futures = []
-        self._executor = ThreadPoolExecutor(max_workers=4)
+        self._executor = ThreadPoolExecutor(max_workers=1)
 
         def on_done(idx, fut):
             try:
@@ -506,22 +527,33 @@ class ReplayGUI(tb.Window):
         self.after(200, self._poll_batch)
 
     def _process_item(self, idx, mode, input_str, output_dir, total):
+        log.info(f"_process_item[{idx}]: mode={mode}, input_str_len={len(input_str)}")
         try:
             params = {
                 "force_fringe": self.force_fringe_var.get(),
                 "fps": self.fps_var.get(),
             }
+            log.info(f"_process_item[{idx}]: base_params={params}")
 
             if mode == "url":
                 solution, tps, scramble, movetimes = parse_replay_url(input_str)
+                sol_len = len(expand_solution(solution))
+                log.info(f"_process_item[{idx}]: parsed URL -> sol_len={sol_len}, tps={tps}, scramble={'yes' if scramble else 'no'}, movetimes_type={type(movetimes).__name__}")
+                if isinstance(movetimes, list):
+                    log.info(f"_process_item[{idx}]: movetimes len={len(movetimes)}, first={movetimes[0]}, last={movetimes[-1]}")
                 if tps is not None:
                     params["tps"] = tps
+                    log.info(f"_process_item[{idx}]: set tps={tps}")
                 if scramble:
                     params["scramble"] = scramble
+                    log.info(f"_process_item[{idx}]: set scramble (len={len(scramble)})")
                 if isinstance(movetimes, list) and len(movetimes) > 0:
                     params["movetimes"] = movetimes
+                    log.info(f"_process_item[{idx}]: set movetimes (len={len(movetimes)})")
             else:
                 solution = input_str
+                sol_len = len(expand_solution(solution))
+                log.info(f"_process_item[{idx}]: manual mode, sol_len={sol_len}")
                 tps_s = self.tps_var.get().strip()
                 tps = float(tps_s) if tps_s else None
                 time_s = self.time_var.get().strip()
@@ -530,17 +562,25 @@ class ReplayGUI(tb.Window):
                     tps = None
                 if tps:
                     params["tps"] = tps
+                    log.info(f"_process_item[{idx}]: manual set tps={tps}")
                 if time_v:
                     params["time"] = time_v
+                    log.info(f"_process_item[{idx}]: manual set time={time_v}")
                 scramble_s = self.scramble_var.get().strip()
                 if scramble_s:
                     params["scramble"] = scramble_s
+                    log.info(f"_process_item[{idx}]: manual set scramble (len={len(scramble_s)})")
                 size_s = self.size_var.get().strip()
                 if size_s:
                     params["size"] = size_s
+                    log.info(f"_process_item[{idx}]: manual set size={size_s}")
                 movetimes_s = self.movetimes_var.get().strip()
                 if movetimes_s:
                     params["movetimes"] = [int(x.strip()) for x in movetimes_s.split(",")]
+                    log.info(f"_process_item[{idx}]: manual set movetimes (from text)")
+
+            log.info(f"_process_item[{idx}]: final params={ {k: v if not isinstance(v, list) or len(repr(v)) < 200 else f'<list len={len(v)}>' for k, v in params.items()} }")
+            log.info(f"_process_item[{idx}]: use_gpu={self.use_gpu_var.get()}")
 
             filename_tps = params.get("tps", tps if mode == "url" else None)
             filename_time = params.get("time", None)
@@ -548,26 +588,35 @@ class ReplayGUI(tb.Window):
                 solution, filename_tps, filename_time,
                 params.get("movetimes", -1), params.get("size"))
             out_path = _pick_output_filename(output_dir, base_name)
+            log.info(f"_process_item[{idx}]: output={out_path}")
 
             def on_progress(cur, tot, **kwargs):
+                log.info(f"progress[{idx}]: cur={cur} tot={tot} kwargs_keys={list(kwargs.keys())}")
+                if kwargs.get("gpu_stats"):
+                    gs = kwargs["gpu_stats"]
+                    log.info(f"progress[{idx}]: gpu_stats: name={gs.get('gpu_name','?')}, mem={gs.get('mem_used_mb',0)}/{gs.get('total_mem_mb',0)}MB, batch={gs.get('batch_size',0)}, batch_idx={gs.get('batch_idx',0)}/{gs.get('num_batches',0)}")
                 self._on_item_progress(idx, cur, tot, **kwargs)
 
+            log.info(f"_process_item[{idx}]: calling generate_simple_replay with params={ {k: v if not isinstance(v, list) or len(repr(v)) < 200 else f'<list len={len(v)}>' for k, v in params.items()} }")
             gen = ReplayVideoGenerator(cleanup_frames=False)
             gen.generate_simple_replay(
                 solution=solution, output_path=out_path,
                 show_progress=False, external_progress_cb=on_progress,
                 use_gpu=self.use_gpu_var.get(),
                 cancel_check=lambda: self.cancel_flag, **params)
+            log.info(f"_process_item[{idx}]: generate_simple_replay completed")
 
             if not self.cancel_flag:
                 self._item_progress[idx]["path"] = out_path
                 self.after(0, lambda p=out_path: self._add_to_list(p))
         except CancelError:
-            raise  # re-raise so future stores it → on_done sets cancelled flag
+            log.info(f"_process_item[{idx}]: CANCELLED")
+            raise
         except Exception as e:
+            log.error(f"_process_item[{idx}]: FAILED: {e}", exc_info=True)
             self._item_progress[idx]["error"] = str(e)
             self.after(0, lambda m=f"Item {idx+1} failed: {e}": self.progress_text.set(m))
-            raise  # re-raise so future stores it
+            raise
 
     def _on_item_progress(self, idx, raw_cur, raw_tot, **kwargs):
         item = self._item_progress[idx]
@@ -575,6 +624,7 @@ class ReplayGUI(tb.Window):
             item["gpu_stats"] = kwargs["gpu_stats"]
         if raw_cur < item["prev_cur"]:
             item["phase"] += 1
+            log.info(f"_on_item_progress[{idx}]: phase transition -> {item['phase']} (raw_cur={raw_cur} < prev_cur={item['prev_cur']})")
             if item["phase"] == 1:
                 item["phase1_base"] = item["adjusted_cur"]
         item["prev_cur"] = raw_cur
@@ -601,6 +651,7 @@ class ReplayGUI(tb.Window):
 
         total = len(self._batch_futures)
         done_count = sum(1 for f in self._batch_futures if f.done())
+        log.info(f"_poll_batch: done={done_count}/{total}")
 
         # item-weighted overall progress (no snapping)
         overall_pct = 0.0
@@ -704,6 +755,7 @@ class ReplayGUI(tb.Window):
         self.cancel_btn.config(state="normal" if busy else "disabled")
 
     def _on_close(self):
+        log.info("=== GUI CLOSING ===")
         self.cancel_flag = True
         if self._executor:
             self._executor.shutdown(wait=False)
