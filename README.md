@@ -76,23 +76,26 @@ Frame rendering is GPU-accelerated via PyTorch/CUDA:
 
 - **Per-run cleanup**: GPU tensors are explicitly freed after each render, preventing memory accumulation across sequential runs.
 
-### Benchmarks (NVIDIA GeForce GTX 1660 SUPER)
+## Benchmarks (NVIDIA GeForce GTX 1660 SUPER)
 
-**Run IDs:** `20260509_224603` (4×4–10×10), `20260509_233957` (12×12, 16×16) — quality=2.0
+**Settings:** quality=1.0, 60 FPS
 
-| Puzzle | Moves | Frames | CPU | GPU | Speedup |
-|--------|-------|--------|-----|-----|---------|
-| 4×4    | 26    | 27     | 4.5s   | 3.1s   | 1.4× |
-| 5×5    | 98    | 99     | 9.4s   | 4.1s   | 2.3× |
-| 6×6    | 213   | 214    | 22.3s  | 7.0s   | 3.2× |
-| 7×7    | 425   | 426    | 52.6s  | 9.8s   | 5.4× |
-| 8×8    | 707   | 708    | 96.7s  | 16.3s  | 5.9× |
-| 9×9    | 1251  | 1252   | 208.4s | 30.5s  | 6.8× |
-| 10×10  | 1569  | 1570   | 284.9s | 33.1s  | 8.6× |
-| 12×12  | 2883  | 2884   | —       | 63.7s  | — |
-| 16×16  | 7132  | 7133   | —       | 341.6s | — |
+| Puzzle | Moves | CPU    | GPU    | Speedup |
+| ------ | ----- | ------ | ------ | ------- |
+| 4×4    | 26    | 4.5s   | 3.5s   | 1.3×    |
+| 5×5    | 98    | 7.9s   | 4.1s   | 1.9×    |
+| 6×6    | 213   | 17.1s  | 6.3s   | 2.7×    |
+| 7×7    | 425   | 36.6s  | 9.8s   | 3.7×    |
+| 8×8    | 707   | 73.0s  | 16.7s  | 4.4×    |
+| 9×9    | 1251  | 141.6s | 24.8s  | 5.7×    |
+| 10×10  | 1569  | 199.3s | 29.3s  | 6.8×    |
+| 12×12  | 2883  | —      | 52.6s  | —       |
+| 16×16  | 7132  | —      | 194.0s | —       |
+| 20×20  | 14203 | —      | 930.6s | —       |
 
-Puzzles 12×12 and above are GPU-only — CPU rendering would be impractically slow. GPU acceleration scales significantly with puzzle size: the speedup grows from **1.4×** at 4×4 to **8.6×** at 10×10, as fixed overhead is amortized over more work per frame and larger batches fit in VRAM.
+Puzzles 12×12 and above are GPU-only, as CPU rendering becomes impractically slow at high tile counts and long solve sequences. GPU acceleration scales strongly with puzzle size: smaller puzzles are partially limited by kernel launch and transfer overhead, while larger puzzles achieve substantially better GPU utilization and throughput.
+
+Performance remains near-linear through mid-size puzzles before gradually becoming constrained by VRAM pressure, tensor allocation overhead, memory bandwidth, and batch fragmentation at extreme sizes such as 16×16 and 20×20. Even under those conditions, the GPU renderer maintains practical rendering times for workloads that would be effectively infeasible on CPU.
 
 ### Installing GPU support
 
