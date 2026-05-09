@@ -17,7 +17,7 @@ import re
 import tempfile
 
 
-def run_bench(label: str, url: str, extra_args: list, output_path: str, stats_path: str) -> tuple:
+def run_bench(label: str, url: str, extra_args: list, output_path: str) -> tuple:
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
     url_file = tempfile.NamedTemporaryFile(mode="w", suffix=".url", delete=False)
@@ -29,18 +29,15 @@ def run_bench(label: str, url: str, extra_args: list, output_path: str, stats_pa
         "--url-file", url_file.name,
         "--quality", "1.0",
         "--output", output_path,
-        "--stats-path", stats_path,
     ] + extra_args
 
     detail = {
         "label": label,
         "extra_args": extra_args,
         "output": os.path.basename(output_path),
-        "stats_path": os.path.abspath(stats_path),
         "returncode": None,
         "elapsed": None,
         "gpu_info": "",
-        "stats": [],
         "error_lines": [],
     }
 
@@ -60,13 +57,6 @@ def run_bench(label: str, url: str, extra_args: list, output_path: str, stats_pa
             detail["gpu_info"] = line.strip()
             print(f"[{line.strip()}]")
             break
-
-    if os.path.exists(stats_path):
-        with open(stats_path) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    detail["stats"].append(json.loads(line))
 
     if result.returncode != 0:
         print(f"FAILED ({elapsed:.1f}s)")
@@ -134,15 +124,13 @@ def process_replays(replays_dir, logs_dir, gpu_only):
 
         if not gpu_only:
             cpu_out = os.path.join(logs_dir, f"{puzzle_label}_cpu.mp4")
-            cpu_stats = os.path.join(logs_dir, f"{puzzle_label}_stats_cpu.jsonl")
-            t, d = run_bench(f"{puzzle_label} CPU", url, ["--no-gpu"], cpu_out, cpu_stats)
+            t, d = run_bench(f"{puzzle_label} CPU", url, ["--no-gpu"], cpu_out)
             results.append(("CPU baseline", t))
             if d:
                 details.append(d)
 
         gpu_out = os.path.join(logs_dir, f"{puzzle_label}_gpu.mp4")
-        gpu_stats = os.path.join(logs_dir, f"{puzzle_label}_stats_gpu.jsonl")
-        t, d = run_bench(f"{puzzle_label} GPU", url, ["--gpu"], gpu_out, gpu_stats)
+        t, d = run_bench(f"{puzzle_label} GPU", url, ["--gpu"], gpu_out)
         results.append(("GPU", t))
         if d:
             details.append(d)

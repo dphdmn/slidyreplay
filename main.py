@@ -789,7 +789,6 @@ Examples:
     parser.add_argument("--no-gpu", action="store_true", default=None,
                         help="Disable GPU acceleration")
     parser.add_argument("--batch", help="File with solutions/URLs (one per line)")
-    parser.add_argument("--stats-path", help="Path to write per-batch GPU render stats (JSONL)")
     parser.add_argument("--log", action="store_true", default=False,
                         help="Enable debug logging to file (logs/debug_<timestamp>.log)")
 
@@ -864,10 +863,10 @@ Examples:
             run_single(sol, args.output or "replay.mp4",
                        tps=tps or args.tps, scramble=scramble,
                        movetimes=movetimes, quality=args.quality,
-                       fps=args.fps, stats_path=args.stats_path)
+                       fps=args.fps)
         else:
             run_single(val, args.output or "replay.mp4",
                        tps=args.tps, time=args.time,
                         scramble=args.scramble, size=args.size,
                         quality=args.quality,
-                        fps=args.fps, stats_path=args.stats_path)
+                        fps=args.fps)

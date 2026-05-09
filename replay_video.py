@@ -1172,7 +1172,6 @@ def generate_frames(
     cumulative_data: Optional[dict] = None,
     progress_callback=None,
     quality: float = 1.0,
-    stats_path: str = None,
     parallel: bool = True,
     use_gpu: bool = True,
     cancel_check=None,
@@ -1252,15 +1251,6 @@ def generate_frames(
 
     # ── Stage 1: precompute all per-frame data sequentially ──
     frame_params = []
-    _log = lambda **kw: None
-    if stats_path:
-        import json, time as _time
-        _sf = open(stats_path, "a")
-        def _log(**kw):
-            kw["t"] = _time.time()
-            _sf.write(json.dumps(kw) + "\n")
-            _sf.flush()
-        _log(event="stage_params_start", total_frames=sol_len + 1)
 
     # Optional GPU acceleration for tile grid rendering
     puzzle_w_est = w * tile_size
@@ -1371,7 +1361,6 @@ def generate_frames(
             zp = find_zero(mc, w, h)
             mc = move_matrix(mc, move, zp, w, h)
 
-    _log(event="stage_params_done", total_frames=sol_len + 1)
     log.info(f"  frame_params created: {len(frame_params)} entries")
 
     # ── Compute frame-to-state mapping for accurate playback ──
@@ -1416,7 +1405,6 @@ def generate_frames(
         panel_w_val = canvas_w - panel_x - PADDING
         panel_y = PADDING + HEADER_H + PADDING
 
-        _log(event="stage_overlays_start", total_frames=len(states_needed))
 
         first_stats = frame_params[0]["stats_data"]
         first_is_accurate = frame_params[0]["is_movetimes_accurate"]
@@ -1447,7 +1435,6 @@ def generate_frames(
                 overlay_done += 1
                 if progress_callback:
                     progress_callback(overlay_done, overlay_total)
-        _log(event="stage_overlays_done", total_frames=len(states_needed))
         log.info(f"  OVERLAY PRE-RENDER DONE: {overlay_done}/{overlay_total}")
 
         # Pre-compute how many video frames each puzzle state spans
@@ -1460,7 +1447,6 @@ def generate_frames(
         log.info(f"  OPENING FFMPEG PIPE: output={output_path}, canvas={canvas_w}x{canvas_h}, fps={fps}")
         nvenc_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h, fps=fps)
         unique_params = [frame_params[i] for i in states_needed]
-        _log(event="stage_gpu_render_start", total_frames=len(unique_params))
         log.info(f"  GPU RENDER START: {len(unique_params)} unique frames to render")
 
         def handler(img, idx_in_unique, total):
@@ -1475,7 +1461,6 @@ def generate_frames(
                 unique_params,
                 progress_callback=lambda cur, tot, **kw: progress_callback(cur, tot, **kw) if progress_callback else None,
                 cancel_check=cancel_check,
-                stats_path=stats_path,
                 frame_handler=handler,
             )
         finally:
@@ -1483,11 +1468,7 @@ def generate_frames(
 
         nvenc_proc.stdin.close()
         nvenc_proc.wait()
-        _log(event="stage_ffmpeg_done")
         log.info(f"  FFMPEG PIPE CLOSED: returncode={nvenc_proc.returncode}")
-
-        if stats_path:
-            _sf.close()
 
         log.info(f"  GPU PATH COMPLETE: returning {len(frame_state)} frame_state entries")
         return [], frame_state
@@ -1531,9 +1512,6 @@ def generate_frames(
             if progress_callback:
                 progress_callback(seq_idx + 1, num_needed)
 
-    if stats_path:
-        _sf.close()
-
     # Derive canvas dimensions from first rendered image
     first_rendered = next(img for img in state_images if img is not None)
     canvas_w, canvas_h = first_rendered.size
@@ -1549,7 +1527,6 @@ def generate_frames(
     ffmpeg_proc.stdin.close()
     ffmpeg_proc.wait()
     log.info(f"  CPU FFMPEG DONE: {written} frames written, returncode={ffmpeg_proc.returncode}")
-    _log(event="stage_ffmpeg_done")
 
     return [], frame_state
 
@@ -1632,7 +1609,6 @@ class ReplayVideoGenerator:
         show_progress: bool = True,
         speed_factor: float = 1.0,
     quality: float = 1.0,
-    stats_path: str = None,
         external_progress_cb = None,
         use_gpu: bool = True,
         cancel_check=None,
@@ -1762,7 +1738,6 @@ class ReplayVideoGenerator:
             cumulative_data=None,
             progress_callback=progress_cb if (show_progress or external_progress_cb) else None,
             quality=quality,
-            stats_path=stats_path,
             use_gpu=use_gpu,
             cancel_check=cancel_check,
             output_path=output_path,

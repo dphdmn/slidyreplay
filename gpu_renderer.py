@@ -249,7 +249,6 @@ class GPURenderer:
         frame_params_list: List[dict],
         progress_callback=None,
         cancel_check=None,
-        stats_path: str = None,
         frame_handler=None,
     ) -> List[Image.Image]:
         if not self.available or not frame_params_list:
@@ -352,13 +351,6 @@ class GPURenderer:
                 # Fallback to CPU only if physical memory cannot fit a single frame
                 if batch_n == 1 and per_frame_ema > 0 and usable < per_frame_ema:
                     log.warning(f"  GPU OOM FALLBACK: remaining={remaining}, usable={usable}, per_frame_ema={per_frame_ema}")
-                    if stats_path:
-                        with open(stats_path, "a") as _sf:
-                            _sf.write(json.dumps({
-                                "event": "gpu_oom_fallback",
-                                "t": _time_module.time(),
-                                "frames_remaining": remaining
-                            }) + "\n")
                     return self._cpu_fallback(frame_params_list[batch_start:],
                                               progress_callback, cancel_check)
 
@@ -366,23 +358,6 @@ class GPURenderer:
                 self._stats["mem_used_mb"] = self._stats["total_mem_mb"] - self._stats["free_mem_mb"]
                 self._batch_counter += 1
                 self._stats["batch_idx"] = self._batch_counter
-
-                if stats_path:
-                    with open(stats_path, "a") as _sf:
-                        _sf.write(json.dumps({
-                            "event": "batch_start",
-                            "t": _time_module.time(),
-                            "batch_idx": self._stats["batch_idx"],
-                            "batch_size": batch_n,
-                            "free_mem_mb": self._stats["free_mem_mb"],
-                            "used_mem_mb": self._stats["mem_used_mb"],
-                            "total_mem_mb": self._stats["total_mem_mb"],
-                            "batch_mem_mb": self._stats["batch_mem_mb"],
-                            "frames_done": batch_start,
-                            "frames_total": n,
-                            "target_used_mem_mb": target_used_mem // (1024 * 1024),
-                            "per_frame_ema_mb": round(per_frame_ema / (1024 * 1024), 2),
-                        }) + "\n")
 
                 # ── Upload batch data ──
                 batch_params = frame_params_list[batch_start:batch_end]
@@ -508,17 +483,6 @@ class GPURenderer:
                     if marginal_cost > 0:
                         per_frame_ema = marginal_cost
                         self._stats["per_frame_ema_mb"] = per_frame_ema / (1024 * 1024)
-
-                if stats_path:
-                    with open(stats_path, "a") as _sf:
-                        _sf.write(json.dumps({
-                            "event": "batch_done",
-                            "t": _time_module.time(),
-                            "batch_idx": self._stats["batch_idx"],
-                            "batch_cost_mb": (reserved_peak - reserved_permanent) // (1024 * 1024),
-                            "per_frame_ema_mb": round(per_frame_ema / (1024 * 1024), 2),
-                            "reserved_peak_mb": reserved_peak // (1024 * 1024),
-                        }) + "\n")
 
                 # ── Free batch tensors ──
                 del canvas, mats
