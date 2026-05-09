@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time as time_module
 from pathlib import Path
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from typing import List, Tuple, Optional, Union, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
@@ -884,30 +885,49 @@ def _render_one_frame(params: dict) -> Image.Image:
 
 
 def _make_stats_text(stats_data, is_movetimes_accurate, panel_w):
+    """Full render of stats panel (CPU path)."""
+    return _render_stats_full(stats_data, is_movetimes_accurate, panel_w)
+
+
+def _stats_layout_info(panel_w):
+    """Compute layout constants shared by static base and dynamic overlay."""
     inner_w = panel_w - 20
     label_w = 65
     data_w = (inner_w - label_w) // 2
     col_x = label_w
     all_col_x = col_x + data_w
-
     data_font = get_font(12, mono=True)
     label_font = get_font(12)
     line_bbox = data_font.getbbox("Xy")
     line_h = (line_bbox[3] - line_bbox[1]) + 4
     row_h = max(28, line_h * 2)
-    px = 10
-    py = 10 + row_h
+    return {
+        "panel_w": panel_w, "inner_w": inner_w,
+        "label_w": label_w, "data_w": data_w,
+        "col_x": col_x, "all_col_x": all_col_x,
+        "data_font": data_font, "label_font": label_font,
+        "line_h": line_h, "row_h": row_h,
+        "px": 10, "py": 10 + row_h,
+    }
+
+
+def _render_stats_full(stats_data, is_movetimes_accurate, panel_w):
+    """Render full stats panel including both static and dynamic text."""
+    li = _stats_layout_info(panel_w)
+    inner_w = li["inner_w"]; data_w = li["data_w"]
+    col_x = li["col_x"]; all_col_x = li["all_col_x"]
+    data_font = li["data_font"]; label_font = li["label_font"]
+    line_h = li["line_h"]; row_h = li["row_h"]
+    px = li["px"]; py = li["py"]
 
     lines = []
-
-    def add(x, y, text, fill, font, **kw):
+    def add(x, y, text, fill, font):
         lines.append((x, y, text, fill, font))
 
     hf = get_font(14, bold=True)
     add(10, 10, "Stats", CYAN, hf)
 
-    th = get_font(12)
-    lbl_font = th
+    lbl_font = label_font
     total_label = "Total"
     cur_label = "Current"
     tb = lbl_font.getbbox(total_label)
@@ -940,10 +960,8 @@ def _make_stats_text(stats_data, is_movetimes_accurate, panel_w):
             add(all_col_x + (data_w - (vb[2] - vb[0])) // 2, row_y + i * line_h, vl, CYAN, data_font)
         row_y += r_h
 
-    acc_text = "Movetimes accurate" if is_movetimes_accurate else "NOT movetimes accurate"
-    acc_color = ACCURATE_COLOR if is_movetimes_accurate else INACCURATE_COLOR
-    acc_font = get_font(11, mono=True)
-    add(px, row_y + 4, acc_text, acc_color, acc_font)
+    add(px, row_y + 4, "Movetimes accurate" if is_movetimes_accurate else "NOT movetimes accurate",
+        ACCURATE_COLOR if is_movetimes_accurate else INACCURATE_COLOR, get_font(11, mono=True))
     row_y += 18
 
     stages = stats_data.get("grid_stages", [])
@@ -971,26 +989,206 @@ def _make_stats_text(stats_data, is_movetimes_accurate, panel_w):
             w1 = max(len(l[0]) for l in raw_lines)
             w2 = max(len(l[1]) for l in raw_lines)
             w3 = max(len(l[2]) for l in raw_lines) if any(l[2] for l in raw_lines) else 0
+            w4 = max(len(l[3]) for l in raw_lines)
         for i, (cum_s, split_s, mvtps_s, label) in enumerate(raw_lines):
             if '.' in cum_s:
-                line = f"{cum_s:>{w1}} | {split_s:>{w2}} {mvtps_s:<{w3}} | {label:<{w3}}"
+                line = f"{cum_s:>{w1}} | {split_s:>{w2}} {mvtps_s:<{w3}} | {label:<{w4}}"
             else:
-                line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w3}}"
+                line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
             color = CYAN if i == cur_stage else WHITE
             add(px + (inner_w_actual - lf.getbbox(line)[2]) // 2, row_y, line, color, lf)
             row_y += 18
 
     if stats_data.get("cubic_estimate"):
-        ce = stats_data["cubic_estimate"]
-        add(px, row_y + 4, f"Cubic est: {ce}", GRAY, get_font(11))
+        add(px, row_y + 4, f"Cubic est: {stats_data['cubic_estimate']}", GRAY, get_font(11))
 
-    # Render all collected lines onto an RGBA image
     total_h = row_y + 30
     im = Image.new("RGBA", (panel_w, total_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(im)
     for x, y, text, fill, font in lines:
         draw.text((x, y), text, fill=(*fill, 255), font=font)
     return im
+
+
+def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_stages_list):
+    """Render stats panel with everything except current column values and stage highlight."""
+    li = _stats_layout_info(panel_w)
+    inner_w = li["inner_w"]; data_w = li["data_w"]
+    col_x = li["col_x"]; all_col_x = li["all_col_x"]
+    data_font = li["data_font"]; label_font = li["label_font"]
+    line_h = li["line_h"]; row_h = li["row_h"]
+    px = li["px"]; py = li["py"]
+
+    lines = []
+    def add(x, y, text, fill, font):
+        lines.append((x, y, text, fill, font))
+
+    hf = get_font(14, bold=True)
+    add(10, 10, "Stats", CYAN, hf)
+
+    lbl_font = label_font
+    total_label = "Total"
+    cur_label = "Current"
+    tb = lbl_font.getbbox(total_label)
+    thw = tb[2] - tb[0]
+    cb = lbl_font.getbbox(cur_label)
+    chw = cb[2] - cb[0]
+    add(col_x + (data_w - thw) // 2, 10, total_label, GRAY, lbl_font)
+    add(all_col_x + (data_w - chw) // 2, 10, cur_label, GRAY, lbl_font)
+
+    # Column values rendered dynamically per frame in overlay — skip here
+    stats_row_labels = ["Time", "Moves", "MD", "M/MD", "TPS"]
+
+    row_y = py
+    for label in stats_row_labels:
+        add(px, row_y, label, LIGHT_GRAY, label_font)
+        row_y += row_h
+
+    add(px, row_y + 4, "Movetimes accurate" if is_movetimes_accurate else "NOT movetimes accurate",
+        ACCURATE_COLOR if is_movetimes_accurate else INACCURATE_COLOR, get_font(11, mono=True))
+    row_y += 18
+
+    if grid_stages_list:
+        hf2 = get_font(13, bold=True)
+        hb2 = hf2.getbbox("Grid stages")
+        htw2 = hb2[2] - hb2[0]
+        inner_w_actual = panel_w - 20
+        add(px + (inner_w_actual - htw2) // 2, row_y, "Grid stages", CYAN, hf2)
+        row_y += 20
+        lf = get_font(13, mono=True)
+        raw_lines = []
+        for st in grid_stages_list:
+            if st["cum_time"] > 0:
+                cum_s = format_time_str(st['cum_time'])
+                split_s = format_time_str(st['split_time'])
+                mvtps_s = f"({st['split_moves']}/{st['split_tps']:.1f})"
+            else:
+                cum_s = str(st['cum_moves'])
+                split_s = f"(+{st['split_moves']})"
+                mvtps_s = ""
+            raw_lines.append((cum_s, split_s, mvtps_s, st['label']))
+        if raw_lines:
+            w1 = max(len(l[0]) for l in raw_lines)
+            w2 = max(len(l[1]) for l in raw_lines)
+            w3 = max(len(l[2]) for l in raw_lines) if any(l[2] for l in raw_lines) else 0
+            w4 = max(len(l[3]) for l in raw_lines)
+        for i, (cum_s, split_s, mvtps_s, label) in enumerate(raw_lines):
+            if '.' in cum_s:
+                line = f"{cum_s:>{w1}} | {split_s:>{w2}} {mvtps_s:<{w3}} | {label:<{w4}}"
+            else:
+                line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
+            color = WHITE  # all white in static base
+            add(px + (inner_w_actual - lf.getbbox(line)[2]) // 2, row_y, line, color, lf)
+            row_y += 18
+
+    if stats_data.get("cubic_estimate"):
+        add(px, row_y + 4, f"Cubic est: {stats_data['cubic_estimate']}", GRAY, get_font(11))
+
+    total_h = row_y + 30
+    im = Image.new("RGBA", (panel_w, total_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(im)
+    for x, y, text, fill, font in lines:
+        draw.text((x, y), text, fill=(*fill, 255), font=font)
+    return im
+
+
+def _apply_stats_dynamic(stats_data, panel_w, static_base):
+    """Overlay current column values and stage highlight onto a static base copy."""
+    li = _stats_layout_info(panel_w)
+    inner_w = li["inner_w"]; data_w = li["data_w"]
+    col_x = li["col_x"]; all_col_x = li["all_col_x"]
+    data_font = li["data_font"]
+    line_h = li["line_h"]; row_h = li["row_h"]
+    px = li["px"]; py = li["py"]
+
+    overlay = Image.new("RGBA", static_base.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    # Render ALL total column values + ALL current column values per frame
+    total_vals = [
+        stats_data.get("time_all", "0.000"),
+        stats_data.get("moves_all", "0"),
+        stats_data.get("md_all", "0"),
+        stats_data.get("mmd_all", "0.000"),
+        stats_data.get("tps_all", "0.000"),
+    ]
+    cur_vals = [
+        stats_data.get("time_cur", "0.000"),
+        stats_data.get("moves_cur", "0"),
+        stats_data.get("md_cur", "0"),
+        stats_data.get("mmd_cur", "0.000"),
+        stats_data.get("tps_cur", "0.000"),
+    ]
+
+    row_y = py
+    for all_val, cur_val in zip(total_vals, cur_vals):
+        all_lines = all_val.split('\n')
+        cur_lines = cur_val.split('\n')
+        for i, vl in enumerate(all_lines):
+            vb = data_font.getbbox(vl)
+            draw.text((col_x + (data_w - (vb[2] - vb[0])) // 2, row_y + i * line_h),
+                      vl, fill=(*WHITE, 255), font=data_font)
+        for i, vl in enumerate(cur_lines):
+            vb = data_font.getbbox(vl)
+            draw.text((all_col_x + (data_w - (vb[2] - vb[0])) // 2, row_y + i * line_h),
+                      vl, fill=(*CYAN, 255), font=data_font)
+        row_y += row_h
+
+    stages = stats_data.get("grid_stages", [])
+    cur_stage = stats_data.get("grid_current", 0)
+    if stages:
+        row_y_stages = py + 5 * row_h + 18 + 20
+        raw_lines = []
+        lf = get_font(13, mono=True)
+        for st in stages:
+            if st["cum_time"] > 0:
+                cum_s = format_time_str(st['cum_time'])
+                split_s = format_time_str(st['split_time'])
+                mvtps_s = f"({st['split_moves']}/{st['split_tps']:.1f})"
+            else:
+                cum_s = str(st['cum_moves'])
+                split_s = f"(+{st['split_moves']})"
+                mvtps_s = ""
+            raw_lines.append((cum_s, split_s, mvtps_s, st['label']))
+        if raw_lines:
+            w1 = max(len(l[0]) for l in raw_lines)
+            w2 = max(len(l[1]) for l in raw_lines)
+            w3 = max(len(l[2]) for l in raw_lines) if any(l[2] for l in raw_lines) else 0
+            w4 = max(len(l[3]) for l in raw_lines)
+        i = cur_stage
+        if i < len(raw_lines):
+            cum_s, split_s, mvtps_s, label = raw_lines[i]
+            if '.' in cum_s:
+                line = f"{cum_s:>{w1}} | {split_s:>{w2}} {mvtps_s:<{w3}} | {label:<{w4}}"
+            else:
+                line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
+            lb = lf.getbbox(line)
+            lw = lb[2] - lb[0]
+            draw.text((px + (inner_w - lw) // 2, row_y_stages + i * 18),
+                      line, fill=(*CYAN, 255), font=lf)
+
+    result = static_base.copy()
+    result = Image.alpha_composite(result, overlay)
+    return result
+
+
+def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60):
+    """Spawn ffmpeg with libx264 reading rawvideo from stdin. Returns the Popen object."""
+    cmd = [
+        'ffmpeg', '-y',
+        '-f', 'rawvideo',
+        '-pix_fmt', 'rgb24',
+        '-s', f'{width}x{height}',
+        '-r', str(fps),
+        '-i', '-',
+        '-c:v', 'libx264',
+        '-preset', 'medium',
+        '-crf', '24',
+        '-pix_fmt', 'yuv420p',
+        '-vsync', 'cfr',
+        output_path,
+    ]
+    return subprocess.Popen(cmd, stdin=subprocess.PIPE)
 
 
 def generate_frames(
@@ -1011,7 +1209,8 @@ def generate_frames(
     stats_path: str = None,
     parallel: bool = True,
     use_gpu: bool = True,
-    cancel_check=None
+    cancel_check=None,
+    output_path: str = None,
 ) -> List[Image.Image]:
     expanded = expand_solution(solution)
     sol_len = len(expanded)
@@ -1081,8 +1280,17 @@ def generate_frames(
     if not custom_move_times:
         custom_move_times = []
 
-    # Phase 1: precompute all per-frame data sequentially
+    # ── Stage 1: precompute all per-frame data sequentially ──
     frame_params = []
+    _log = lambda **kw: None
+    if stats_path:
+        import json, time as _time
+        _sf = open(stats_path, "a")
+        def _log(**kw):
+            kw["t"] = _time.time()
+            _sf.write(json.dumps(kw) + "\n")
+            _sf.flush()
+        _log(event="stage_params_start", total_frames=sol_len + 1)
 
     # Optional GPU acceleration for tile grid rendering
     gpu = GPURenderer(w, h, raw_tile, quality, memory_usage=memory_usage)
@@ -1203,6 +1411,8 @@ def generate_frames(
             zp = find_zero(mc, w, h)
             mc = move_matrix(mc, move, zp, w, h)
 
+    _log(event="stage_params_done", total_frames=sol_len + 1)
+
     # ── Complete GPU frame rendering (text pre-rendered on CPU, composited on GPU) ──
     if use_gpu and len(frame_params) > 1:
         puzzle_w = w * tile_size
@@ -1214,23 +1424,84 @@ def generate_frames(
         panel_y = PADDING + HEADER_H + PADDING
         panel_h_val = canvas_h - INFO_H - panel_y - PADDING
 
-        for p in frame_params:
-            if cancel_check and cancel_check():
-                raise CancelError()
+        _log(event="stage_overlays_start", total_frames=sol_len + 1)
+
+        # Pre-render static stats panel base (everything except current column values + stage highlight)
+        first_stats = frame_params[0]["stats_data"]
+        static_stats_base = _make_stats_static_base(
+            panel_w_val, first_stats, frame_params[0]["is_movetimes_accurate"],
+            first_stats.get("grid_stages", [])
+        )
+
+        def _render_overlays(i, p):
             stats = p["stats_data"]
             timer_img = _render_timer_text(p["timer_text"])
             sol_img = _render_solution_text(p["solution_text"])
-            stats_img = _make_stats_text(stats, p["is_movetimes_accurate"], panel_w_val)
-            p["timer_img"] = timer_img
-            p["sol_img"] = sol_img
-            p["stats_img"] = stats_img
+            stats_img = _apply_stats_dynamic(stats, panel_w_val, static_stats_base)
+            return i, timer_img, sol_img, stats_img
 
+        workers = min(os.cpu_count() or 4, len(frame_params))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {pool.submit(_render_overlays, i, p): i for i, p in enumerate(frame_params)}
+            for fut in as_completed(futs):
+                if cancel_check and cancel_check():
+                    raise CancelError()
+                i, timer_img, sol_img, stats_img = fut.result()
+                p = frame_params[i]
+                p["timer_img"] = timer_img
+                p["sol_img"] = sol_img
+                p["stats_img"] = stats_img
+                p["timer_arr"] = np.array(timer_img)
+                p["sol_arr"] = np.array(sol_img)
+                p["stats_arr"] = np.array(stats_img)
+        _log(event="stage_overlays_done", total_frames=sol_len + 1)
+
+        # Compute frame durations for variable‑timing video
+        preview_ms = 500.0
+        final_ms = 1000.0
+        if custom_move_times and len(custom_move_times) == sol_len:
+            frame_durations_ms = [preview_ms]
+            for i in range(1, sol_len):
+                dur = custom_move_times[i] - custom_move_times[i - 1]
+                frame_durations_ms.append(max(1, dur))
+            frame_durations_ms.append(final_ms)
+        else:
+            frame_durations_ms = [preview_ms]
+            for i in range(1, sol_len):
+                frame_durations_ms.append(delays[i])
+            frame_durations_ms.append(final_ms)
+
+        # If output_path set, pipe directly to ffmpeg NVENC — no frame list accumulation
+        nvenc_proc = None
+        if output_path:
+            nvenc_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h)
+            frame_time_ms = 1000.0 / 60
+
+            def handler(img, idx, total):
+                nonlocal nvenc_proc
+                dur = frame_durations_ms[idx]
+                n_dup = max(1, round(dur / frame_time_ms))
+                data = img.tobytes()
+                for _ in range(n_dup):
+                    nvenc_proc.stdin.write(data)
+
+        _log(event="stage_gpu_render_start", total_frames=sol_len + 1)
         gpu_frames = gpu.render_frames(
             frame_params,
             progress_callback=lambda cur, tot, **kw: progress_callback(cur, tot, **kw),
             cancel_check=cancel_check,
-            stats_path=stats_path
+            stats_path=stats_path,
+            frame_handler=handler if output_path else None,
         )
+
+        if nvenc_proc:
+            nvenc_proc.stdin.close()
+            nvenc_proc.wait()
+        _log(event="stage_ffmpeg_done")
+
+        if stats_path:
+            _sf.close()
+
         return gpu_frames
 
     # Phase 2: render frames in parallel (CPU path only)
@@ -1271,6 +1542,8 @@ def generate_frames(
             if progress_callback:
                 progress_callback(i + 1, len(frame_params))
 
+    if stats_path:
+        _sf.close()
     return frames
 
 
@@ -1578,25 +1851,30 @@ class ReplayVideoGenerator:
             memory_usage=memory_usage,
             stats_path=stats_path,
             use_gpu=use_gpu,
-            cancel_check=cancel_check
+            cancel_check=cancel_check,
+            output_path=output_path if use_gpu else None,
         )
 
         if show_progress:
             print()
 
-        if show_progress and prog:
-            prog.set_desc("Encoding video")
+        if not frames:
+            # GPU path already piped frames directly to ffmpeg NVENC
+            pass
+        else:
+            if show_progress and prog:
+                prog.set_desc("Encoding video")
 
-        # Encode video
-        encode_video_ffmpeg(
-            frames=frames,
-            output_path=output_path,
-            delays=delays,
-            temp_dir=self.temp_dir,
-            cleanup=self.cleanup_frames,
-            progress_callback=progress_cb if (show_progress or external_progress_cb) else None,
-            custom_move_times=custom_move_times
-        )
+            # Encode video (CPU path)
+            encode_video_ffmpeg(
+                frames=frames,
+                output_path=output_path,
+                delays=delays,
+                temp_dir=self.temp_dir,
+                cleanup=self.cleanup_frames,
+                progress_callback=progress_cb if (show_progress or external_progress_cb) else None,
+                custom_move_times=custom_move_times
+            )
 
         if show_progress:
             elapsed = time_module.time() - (prog.start_time if prog else time_module.time())

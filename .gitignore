@@ -35,3 +35,7 @@ Thumbs.db
 .DS_Store
 
 benchmark_log.json
+benchmark_stats/*
+benchmark_log*
+ai_brainstorm/*
+deepseek*
