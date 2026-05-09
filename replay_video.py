@@ -31,7 +31,7 @@ from replay_generator import (
 )
 
 from splits import decompress_string_to_array, read_solve_data
-from gpu_renderer import GPURenderer, _render_timer_text, _render_solution_text, CancelError
+from gpu_renderer import GPURenderer, _render_timer_text, CancelError
 
 # ─── Constants ─────────────────────────────────────────────────────
 
@@ -89,9 +89,9 @@ TILE_BORDER_RADIUS_RATIO = 0.4
 TILE_BORDER_WIDTH = 1
 
 PADDING = 20
-STATS_PANEL_WIDTH = 330
+STATS_PANEL_WIDTH = 300
 TIMER_HEIGHT = 30
-HEADER_H = 52
+HEADER_H = 56
 INFO_H = 40
 
 # ─── Color Utilities (ported from fringeColors.js) ──────────────────
@@ -646,23 +646,31 @@ def render_frame(
     total_moves: int,
     total_time_ms: int,
     total_tps: float,
-    solution_text: str = "",
     gpu_grid: Optional[Image.Image] = None
 ) -> Image.Image:
     h = len(matrix)
     w = len(matrix[0])
     puzzle_w = w * tile_size
     puzzle_h = h * tile_size
-    info_h = 40
-    HEADER_H = 52
+    HEADER_H = 56
 
     canvas_w = (puzzle_w + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
-    canvas_h = (HEADER_H + puzzle_h + PADDING * 3 + info_h + 1) // 2 * 2
+
+    panel_w_est = canvas_w - (PADDING + puzzle_w + PADDING) - PADDING
+    stats_h = _compute_stats_full_height(
+        panel_w_est,
+        has_grid_stages=len(stats_data.get("grid_stages", [])) > 0
+    )
+    canvas_h = max(
+        (HEADER_H + puzzle_h + PADDING * 3 + 1) // 2 * 2,
+        HEADER_H + PADDING + stats_h + PADDING
+    )
+    canvas_h = (canvas_h + 1) // 2 * 2
     canvas = Image.new('RGB', (canvas_w, canvas_h), BG_COLOR)
     draw = ImageDraw.Draw(canvas)
 
     # ─── Timer Bar (centered, compact) ──────────────────────────
-    timer_font = get_font(22, bold=True)
+    timer_font = get_font(36, bold=True, mono=True)
 
     timer_bg_bbox = (PADDING, PADDING, canvas_w - PADDING, PADDING + HEADER_H)
     draw_filled_rect(draw, timer_bg_bbox, TIMER_BG)
@@ -712,16 +720,11 @@ def render_frame(
                     ty = sy + tile_size // 2 - (tb[1] + tb[3]) // 2
                     draw.text((tx, ty), text, fill=TILE_TEXT_COLOR, font=tf)
 
-    # ─── Solution text below puzzle ────────────────────────────
-    info_y = grid_y + puzzle_h + 4
-    info_font = get_font(11, mono=True)
-    draw.text((grid_x, info_y), solution_text or "", fill=GREEN, font=info_font)
-
     # ─── Stats Panel ──────────────────────────────────────────────
     panel_x = grid_x + puzzle_w + PADDING
     panel_y = grid_y
     panel_w = canvas_w - panel_x - PADDING
-    panel_h = canvas_h - info_h - panel_y - PADDING
+    panel_h = canvas_h - panel_y - PADDING
 
     if panel_w > 0 and panel_h > 0:
         panel_bbox = (panel_x, panel_y, panel_x + panel_w, panel_y + panel_h)
@@ -733,107 +736,9 @@ def render_frame(
         pdraw2.rectangle(panel_bbox, outline=CYAN, width=1)
         canvas = Image.alpha_composite(canvas.convert('RGBA'), panel_img)
         canvas = Image.alpha_composite(canvas, panel_overlay)
-        draw = ImageDraw.Draw(canvas)
 
-        header_font = get_font(14, bold=True)
-        data_font = get_font(12, mono=True)
-        label_font = get_font(12)
-
-        px = panel_x + 10
-        py = panel_y + 10
-
-        draw.text((px, py), "Stats", fill=CYAN, font=header_font)
-
-        inner_w = panel_w - 20
-        label_w = 65
-        data_w = (inner_w - label_w) // 2
-        col_x = px + label_w
-        all_col_x = col_x + data_w
-
-        line_bbox = draw.textbbox((0, 0), "Xy", font=data_font)
-        line_h = (line_bbox[3] - line_bbox[1]) + 4
-        row_h = max(28, line_h * 2)
-
-        header_y = py
-        py += row_h
-
-        th_bbox = draw.textbbox((0, 0), "Total", font=label_font)
-        th_w = th_bbox[2] - th_bbox[0]
-        ch_bbox = draw.textbbox((0, 0), "Current", font=label_font)
-        ch_w = ch_bbox[2] - ch_bbox[0]
-        draw.text((col_x + (data_w - th_w) // 2, header_y), "Total", fill=GRAY, font=label_font)
-        draw.text((all_col_x + (data_w - ch_w) // 2, header_y), "Current", fill=GRAY, font=label_font)
-
-        stats_rows = [
-            ("Time", stats_data.get("time_all", "0.000"), stats_data.get("time_cur", "0.000")),
-            ("Moves", stats_data.get("moves_all", "0"), stats_data.get("moves_cur", "0")),
-            ("MD", stats_data.get("md_all", "0"), stats_data.get("md_cur", "0")),
-            ("M/MD", stats_data.get("mmd_all", "0.000"), stats_data.get("mmd_cur", "0.000")),
-            ("TPS", stats_data.get("tps_all", "0.000"), stats_data.get("tps_cur", "0.000")),
-        ]
-
-        for label, all_val, cur_val in stats_rows:
-            all_lines = all_val.split('\n')
-            cur_lines = cur_val.split('\n')
-            max_lines = max(len(all_lines), len(cur_lines))
-            r_h = max(row_h, max_lines * line_h)
-            draw.text((px, py), label, fill=LIGHT_GRAY, font=label_font)
-            for i, vl in enumerate(all_lines):
-                vb = draw.textbbox((0, 0), vl, font=data_font)
-                draw.text((col_x + (data_w - (vb[2] - vb[0])) // 2, py + i * line_h), vl, fill=WHITE, font=data_font)
-            for i, vl in enumerate(cur_lines):
-                vb = draw.textbbox((0, 0), vl, font=data_font)
-                draw.text((all_col_x + (data_w - (vb[2] - vb[0])) // 2, py + i * line_h), vl, fill=CYAN, font=data_font)
-            py += r_h
-
-        # Movetimes accuracy
-        acc_text = "Movetimes accurate" if is_movetimes_accurate else "NOT movetimes accurate"
-        acc_color = ACCURATE_COLOR if is_movetimes_accurate else INACCURATE_COLOR
-        acc_font = get_font(11, mono=True)
-        draw.text((px, py + 4), acc_text, fill=acc_color, font=acc_font)
-        py += 18
-
-        # Grid stages column
-        stages = stats_data.get("grid_stages", [])
-        cur_stage = stats_data.get("grid_current", 0)
-        if len(stages) > 0:
-            hf = get_font(13, bold=True)
-            hb = draw.textbbox((0, 0), "Grid stages", font=hf)
-            htw = hb[2] - hb[0]
-            draw.text((px + (inner_w - htw) // 2, py), "Grid stages", fill=CYAN, font=hf)
-            py += 20
-            lf = get_font(13, mono=True)
-            # Build all lines first to compute column widths
-            raw_lines = []
-            for st in stages:
-                if st["cum_time"] > 0:
-                    cum_s = format_time_str(st['cum_time'])
-                    split_s = format_time_str(st['split_time'])
-                    mvtps_s = f"({st['split_moves']}/{st['split_tps']:.1f})"
-                else:
-                    cum_s = str(st['cum_moves'])
-                    split_s = f"(+{st['split_moves']})"
-                    mvtps_s = ""
-                raw_lines.append((cum_s, split_s, mvtps_s, st['label']))
-            if raw_lines:
-                w1 = max(len(l[0]) for l in raw_lines)
-                w2 = max(len(l[1]) for l in raw_lines)
-                w3 = max(len(l[2]) for l in raw_lines)
-                w4 = max(len(l[3]) for l in raw_lines)
-            for i, (cum_s, split_s, mvtps_s, label) in enumerate(raw_lines):
-                if cum_s.find('.') >= 0:
-                    line = f"{cum_s:>{w1}} | {split_s:>{w2}} {mvtps_s:<{w3}} | {label:<{w4}}"
-                else:
-                    line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
-                color = CYAN if i == cur_stage else WHITE
-                lb = draw.textbbox((0, 0), line, font=lf)
-                lw = lb[2] - lb[0]
-                draw.text((px + (inner_w - lw) // 2, py), line, fill=color, font=lf)
-                py += 18
-
-        if stats_data.get("cubic_estimate"):
-            ce = stats_data["cubic_estimate"]
-            draw.text((px, py + 4), f"Cubic est: {ce}", fill=GRAY, font=get_font(11))
+        stats_img = _render_stats_full(stats_data, is_movetimes_accurate, panel_w)
+        canvas.paste(stats_img, (panel_x, panel_y), stats_img)
 
     return canvas.convert('RGB')
 
@@ -879,7 +784,6 @@ def calculate_move_timings(solution: str, tps: int, width: int, height: int, spe
 def _render_one_frame(params: dict) -> Image.Image:
     params.pop("colors", None)
     params.pop("timer_img", None)
-    params.pop("sol_img", None)
     params.pop("stats_img", None)
     return render_frame(**params)
 
@@ -890,90 +794,109 @@ def _make_stats_text(stats_data, is_movetimes_accurate, panel_w):
 
 
 def _stats_layout_info(panel_w):
-    """Compute layout constants shared by static base and dynamic overlay."""
+    """Compute layout constants for the centered stats panel."""
     inner_w = panel_w - 20
-    label_w = 65
-    data_w = (inner_w - label_w) // 2
-    col_x = label_w
-    all_col_x = col_x + data_w
-    data_font = get_font(12, mono=True)
-    label_font = get_font(12)
-    line_bbox = data_font.getbbox("Xy")
-    line_h = (line_bbox[3] - line_bbox[1]) + 4
-    row_h = max(28, line_h * 2)
+    px = 10
+    data_font = get_font(20, mono=True)
+    hf = get_font(24, bold=True)
+    gs_hf = get_font(18, bold=True)
+    gs_lf = get_font(14, mono=True)
+    acc_font = get_font(16, mono=True)
+
+    data_line_h = data_font.getbbox("Xy")[3] - data_font.getbbox("Xy")[1] + 4
+    row_h = data_line_h + 8
+
+    labels = ["Time (total):", "Moves (total):", "TPS (total):", "Cubic est:",
+              "Predicted moves:", "MD (total):", "MD (current):",
+              "M/MD (total):", "M/MD (current):"]
+
     return {
-        "panel_w": panel_w, "inner_w": inner_w,
-        "label_w": label_w, "data_w": data_w,
-        "col_x": col_x, "all_col_x": all_col_x,
-        "data_font": data_font, "label_font": label_font,
-        "line_h": line_h, "row_h": row_h,
-        "px": 10, "py": 10 + row_h,
+        "panel_w": panel_w, "inner_w": inner_w, "px": px,
+        "data_font": data_font, "header_font": hf,
+        "gs_header_font": gs_hf, "gs_data_font": gs_lf,
+        "acc_font": acc_font, "row_h": row_h, "labels": labels,
     }
 
 
 def _render_stats_full(stats_data, is_movetimes_accurate, panel_w):
-    """Render full stats panel including both static and dynamic text."""
+    """Render full stats panel - centered, big fonts, gaps, with cubic est in main section."""
     li = _stats_layout_info(panel_w)
-    inner_w = li["inner_w"]; data_w = li["data_w"]
-    col_x = li["col_x"]; all_col_x = li["all_col_x"]
-    data_font = li["data_font"]; label_font = li["label_font"]
-    line_h = li["line_h"]; row_h = li["row_h"]
-    px = li["px"]; py = li["py"]
+    inner_w = li["inner_w"]; px = li["px"]
+    data_font = li["data_font"]; hf = li["header_font"]
+    gs_hf = li["gs_header_font"]; gs_lf = li["gs_data_font"]
+    acc_font = li["acc_font"]; row_h = li["row_h"]
 
     lines = []
     def add(x, y, text, fill, font):
         lines.append((x, y, text, fill, font))
 
-    hf = get_font(14, bold=True)
-    add(10, 10, "Stats", CYAN, hf)
+    def center_line(text, font, color, y_pos=None):
+        nonlocal y
+        tb = font.getbbox(text)
+        tw = tb[2] - tb[0]
+        x = px + (inner_w - tw) // 2
+        add(x, y if y_pos is None else y_pos, text, color, font)
 
-    lbl_font = label_font
-    total_label = "Total"
-    cur_label = "Current"
-    tb = lbl_font.getbbox(total_label)
-    thw = tb[2] - tb[0]
-    cb = lbl_font.getbbox(cur_label)
-    chw = cb[2] - cb[0]
-    add(col_x + (data_w - thw) // 2, 10, total_label, GRAY, lbl_font)
-    add(all_col_x + (data_w - chw) // 2, 10, cur_label, GRAY, lbl_font)
+    y = 10
 
-    stats_rows = [
-        ("Time", stats_data.get("time_all", "0.000"), stats_data.get("time_cur", "0.000")),
-        ("Moves", stats_data.get("moves_all", "0"), stats_data.get("moves_cur", "0")),
-        ("MD", stats_data.get("md_all", "0"), stats_data.get("md_cur", "0")),
-        ("M/MD", stats_data.get("mmd_all", "0.000"), stats_data.get("mmd_cur", "0.000")),
-        ("TPS", stats_data.get("tps_all", "0.000"), stats_data.get("tps_cur", "0.000")),
-    ]
+    # "Stats" header (centered)
+    hb = hf.getbbox("Stats")
+    add(px + (inner_w - (hb[2] - hb[0])) // 2, y, "Stats", CYAN, hf)
+    y += (hb[3] - hb[1]) + 16
 
-    row_y = py
-    for label, all_val, cur_val in stats_rows:
-        all_lines = all_val.split('\n')
-        cur_lines = cur_val.split('\n')
-        max_lines = max(len(all_lines), len(cur_lines))
-        r_h = max(row_h, max_lines * line_h)
-        add(px, row_y, label, LIGHT_GRAY, label_font)
-        for i, vl in enumerate(all_lines):
-            vb = data_font.getbbox(vl)
-            add(col_x + (data_w - (vb[2] - vb[0])) // 2, row_y + i * line_h, vl, WHITE, data_font)
-        for i, vl in enumerate(cur_lines):
-            vb = data_font.getbbox(vl)
-            add(all_col_x + (data_w - (vb[2] - vb[0])) // 2, row_y + i * line_h, vl, CYAN, data_font)
-        row_y += r_h
+    # Row 0: Time (total) [static, WHITE]
+    ce = stats_data.get("cubic_estimate")
+    center_line(f"Time (total): {stats_data.get('time_all', '0.000')}", data_font, WHITE)
+    y += row_h
 
-    add(px, row_y + 4, "Movetimes accurate" if is_movetimes_accurate else "NOT movetimes accurate",
-        ACCURATE_COLOR if is_movetimes_accurate else INACCURATE_COLOR, get_font(11, mono=True))
-    row_y += 18
+    # Row 1: Moves (total) [static, WHITE]
+    center_line(f"Moves (total): {stats_data.get('moves_all', '0')}", data_font, WHITE)
+    y += row_h
 
+    # Row 2: TPS (total) [static, WHITE]
+    center_line(f"TPS (total): {stats_data.get('tps_all', '0.000')}", data_font, WHITE)
+    y += row_h
+
+    # Row 3: Cubic est [static, WHITE]
+    center_line(f"Cubic est: {ce if ce else '---'}", data_font, WHITE)
+    y += row_h
+
+    # Row 4: Predicted moves [dynamic, CYAN]
+    center_line(f"Predicted moves: {stats_data.get('predicted_moves', '')}", data_font, CYAN)
+    y += row_h
+
+    # Row 5: MD (total) [static, WHITE]
+    center_line(f"MD (total): {stats_data.get('md_all', '0')}", data_font, WHITE)
+    y += row_h
+
+    # Row 6: MD (current) [dynamic, CYAN]
+    center_line(f"MD (current): {stats_data.get('md_cur', '0')}", data_font, CYAN)
+    y += row_h
+
+    # Row 7: M/MD (total) [static, WHITE]
+    center_line(f"M/MD (total): {stats_data.get('mmd_all', '0.000')}", data_font, WHITE)
+    y += row_h
+
+    # Row 8: M/MD (current) [dynamic, CYAN]
+    center_line(f"M/MD (current): {stats_data.get('mmd_cur', '0.000')}", data_font, CYAN)
+    y += row_h
+
+    y += 4
+
+    # Movetimes accuracy (centered)
+    acc_text = "Movetimes accurate" if is_movetimes_accurate else "NOT movetimes accurate"
+    acc_color = ACCURATE_COLOR if is_movetimes_accurate else INACCURATE_COLOR
+    ab = acc_font.getbbox(acc_text)
+    add(px + (inner_w - (ab[2] - ab[0])) // 2, y, acc_text, acc_color, acc_font)
+    y += (ab[3] - ab[1]) + 6
+
+    # Grid stages
     stages = stats_data.get("grid_stages", [])
     cur_stage = stats_data.get("grid_current", 0)
     if stages:
-        hf2 = get_font(13, bold=True)
-        hb2 = hf2.getbbox("Grid stages")
-        htw2 = hb2[2] - hb2[0]
-        inner_w_actual = panel_w - 20
-        add(px + (inner_w_actual - htw2) // 2, row_y, "Grid stages", CYAN, hf2)
-        row_y += 20
-        lf = get_font(13, mono=True)
+        gb = gs_hf.getbbox("Grid stages")
+        add(px + (inner_w - (gb[2] - gb[0])) // 2, y, "Grid stages", CYAN, gs_hf)
+        y += (gb[3] - gb[1]) + 14
         raw_lines = []
         for st in stages:
             if st["cum_time"] > 0:
@@ -996,13 +919,11 @@ def _render_stats_full(stats_data, is_movetimes_accurate, panel_w):
             else:
                 line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
             color = CYAN if i == cur_stage else WHITE
-            add(px + (inner_w_actual - lf.getbbox(line)[2]) // 2, row_y, line, color, lf)
-            row_y += 18
+            lb = gs_lf.getbbox(line)
+            add(px + (inner_w - (lb[2] - lb[0])) // 2, y, line, color, gs_lf)
+            y += (lb[3] - lb[1]) + 4
 
-    if stats_data.get("cubic_estimate"):
-        add(px, row_y + 4, f"Cubic est: {stats_data['cubic_estimate']}", GRAY, get_font(11))
-
-    total_h = row_y + 30
+    total_h = y + 30
     im = Image.new("RGBA", (panel_w, total_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(im)
     for x, y, text, fill, font in lines:
@@ -1010,52 +931,103 @@ def _render_stats_full(stats_data, is_movetimes_accurate, panel_w):
     return im
 
 
-def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_stages_list):
-    """Render stats panel with everything except current column values and stage highlight."""
+def _compute_stats_full_height(panel_w, has_grid_stages=True):
+    """Estimate total height of the rendered stats panel."""
     li = _stats_layout_info(panel_w)
-    inner_w = li["inner_w"]; data_w = li["data_w"]
-    col_x = li["col_x"]; all_col_x = li["all_col_x"]
-    data_font = li["data_font"]; label_font = li["label_font"]
-    line_h = li["line_h"]; row_h = li["row_h"]
-    px = li["px"]; py = li["py"]
+    data_font = li["data_font"]; hf = li["header_font"]
+    gs_hf = li["gs_header_font"]; gs_lf = li["gs_data_font"]
+    acc_font = li["acc_font"]; row_h = li["row_h"]
+
+    y = 10
+    y += (hf.getbbox("Stats")[3] - hf.getbbox("Stats")[1]) + 16
+    y += 9 * row_h
+    y += 4
+    y += (acc_font.getbbox("Movetimes accurate")[3] - acc_font.getbbox("Movetimes accurate")[1]) + 6
+    if has_grid_stages:
+        y += (gs_hf.getbbox("Grid stages")[3] - gs_hf.getbbox("Grid stages")[1]) + 14
+        y += 4 * ((gs_lf.getbbox("Xy")[3] - gs_lf.getbbox("Xy")[1]) + 4)
+    y += 30
+    return y
+
+
+def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_stages_list):
+    """Render static parts of stats panel (centered layout). Returns (image, layout_info)."""
+    li = _stats_layout_info(panel_w)
+    inner_w = li["inner_w"]; px = li["px"]
+    data_font = li["data_font"]; hf = li["header_font"]
+    gs_hf = li["gs_header_font"]; gs_lf = li["gs_data_font"]
+    acc_font = li["acc_font"]; row_h = li["row_h"]
 
     lines = []
     def add(x, y, text, fill, font):
         lines.append((x, y, text, fill, font))
 
-    hf = get_font(14, bold=True)
-    add(10, 10, "Stats", CYAN, hf)
+    def center_line(text, font, color):
+        nonlocal y
+        tb = font.getbbox(text)
+        tw = tb[2] - tb[0]
+        x = px + (inner_w - tw) // 2
+        add(x, y, text, color, font)
 
-    lbl_font = label_font
-    total_label = "Total"
-    cur_label = "Current"
-    tb = lbl_font.getbbox(total_label)
-    thw = tb[2] - tb[0]
-    cb = lbl_font.getbbox(cur_label)
-    chw = cb[2] - cb[0]
-    add(col_x + (data_w - thw) // 2, 10, total_label, GRAY, lbl_font)
-    add(all_col_x + (data_w - chw) // 2, 10, cur_label, GRAY, lbl_font)
+    y = 10
 
-    # Column values rendered dynamically per frame in overlay — skip here
-    stats_row_labels = ["Time", "Moves", "MD", "M/MD", "TPS"]
+    # "Stats" header
+    hb = hf.getbbox("Stats")
+    add(px + (inner_w - (hb[2] - hb[0])) // 2, y, "Stats", CYAN, hf)
+    y += (hb[3] - hb[1]) + 16
 
-    row_y = py
-    for label in stats_row_labels:
-        add(px, row_y, label, LIGHT_GRAY, label_font)
-        row_y += row_h
+    # Row 0: Time (total) [static, WHITE]
+    ce = stats_data.get("cubic_estimate")
+    center_line(f"Time (total): {stats_data.get('time_all', '0.000')}", data_font, WHITE)
+    y += row_h
 
-    add(px, row_y + 4, "Movetimes accurate" if is_movetimes_accurate else "NOT movetimes accurate",
-        ACCURATE_COLOR if is_movetimes_accurate else INACCURATE_COLOR, get_font(11, mono=True))
-    row_y += 18
+    # Row 1: Moves (total) [static, WHITE]
+    center_line(f"Moves (total): {stats_data.get('moves_all', '0')}", data_font, WHITE)
+    y += row_h
 
+    # Row 2: TPS (total) [static, WHITE]
+    center_line(f"TPS (total): {stats_data.get('tps_all', '0.000')}", data_font, WHITE)
+    y += row_h
+
+    # Row 3: Cubic est [static, WHITE]
+    center_line(f"Cubic est: {ce if ce else '---'}", data_font, WHITE)
+    y += row_h
+
+    # Row 4: Predicted moves [dynamic, CYAN] - skip in static base
+    y_predicted = y
+    y += row_h
+
+    # Row 5: MD (total) [static, WHITE]
+    center_line(f"MD (total): {stats_data.get('md_all', '0')}", data_font, WHITE)
+    y += row_h
+
+    # Row 6: MD (current) [dynamic, CYAN] - skip in static base
+    y_md_cur = y
+    y += row_h
+
+    # Row 7: M/MD (total) [static, WHITE]
+    center_line(f"M/MD (total): {stats_data.get('mmd_all', '0.000')}", data_font, WHITE)
+    y += row_h
+
+    # Row 8: M/MD (current) [dynamic, CYAN] - skip in static base
+    y_mmd_cur = y
+    y += row_h
+
+    y += 4
+
+    # Movetimes accuracy (centered)
+    acc_text = "Movetimes accurate" if is_movetimes_accurate else "NOT movetimes accurate"
+    acc_color = ACCURATE_COLOR if is_movetimes_accurate else INACCURATE_COLOR
+    ab = acc_font.getbbox(acc_text)
+    add(px + (inner_w - (ab[2] - ab[0])) // 2, y, acc_text, acc_color, acc_font)
+    y += (ab[3] - ab[1]) + 6
+
+    # Grid stages (all white in static base)
+    stage_y_positions = []
     if grid_stages_list:
-        hf2 = get_font(13, bold=True)
-        hb2 = hf2.getbbox("Grid stages")
-        htw2 = hb2[2] - hb2[0]
-        inner_w_actual = panel_w - 20
-        add(px + (inner_w_actual - htw2) // 2, row_y, "Grid stages", CYAN, hf2)
-        row_y += 20
-        lf = get_font(13, mono=True)
+        gb = gs_hf.getbbox("Grid stages")
+        add(px + (inner_w - (gb[2] - gb[0])) // 2, y, "Grid stages", CYAN, gs_hf)
+        y += (gb[3] - gb[1]) + 14
         raw_lines = []
         for st in grid_stages_list:
             if st["cum_time"] > 0:
@@ -1077,69 +1049,64 @@ def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_sta
                 line = f"{cum_s:>{w1}} | {split_s:>{w2}} {mvtps_s:<{w3}} | {label:<{w4}}"
             else:
                 line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
-            color = WHITE  # all white in static base
-            add(px + (inner_w_actual - lf.getbbox(line)[2]) // 2, row_y, line, color, lf)
-            row_y += 18
+            lb = gs_lf.getbbox(line)
+            add(px + (inner_w - (lb[2] - lb[0])) // 2, y, line, WHITE, gs_lf)
+            stage_y_positions.append(y)
+            y += (lb[3] - lb[1]) + 4
 
-    if stats_data.get("cubic_estimate"):
-        add(px, row_y + 4, f"Cubic est: {stats_data['cubic_estimate']}", GRAY, get_font(11))
-
-    total_h = row_y + 30
+    total_h = y + 30
     im = Image.new("RGBA", (panel_w, total_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(im)
     for x, y, text, fill, font in lines:
         draw.text((x, y), text, fill=(*fill, 255), font=font)
-    return im
+
+    layout_info = {
+        "px": px, "inner_w": inner_w,
+        "data_font": data_font, "row_h": row_h,
+        "y_predicted": y_predicted,
+        "y_md_cur": y_md_cur,
+        "y_mmd_cur": y_mmd_cur,
+        "stage_y_positions": stage_y_positions,
+        "grid_stages_list": grid_stages_list,
+        "gs_lf": gs_lf,
+    }
+    return im, layout_info
 
 
-def _apply_stats_dynamic(stats_data, panel_w, static_base):
-    """Overlay current column values and stage highlight onto a static base copy."""
-    li = _stats_layout_info(panel_w)
-    inner_w = li["inner_w"]; data_w = li["data_w"]
-    col_x = li["col_x"]; all_col_x = li["all_col_x"]
-    data_font = li["data_font"]
-    line_h = li["line_h"]; row_h = li["row_h"]
-    px = li["px"]; py = li["py"]
-
+def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info):
+    """Overlay dynamic values and stage highlight onto a static base (centered layout)."""
     overlay = Image.new("RGBA", static_base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
-    # Render ALL total column values + ALL current column values per frame
-    total_vals = [
-        stats_data.get("time_all", "0.000"),
-        stats_data.get("moves_all", "0"),
-        stats_data.get("md_all", "0"),
-        stats_data.get("mmd_all", "0.000"),
-        stats_data.get("tps_all", "0.000"),
-    ]
-    cur_vals = [
-        stats_data.get("time_cur", "0.000"),
-        stats_data.get("moves_cur", "0"),
-        stats_data.get("md_cur", "0"),
-        stats_data.get("mmd_cur", "0.000"),
-        stats_data.get("tps_cur", "0.000"),
-    ]
+    px = layout_info["px"]
+    inner_w = layout_info["inner_w"]
+    data_font = layout_info["data_font"]
+    gs_lf = layout_info["gs_lf"]
 
-    row_y = py
-    for all_val, cur_val in zip(total_vals, cur_vals):
-        all_lines = all_val.split('\n')
-        cur_lines = cur_val.split('\n')
-        for i, vl in enumerate(all_lines):
-            vb = data_font.getbbox(vl)
-            draw.text((col_x + (data_w - (vb[2] - vb[0])) // 2, row_y + i * line_h),
-                      vl, fill=(*WHITE, 255), font=data_font)
-        for i, vl in enumerate(cur_lines):
-            vb = data_font.getbbox(vl)
-            draw.text((all_col_x + (data_w - (vb[2] - vb[0])) // 2, row_y + i * line_h),
-                      vl, fill=(*CYAN, 255), font=data_font)
-        row_y += row_h
+    def draw_centered(text, font, fill, y_pos):
+        tb = font.getbbox(text)
+        tw = tb[2] - tb[0]
+        x = px + (inner_w - tw) // 2
+        draw.text((x, y_pos), text, fill=(*fill, 255), font=font)
 
+    # Predicted moves (dynamic)
+    predicted = stats_data.get("predicted_moves", "")
+    draw_centered(f"Predicted moves: {predicted}", data_font, CYAN, layout_info["y_predicted"])
+
+    # MD (current) (dynamic)
+    md_cur = stats_data.get("md_cur", "0")
+    draw_centered(f"MD (current): {md_cur}", data_font, CYAN, layout_info["y_md_cur"])
+
+    # M/MD (current) (dynamic)
+    mmd_cur = stats_data.get("mmd_cur", "0.000")
+    draw_centered(f"M/MD (current): {mmd_cur}", data_font, CYAN, layout_info["y_mmd_cur"])
+
+    # Current grid stage highlight (CYAN)
     stages = stats_data.get("grid_stages", [])
     cur_stage = stats_data.get("grid_current", 0)
-    if stages:
-        row_y_stages = py + 5 * row_h + 18 + 20
+    stage_y_positions = layout_info["stage_y_positions"]
+    if stages and cur_stage < len(stage_y_positions):
         raw_lines = []
-        lf = get_font(13, mono=True)
         for st in stages:
             if st["cum_time"] > 0:
                 cum_s = format_time_str(st['cum_time'])
@@ -1155,17 +1122,14 @@ def _apply_stats_dynamic(stats_data, panel_w, static_base):
             w2 = max(len(l[1]) for l in raw_lines)
             w3 = max(len(l[2]) for l in raw_lines) if any(l[2] for l in raw_lines) else 0
             w4 = max(len(l[3]) for l in raw_lines)
-        i = cur_stage
-        if i < len(raw_lines):
-            cum_s, split_s, mvtps_s, label = raw_lines[i]
-            if '.' in cum_s:
-                line = f"{cum_s:>{w1}} | {split_s:>{w2}} {mvtps_s:<{w3}} | {label:<{w4}}"
-            else:
-                line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
-            lb = lf.getbbox(line)
-            lw = lb[2] - lb[0]
-            draw.text((px + (inner_w - lw) // 2, row_y_stages + i * 18),
-                      line, fill=(*CYAN, 255), font=lf)
+        cum_s, split_s, mvtps_s, label = raw_lines[cur_stage]
+        if '.' in cum_s:
+            line = f"{cum_s:>{w1}} | {split_s:>{w2}} {mvtps_s:<{w3}} | {label:<{w4}}"
+        else:
+            line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
+        lb = gs_lf.getbbox(line)
+        draw.text((px + (inner_w - (lb[2] - lb[0])) // 2, stage_y_positions[cur_stage]),
+                  line, fill=(*CYAN, 255), font=gs_lf)
 
     result = static_base.copy()
     result = Image.alpha_composite(result, overlay)
@@ -1292,7 +1256,12 @@ def generate_frames(
         _log(event="stage_params_start", total_frames=sol_len + 1)
 
     # Optional GPU acceleration for tile grid rendering
-    gpu = GPURenderer(w, h, raw_tile, quality)  # memory_usage removed: now auto-calibrated
+    puzzle_w_est = w * tile_size
+    canvas_w_est = (puzzle_w_est + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
+    panel_w_est = canvas_w_est - (PADDING + puzzle_w_est + PADDING) - PADDING
+    stats_h_est = _compute_stats_full_height(panel_w_est, has_grid_stages=True)
+    min_canvas_h = HEADER_H + PADDING + stats_h_est + PADDING
+    gpu = GPURenderer(w, h, raw_tile, quality, min_canvas_h=min_canvas_h)
     use_gpu = use_gpu and gpu.available
 
     for frame_idx in range(sol_len + 1):
@@ -1310,8 +1279,6 @@ def generate_frames(
                 main_bg, sec_bg = get_tile_colors(num, state, all_fringe_schemes, w)
                 row_colors.append((main_bg or TILE_BG, sec_bg))
             tile_colors.append(row_colors)
-        current_moves_percent = (current_moves * 100 / sol_len) if sol_len > 0 else 0
-
         if frame_idx == 0:
             cur_time_ms = 0
             cur_md = all_md
@@ -1328,7 +1295,6 @@ def generate_frames(
 
         cur_mmd = "High" if moved_md <= 0 else (current_moves / moved_md)
         all_mmd = sol_len / all_md if all_md > 0 else 0
-        mmd_percent = "High" if isinstance(cur_mmd, str) else f"{((cur_mmd / all_mmd) - 1) * 100:.1f}%"
         mmd_display = cur_mmd if isinstance(cur_mmd, str) else f"{cur_mmd:.3f}"
 
         if cumulative_data:
@@ -1347,26 +1313,22 @@ def generate_frames(
             cur_tps_display = f"{cur_tps_val:.3f}".replace("inf", "Inf.")
             moves_display = str(current_moves)
 
-        moved_md_pct = f"{moved_md * 100 / all_md:.1f}%" if all_md > 0 else "0%"
-
         timer_text = f"{cur_time_display} ({moves_display} / {cur_tps_display})"
 
-        predicted_movecount = ""
-        if not isinstance(cur_mmd, str):
-            predicted = round(cur_mmd * all_md)
-            predicted_movecount = f" ({predicted}?)"
+        if isinstance(cur_mmd, str):
+            predicted_moves = cur_mmd
+        else:
+            predicted_moves = f"{round(cur_mmd * all_md)}"
 
         stats_data = {
             "time_all": format_time_str(round(total_time_ms)),
-            "time_cur": cur_time_display,
-            "moves_all": f"{sol_len}{predicted_movecount}",
-            "moves_cur": f"{moves_display}\n({current_moves_percent:.1f}%)",
+            "moves_all": str(sol_len),
             "md_all": str(all_md),
-            "md_cur": f"{moved_md}\n({moved_md_pct})",
+            "md_cur": str(moved_md),
             "mmd_all": f"{all_mmd:.3f}",
-            "mmd_cur": f"{mmd_display}\n({mmd_percent})",
+            "mmd_cur": mmd_display,
             "tps_all": f"{total_tps:.3f}",
-            "tps_cur": cur_tps_display,
+            "predicted_moves": predicted_moves,
             "cubic_estimate": None,
         }
 
@@ -1379,14 +1341,6 @@ def generate_frames(
             from replay_generator import get_cubic_estimate
             ce = get_cubic_estimate(round(total_time_ms), w, h)
             stats_data["cubic_estimate"] = format_time_str(ce)
-
-        puzzle_width_px = w * tile_size
-        info_font = get_font(11, mono=True)
-        sol_char_w = info_font.getlength('X')
-        max_sol_chars = max(20, int(puzzle_width_px / sol_char_w))
-        moves_done = "".join(expanded[:frame_idx])
-        if len(moves_done) > max_sol_chars:
-            moves_done = moves_done[-(max_sol_chars):]
 
         frame_params.append(dict(
             matrix=[row[:] for row in mc],
@@ -1401,7 +1355,6 @@ def generate_frames(
             total_moves=sol_len,
             total_time_ms=round(total_time_ms),
             total_tps=total_tps,
-            solution_text=moves_done,
             colors=tile_colors,
         ))
 
@@ -1416,28 +1369,23 @@ def generate_frames(
     if use_gpu and len(frame_params) > 1:
         puzzle_w = w * tile_size
         puzzle_h = h * tile_size
-        canvas_w = (puzzle_w + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
-        canvas_h = (HEADER_H + puzzle_h + PADDING * 3 + INFO_H + 1) // 2 * 2
+        canvas_w = gpu.canvas_w
+        canvas_h = gpu.canvas_h
         panel_x = PADDING + puzzle_w + PADDING
         panel_w_val = canvas_w - panel_x - PADDING
         panel_y = PADDING + HEADER_H + PADDING
-        panel_h_val = canvas_h - INFO_H - panel_y - PADDING
 
         _log(event="stage_overlays_start", total_frames=sol_len + 1)
 
-        # Pre-render static stats panel base (everything except current column values + stage highlight)
         first_stats = frame_params[0]["stats_data"]
-        static_stats_base = _make_stats_static_base(
-            panel_w_val, first_stats, frame_params[0]["is_movetimes_accurate"],
-            first_stats.get("grid_stages", [])
-        )
+        first_is_accurate = frame_params[0]["is_movetimes_accurate"]
+        grid_stages_list = first_stats.get("grid_stages", [])
+        static_base, static_layout = _make_stats_static_base(panel_w_val, first_stats, first_is_accurate, grid_stages_list)
 
         def _render_overlays(i, p):
-            stats = p["stats_data"]
             timer_img = _render_timer_text(p["timer_text"])
-            sol_img = _render_solution_text(p["solution_text"])
-            stats_img = _apply_stats_dynamic(stats, panel_w_val, static_stats_base)
-            return i, timer_img, sol_img, stats_img
+            stats_img = _apply_stats_dynamic(p["stats_data"], panel_w_val, static_base, static_layout)
+            return i, timer_img, stats_img
 
         workers = min(os.cpu_count() or 4, len(frame_params))
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -1445,13 +1393,11 @@ def generate_frames(
             for fut in as_completed(futs):
                 if cancel_check and cancel_check():
                     raise CancelError()
-                i, timer_img, sol_img, stats_img = fut.result()
+                i, timer_img, stats_img = fut.result()
                 p = frame_params[i]
                 p["timer_img"] = timer_img
-                p["sol_img"] = sol_img
                 p["stats_img"] = stats_img
                 p["timer_arr"] = np.array(timer_img)
-                p["sol_arr"] = np.array(sol_img)
                 p["stats_arr"] = np.array(stats_img)
         _log(event="stage_overlays_done", total_frames=sol_len + 1)
 
@@ -1507,14 +1453,13 @@ def generate_frames(
     if parallel and len(frame_params) > 1:
         workers = min(os.cpu_count() or 4, len(frame_params))
         get_font(font_size)
-        get_font(14, bold=True)
-        get_font(12, mono=True)
-        get_font(12)
-        get_font(11, mono=True)
-        get_font(13, bold=True)
-        get_font(13, mono=True)
+        get_font(24, bold=True)
+        get_font(20, mono=True)
+        get_font(18, bold=True)
+        get_font(14, mono=True)
+        get_font(16, mono=True)
         get_font(9)
-        get_font(22, bold=True)
+        get_font(36, bold=True, mono=True)
 
         frames = [None] * len(frame_params)
         done = 0

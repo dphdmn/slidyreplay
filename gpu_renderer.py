@@ -24,8 +24,8 @@ TILE_TEXT_COLOR = (0, 0, 0)
 TILE_BORDER_COLOR = (0, 0, 0)
 TILE_BORDER_WIDTH = 1
 PADDING = 20
-STATS_PANEL_WIDTH = 330
-HEADER_H = 52
+STATS_PANEL_WIDTH = 300
+HEADER_H = 56
 INFO_H = 40
 TIMER_BG = (22, 22, 22)
 PANEL_BG = (17, 17, 17)
@@ -83,17 +83,13 @@ def _render_text_rgba(text, font, fill, pad=0):
 
 
 def _render_timer_text(timer_text: str) -> Image.Image:
-    font = _font(22, bold=True)
+    font = _font(36, bold=True, mono=True)
     return _render_text_rgba(timer_text, font, CYAN)
 
 
-def _render_solution_text(solution_text: str) -> Image.Image:
-    font = _font(11, mono=True)
-    return _render_text_rgba(solution_text, font, GREEN)
-
 
 class GPURenderer:
-    def __init__(self, width: int, height: int, tile_size: int, quality: float = 2.0):
+    def __init__(self, width: int, height: int, tile_size: int, quality: float = 2.0, min_canvas_h: int = None):
         """
         GPU renderer with automatic optimal batching.
 
@@ -112,14 +108,16 @@ class GPURenderer:
         puzzle_w = width * ts
         puzzle_h = height * ts
         self.canvas_w = (puzzle_w + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
-        self.canvas_h = (HEADER_H + puzzle_h + PADDING * 3 + INFO_H + 1) // 2 * 2
+        default_h = (HEADER_H + puzzle_h + PADDING * 3 + 1) // 2 * 2
+        if min_canvas_h is not None:
+            default_h = max(default_h, min_canvas_h)
+        self.canvas_h = (default_h + 1) // 2 * 2
         self.grid_x = PADDING
         self.grid_y = PADDING + HEADER_H + PADDING
         self.panel_x = self.grid_x + puzzle_w + PADDING
         self.panel_y = self.grid_y
         self.panel_w = self.canvas_w - self.panel_x - PADDING
-        self.panel_h = self.canvas_h - INFO_H - self.panel_y - PADDING
-        self.info_y = self.grid_y + puzzle_h + 4
+        self.panel_h = self.canvas_h - self.panel_y - PADDING
         self.timer_bbox = (PADDING, PADDING, self.canvas_w - PADDING, PADDING + HEADER_H)
 
         self._device = None
@@ -257,7 +255,6 @@ class GPURenderer:
         cw, ch = self.canvas_w, self.canvas_h
         gx, gy = self.grid_x, self.grid_y
         px, py = self.panel_x, self.panel_y
-        info_y = self.info_y
         tx1, ty1, tx2, ty2 = self.timer_bbox
         th, tw = ty2 - ty1, tx2 - tx1
 
@@ -476,11 +473,6 @@ class GPURenderer:
                         dy = max(ty1, ty1 + ((ty2 - ty1) - tt.shape[0]) // 2)
                         self._blend_rgba_inplace(fc, tt, dx, dy)
 
-                    sol_arr = params.get("sol_arr")
-                    if sol_arr is not None:
-                        st = torch.from_numpy(sol_arr).to(dev, non_blocking=True).float() / 255.0
-                        self._blend_rgba_inplace(fc, st, gx, info_y)
-
                     stats_arr = params.get("stats_arr")
                     if stats_arr is not None:
                         stt = torch.from_numpy(stats_arr).to(dev, non_blocking=True).float() / 255.0
@@ -539,7 +531,6 @@ class GPURenderer:
             mat = p["matrix"]
             colors_data = p.get("colors", None)
             timer_img = p.get("timer_img")
-            sol_img = p.get("sol_img")
             stats_img = p.get("stats_img")
 
             cw, ch = self.canvas_w, self.canvas_h
@@ -588,9 +579,6 @@ class GPURenderer:
                         tx2d = sx + ts // 2 - (b[0] + b[2]) // 2
                         ty2d = sy + ts // 2 - (b[1] + b[3]) // 2
                         draw.text((tx2d, ty2d), text, fill=TILE_TEXT_COLOR, font=f)
-
-            if sol_img:
-                canvas.paste(sol_img, (gx, self.info_y), sol_img)
 
             pw, ph = self.panel_w, self.panel_h
             px, py = self.panel_x, self.panel_y
