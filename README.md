@@ -1,4 +1,4 @@
-# ReplayVideoGenerator
+# SlidyReplay
 
 Generates MP4 videos of sliding puzzle replays from [slidysim](https://slidysim.github.io/) replay URLs or manual solution strings.
 
@@ -39,6 +39,7 @@ CLI flags:
 | `--gpu` | Force GPU acceleration |
 | `--no-gpu` | Disable GPU acceleration |
 | `--batch` | File with solutions/URLs (one per line) |
+| `--stats-path` | Write per-batch JSONL stats to this path (for benchmarking/debugging) |
 
 Example batch file (`urls.txt`):
 ```
@@ -52,29 +53,27 @@ python main.py --batch urls.txt --gpu
 
 ## GPU Acceleration
 
-The GUI shows the GPU name when available, or "Not available — install CUDA" when PyTorch/CUDA is missing. The CLI prints `GPU ON (device name)` or `GPU OFF (CPU fallback)`. GPU is used by default when available.
+The GUI shows the GPU name when available, or "Not available — install CUDA" when PyTorch/CUDA is missing. GPU is used by default when available.
 
-### How GPU acceleration works
+### How GPU rendering works
 
-Frame rendering is GPU-accelerated via PyTorch/CUDA when available. The tile grid (colored backgrounds, number text, borders) is rendered as batched tensor operations on the GPU, and the full frame (timer, stats panel, solution text) is composited on the GPU. Each frame is rendered individually to fit within GPU memory.
+Frame rendering is GPU-accelerated via PyTorch/CUDA:
 
-### Benchmarks (GTX 1660 SUPER)
+- **Auto-calibrating batch sizing**: The renderer measures per-frame memory cost on the first batch (from `cuda.memory_reserved()`), then automatically computes the largest batch size that fits within available VRAM (soft 50% ceiling, with 256MB safety margin). No manual `memory_usage` parameter needed.
 
-**25×25 puzzle, 200 frames:**
+- **Row-chunked tile rendering**: For large puzzles, tiles are rendered in row chunks (2 rows at a time by default) to prevent combinatorial memory explosion.
 
-| Mode | Time | vs CPU |
-|------|------|--------|
-| CPU  | 56.7s | 1.0× |
-| GPU  | 7.7s  | **7.4×** |
+- **In-place blending**: All tile compositing (background colors, borders, number text) happens in-place on GPU tensors.
 
-**10×10 puzzle, 1570 frames:**
+- **Static/dynamic stats optimization**: The stats panel is split into static and dynamic parts. Static values (Time total, Moves total, TPS total, Cubic estimate, MD total, M/MD total, grid stages) are rendered **once**. Dynamic values (Predicted moves, MD current, M/MD current, current stage highlight) are rendered per frame.
 
-| Mode | Time | vs CPU |
-|------|------|--------|
-| CPU  | 293.4s | 1.0× |
-| GPU  | 144.3s | **2.0×** |
+### Benchmarks (NVIDIA GeForce GTX 1660 SUPER)
 
-The speedup is larger for bigger puzzles because the GPU's parallel tile processing wins more over per-tile CPU loops. For smaller puzzles the overhead of tensor ops and CPU-GPU transfer is more significant.
+**12×12 puzzle, 2884 frames, quality=2.0:**
+
+| Mode | Time | Notes |
+|------|------|-------|
+| GPU | ~72s | Auto-calibrated batches (~27-32 frames/batch) |
 
 ### Installing GPU support
 
@@ -82,29 +81,29 @@ The speedup is larger for bigger puzzles because the GPU's parallel tile process
    ```
    nvidia-smi
    ```
-   Look for "CUDA Version" in the output (top-right). If you don't have an NVIDIA GPU or the driver doesn't support CUDA 12, GPU acceleration won't work.
+   Look for "CUDA Version" in the output (top-right).
 
 2. **Install PyTorch with CUDA:**
    ```
    pip install torch --index-url https://download.pytorch.org/whl/cu124
    ```
-   This installs PyTorch with CUDA 12.4 support. The download is ~3 GB.
 
 3. **Verify:**
    ```
    python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))"
    ```
-   Should print `True` and your GPU name (e.g. `NVIDIA GeForce GTX 1660 SUPER`).
 
-If PyTorch is not installed or CUDA is unavailable, the program falls back to CPU rendering automatically — no changes to usage are needed.
+If PyTorch is not installed or CUDA is unavailable, the program falls back to CPU rendering automatically.
 
 ### Benchmark script
 
-Run your own benchmark:
 ```
 python benchmark.py
+python benchmark.py --skip-cpu
 ```
-Uses `test_input.txt` (a 10×10 replay URL) and times GPU vs CPU rendering.
+
+Uses `test_input.txt` and renders with GPU acceleration. All outputs (MP4, JSONL stats, benchmark log) are saved to `logs/{run_id}/`.
+
 
 ## Build
 
@@ -117,6 +116,6 @@ Builds a standalone `dist\ReplayVideoGenerator.exe` with PyInstaller. Requires `
 ## Dependencies
 
 - Python 3.13+
-- `ttkbootstrap`, `Pillow`, `tabulate`
+- `ttkbootstrap`, `Pillow`, `tabulate`, `numpy`
 - `torch` (optional — for GPU acceleration)
 - `ffmpeg` (bundled into the exe at build time)
