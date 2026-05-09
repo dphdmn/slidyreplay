@@ -69,11 +69,19 @@ Frame rendering is GPU-accelerated via PyTorch/CUDA:
 
 ### Benchmarks (NVIDIA GeForce GTX 1660 SUPER)
 
-**12×12 puzzle, 2884 frames, quality=2.0:**
+**Run ID:** `20260509_224603` — quality=2.0
 
-| Mode | Time | Notes |
-|------|------|-------|
-| GPU | ~72s | Auto-calibrated batches (~27-32 frames/batch) |
+| Puzzle | Moves | Frames | CPU | GPU | Speedup |
+|--------|-------|--------|-----|-----|---------|
+| 4×4    | 26    | 27     | 4.5s   | 3.1s   | 1.4× |
+| 5×5    | 98    | 99     | 9.4s   | 4.1s   | 2.3× |
+| 6×6    | 213   | 214    | 22.3s  | 7.0s   | 3.2× |
+| 7×7    | 425   | 426    | 52.6s  | 9.8s   | 5.4× |
+| 8×8    | 707   | 708    | 96.7s  | 16.3s  | 5.9× |
+| 9×9    | 1251  | 1252   | 208.4s | 30.5s  | 6.8× |
+| 10×10  | 1569  | 1570   | 284.9s | 33.1s  | 8.6× |
+
+GPU acceleration scales significantly with puzzle size. The speedup grows from **1.4×** at 4×4 to **8.6×** at 10×10, as the fixed CPU overhead is amortized over more work per frame and larger batches fit in VRAM. At 10×10, GPU renders ~48 fps equivalent vs CPU's ~5.5 fps.
 
 ### Installing GPU support
 
@@ -102,7 +110,7 @@ python benchmark.py
 python benchmark.py --skip-cpu
 ```
 
-Uses `test_input.txt` and renders with GPU acceleration. All outputs (MP4, JSONL stats, benchmark log) are saved to `logs/{run_id}/`.
+Scans `test_replays/` for all puzzle replays (4×4 through 10×10) and runs CPU + GPU rendering on each. Results are combined into a summary table and written into the Benchmarks section of this README. All outputs (MP4, JSONL stats, benchmark log) are saved to `logs/{run_id}/`.
 
 
 ## Build
