@@ -15,12 +15,11 @@ import zlib
 import shutil
 import subprocess
 import sys
-import tempfile
 import time as time_module
-from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from typing import List, Tuple, Optional, Union, Dict
+import bisect
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
 from replay_generator import (
@@ -1174,7 +1173,7 @@ def generate_frames(
     use_gpu: bool = True,
     cancel_check=None,
     output_path: str = None,
-) -> List[Image.Image]:
+) -> Tuple[List[Image.Image], List[int]]:
     expanded = expand_solution(solution)
     sol_len = len(expanded)
     h = len(matrix)
@@ -1365,7 +1364,37 @@ def generate_frames(
 
     _log(event="stage_params_done", total_frames=sol_len + 1)
 
-    # ── Complete GPU frame rendering (text pre-rendered on CPU, composited on GPU) ──
+    # ── Compute frame-to-state mapping for accurate playback ──
+    FPS = 60
+    frame_time_ms = 1000.0 / FPS
+    preview_ms = 500.0
+    final_ms = 1000.0
+
+    if custom_move_times and len(custom_move_times) == sol_len:
+        move_times = custom_move_times
+    else:
+        move_times = []
+        cum = 0.0
+        for d in delays:
+            cum += d
+            move_times.append(cum)
+
+    starts = [0.0]
+    for mt in move_times:
+        starts.append(preview_ms + mt)
+    starts.append(preview_ms + move_times[-1] + final_ms)
+
+    total_frames = max(1, int(round(starts[-1] / frame_time_ms)))
+
+    frame_state = []
+    for j in range(total_frames):
+        t = j * frame_time_ms
+        idx = bisect.bisect_right(starts, t) - 1
+        frame_state.append(max(0, min(idx, sol_len)))
+
+    states_needed = sorted(set(frame_state))
+
+    # ── GPU path: render unique states, pipe via frame mapping ──
     if use_gpu and len(frame_params) > 1:
         puzzle_w = w * tile_size
         puzzle_h = h * tile_size
@@ -1375,7 +1404,7 @@ def generate_frames(
         panel_w_val = canvas_w - panel_x - PADDING
         panel_y = PADDING + HEADER_H + PADDING
 
-        _log(event="stage_overlays_start", total_frames=sol_len + 1)
+        _log(event="stage_overlays_start", total_frames=len(states_needed))
 
         first_stats = frame_params[0]["stats_data"]
         first_is_accurate = frame_params[0]["is_movetimes_accurate"]
@@ -1387,9 +1416,10 @@ def generate_frames(
             stats_img = _apply_stats_dynamic(p["stats_data"], panel_w_val, static_base, static_layout)
             return i, timer_img, stats_img
 
-        workers = min(os.cpu_count() or 4, len(frame_params))
+        # Only pre-render overlays for states that will actually be rendered
+        workers = min(os.cpu_count() or 4, len(states_needed))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futs = {pool.submit(_render_overlays, i, p): i for i, p in enumerate(frame_params)}
+            futs = {pool.submit(_render_overlays, i, frame_params[i]): i for i in states_needed}
             for fut in as_completed(futs):
                 if cancel_check and cancel_check():
                     raise CancelError()
@@ -1399,72 +1429,59 @@ def generate_frames(
                 p["stats_img"] = stats_img
                 p["timer_arr"] = np.array(timer_img)
                 p["stats_arr"] = np.array(stats_img)
-        _log(event="stage_overlays_done", total_frames=sol_len + 1)
+        _log(event="stage_overlays_done", total_frames=len(states_needed))
 
-        # Compute frame durations for variable‑timing video
-        preview_ms = 500.0
-        final_ms = 1000.0
-        if custom_move_times and len(custom_move_times) == sol_len:
-            frame_durations_ms = [preview_ms]
-            for i in range(1, sol_len):
-                dur = custom_move_times[i] - custom_move_times[i - 1]
-                frame_durations_ms.append(max(1, dur))
-            frame_durations_ms.append(final_ms)
-        else:
-            frame_durations_ms = [preview_ms]
-            for i in range(1, sol_len):
-                frame_durations_ms.append(delays[i])
-            frame_durations_ms.append(final_ms)
+        # Pre-compute how many video frames each puzzle state spans
+        state_to_count = {}
+        for state_idx in frame_state:
+            state_to_count[state_idx] = state_to_count.get(state_idx, 0) + 1
 
-        # If output_path set, pipe directly to ffmpeg NVENC — no frame list accumulation
-        nvenc_proc = None
-        if output_path:
-            nvenc_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h)
-            frame_time_ms = 1000.0 / 60
+        # Open ffmpeg pipe, then render — handler pipes frames concurrently with GPU
+        nvenc_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h)
+        unique_params = [frame_params[i] for i in states_needed]
+        _log(event="stage_gpu_render_start", total_frames=len(unique_params))
 
-            def handler(img, idx, total):
-                nonlocal nvenc_proc
-                dur = frame_durations_ms[idx]
-                n_dup = max(1, round(dur / frame_time_ms))
-                data = img.tobytes()
-                for _ in range(n_dup):
-                    nvenc_proc.stdin.write(data)
+        def handler(img, idx_in_unique, total):
+            count = state_to_count[states_needed[idx_in_unique]]
+            data = img.tobytes()
+            for _ in range(count):
+                nvenc_proc.stdin.write(data)
 
-        _log(event="stage_gpu_render_start", total_frames=sol_len + 1)
-        gpu_frames = gpu.render_frames(
-            frame_params,
-            progress_callback=lambda cur, tot, **kw: progress_callback(cur, tot, **kw),
+        gpu.render_frames(
+            unique_params,
+            progress_callback=lambda cur, tot, **kw: progress_callback(cur, tot, **kw) if progress_callback else None,
             cancel_check=cancel_check,
             stats_path=stats_path,
-            frame_handler=handler if output_path else None,
+            frame_handler=handler,
         )
 
-        if nvenc_proc:
-            nvenc_proc.stdin.close()
-            nvenc_proc.wait()
+        nvenc_proc.stdin.close()
+        nvenc_proc.wait()
         _log(event="stage_ffmpeg_done")
 
         if stats_path:
             _sf.close()
 
-        return gpu_frames
+        return [], frame_state
 
-    # Phase 2: render frames in parallel (CPU path only)
-    if parallel and len(frame_params) > 1:
-        workers = min(os.cpu_count() or 4, len(frame_params))
-        get_font(font_size)
-        get_font(24, bold=True)
-        get_font(20, mono=True)
-        get_font(18, bold=True)
-        get_font(14, mono=True)
-        get_font(16, mono=True)
-        get_font(9)
-        get_font(36, bold=True, mono=True)
+    # ── CPU path: render only states_needed, pipe via frame mapping ──
+    get_font(font_size)
+    get_font(24, bold=True)
+    get_font(20, mono=True)
+    get_font(18, bold=True)
+    get_font(14, mono=True)
+    get_font(16, mono=True)
+    get_font(9)
+    get_font(36, bold=True, mono=True)
 
-        frames = [None] * len(frame_params)
+    state_images = [None] * (sol_len + 1)
+    num_needed = len(states_needed)
+
+    if parallel and num_needed > 1:
+        workers = min(os.cpu_count() or 4, num_needed)
         done = 0
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            fut_map = {pool.submit(_render_one_frame, p): i for i, p in enumerate(frame_params)}
+            fut_map = {pool.submit(_render_one_frame, frame_params[i]): i for i in states_needed}
             remaining = set(fut_map.keys())
             while remaining:
                 if cancel_check and cancel_check():
@@ -1472,121 +1489,35 @@ def generate_frames(
                 done_set, _ = wait(remaining, timeout=0.2, return_when=FIRST_COMPLETED)
                 for fut in done_set:
                     idx = fut_map[fut]
-                    frames[idx] = fut.result()
+                    state_images[idx] = fut.result()
                     done += 1
                     remaining.remove(fut)
                     if progress_callback:
-                        progress_callback(done, len(frame_params))
+                        progress_callback(done, num_needed)
     else:
-        frames = []
-        for i, p in enumerate(frame_params):
+        for seq_idx, i in enumerate(states_needed):
             if cancel_check and cancel_check():
                 raise CancelError()
-            frames.append(_render_one_frame(p))
+            state_images[i] = _render_one_frame(frame_params[i])
             if progress_callback:
-                progress_callback(i + 1, len(frame_params))
+                progress_callback(seq_idx + 1, num_needed)
 
     if stats_path:
         _sf.close()
-    return frames
 
+    # Derive canvas dimensions from first rendered image
+    first_rendered = next(img for img in state_images if img is not None)
+    canvas_w, canvas_h = first_rendered.size
 
-# ─── Video Encoding ────────────────────────────────────────────────
+    # Pipe to ffmpeg in frame_state order
+    ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h)
+    for state_idx in frame_state:
+        ffmpeg_proc.stdin.write(np.array(state_images[state_idx]).tobytes())
+    ffmpeg_proc.stdin.close()
+    ffmpeg_proc.wait()
+    _log(event="stage_ffmpeg_done")
 
-def encode_video_ffmpeg(
-    frames: List[Image.Image],
-    output_path: str,
-    delays: List[float],
-    preview_ms: float = 500.0,
-    final_ms: float = 1000.0,
-    temp_dir: Optional[str] = None,
-    cleanup: bool = True,
-    progress_callback=None,
-    custom_move_times: Optional[List[float]] = None
-):
-    output_path = os.path.abspath(output_path)
-    FPS = 60
-    FRAME_TIME_S = 1.0 / FPS
-
-    if temp_dir is None:
-        temp_dir = tempfile.mkdtemp(prefix="replay_frames_")
-    else:
-        os.makedirs(temp_dir, exist_ok=True)
-
-    temp_dir = Path(temp_dir)
-    sol_len = len(delays)
-
-    # Build frame durations
-    if custom_move_times and len(custom_move_times) == sol_len:
-        frame_durations_ms = [preview_ms]
-        for i in range(1, sol_len):
-            dur = custom_move_times[i] - custom_move_times[i - 1]
-            frame_durations_ms.append(max(1, dur))
-        frame_durations_ms.append(final_ms)
-    else:
-        frame_durations_ms = [preview_ms]
-        for i in range(1, sol_len):
-            frame_durations_ms.append(delays[i])
-        frame_durations_ms.append(final_ms)
-
-    assert len(frame_durations_ms) == len(frames), f"frames={len(frames)} vs durations={len(frame_durations_ms)}"
-
-    # Write concat file at 60fps by duplicating file references per 1/60s chunk
-    concat_lines = []
-    for i, (frame, dur_ms) in enumerate(zip(frames, frame_durations_ms)):
-        frame_path = temp_dir / f"frame_{i:06d}.png"
-        frame.save(frame_path)
-
-        n_entries = max(1, round(dur_ms / (FRAME_TIME_S * 1000)))
-        for _ in range(n_entries):
-            concat_lines.append(f"file '{frame_path.name}'")
-            concat_lines.append(f"duration {FRAME_TIME_S:.6f}")
-
-        if progress_callback:
-            progress_callback(i + 1, len(frames))
-
-    # Repeat last frame to make its duration take effect
-    if frames:
-        last_name = f"frame_{len(frames)-1:06d}.png"
-        concat_lines.append(f"file '{last_name}'")
-
-    concat_file = temp_dir / "concat.txt"
-    concat_file.write_text("\n".join(concat_lines), encoding='utf-8')
-
-    cmd = [
-        "ffmpeg", "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", str(concat_file),
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        "-preset", "medium",
-    "-crf", "24",
-    "-r", "60",
-    "-vsync", "cfr",
-    str(output_path)
-    ]
-
-    startupinfo = None
-    if sys.platform == "win32":
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = 0  # SW_HIDE
-    result = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=str(temp_dir),
-        startupinfo=startupinfo
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed: {result.stderr.decode(errors='replace')}")
-
-    if cleanup:
-        shutil.rmtree(str(temp_dir))
-
-    return output_path
+    return [], frame_state
 
 
 # ─── Progress Display ──────────────────────────────────────────────
@@ -1777,7 +1708,7 @@ class ReplayVideoGenerator:
         if show_progress and prog:
             prog.set_desc("Rendering frames")
 
-        frames = generate_frames(
+        frames, frame_state_map = generate_frames(
             matrix=matrix,
             solution=solution,
             tps=tps_int,
@@ -1794,29 +1725,11 @@ class ReplayVideoGenerator:
             stats_path=stats_path,
             use_gpu=use_gpu,
             cancel_check=cancel_check,
-            output_path=output_path if use_gpu else None,
+            output_path=output_path,
         )
 
         if show_progress:
             print()
-
-        if not frames:
-            # GPU path already piped frames directly to ffmpeg NVENC
-            pass
-        else:
-            if show_progress and prog:
-                prog.set_desc("Encoding video")
-
-            # Encode video (CPU path)
-            encode_video_ffmpeg(
-                frames=frames,
-                output_path=output_path,
-                delays=delays,
-                temp_dir=self.temp_dir,
-                cleanup=self.cleanup_frames,
-                progress_callback=progress_cb if (show_progress or external_progress_cb) else None,
-                custom_move_times=custom_move_times
-            )
 
         if show_progress:
             elapsed = time_module.time() - (prog.start_time if prog else time_module.time())
