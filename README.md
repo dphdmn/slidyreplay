@@ -28,8 +28,8 @@ python main.py --batch solutions.txt
 | `--solution` / `-s` | Solution string |
 | `--url` / `-u` | Replay URL |
 | `--url-file` | File containing a replay URL or solution string |
-| `--tps` | Tiles per second |
-| `--time` | Total time in seconds |
+| `--tps` | Tiles per second (omit if using `--time`) |
+| `--time` | Total time in seconds (omit if using `--tps`) |
 | `--size` | Puzzle size (e.g. `3x3`, `10x10`) |
 | `--scramble` | Scramble string |
 | `--output` / `-o` | Output file (default: `replay.mp4`) |
