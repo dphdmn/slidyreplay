@@ -1126,6 +1126,21 @@ def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info):
 
 _nvenc_cache: Optional[bool] = None
 
+def _close_pipe(proc: subprocess.Popen) -> None:
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        proc.wait()
+
+
 def _nvenc_available() -> bool:
     global _nvenc_cache
     if _nvenc_cache is not None:
@@ -1490,18 +1505,17 @@ def generate_frames(
                 enc_proc.stdin.write(data)
 
         try:
-            gpu.render_frames(
-                unique_params,
-                progress_callback=lambda cur, tot, **kw: progress_callback(cur, tot, **kw) if progress_callback else None,
-                cancel_check=cancel_check,
-                frame_handler=handler,
-            )
+            try:
+                gpu.render_frames(
+                    unique_params,
+                    progress_callback=lambda cur, tot, **kw: progress_callback(cur, tot, **kw) if progress_callback else None,
+                    cancel_check=cancel_check,
+                    frame_handler=handler,
+                )
+            finally:
+                gpu.cleanup()
         finally:
-            gpu.cleanup()
-
-        enc_proc.stdin.close()
-        enc_proc.wait()
-        log.info(f"  FFMPEG PIPE CLOSED: returncode={enc_proc.returncode}")
+            _close_pipe(enc_proc)
 
         log.info(f"  GPU PATH COMPLETE: returning {len(frame_state)} frame_state entries")
         return [], frame_state
@@ -1554,11 +1568,12 @@ def generate_frames(
     log.info(f"  CPU FFMPEG PIPE: output={output_path}, total_frames={len(frame_state)}, compression={compression}")
     ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h, fps=fps, compression=compression)
     written = 0
-    for state_idx in frame_state:
-        ffmpeg_proc.stdin.write(np.array(state_images[state_idx]).tobytes())
-        written += 1
-    ffmpeg_proc.stdin.close()
-    ffmpeg_proc.wait()
+    try:
+        for state_idx in frame_state:
+            ffmpeg_proc.stdin.write(np.array(state_images[state_idx]).tobytes())
+            written += 1
+    finally:
+        _close_pipe(ffmpeg_proc)
     log.info(f"  CPU FFMPEG DONE: {written} frames written, returncode={ffmpeg_proc.returncode}")
 
     return [], frame_state
