@@ -12,7 +12,7 @@ import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 
 from replay_video import ReplayVideoGenerator, parse_replay_url, CancelError
-from replay_generator import expand_solution, parse_scramble_guess
+from libs.replay_generator import expand_solution, parse_scramble_guess
 from debug_log import get_logger, init_logfile
 
 log = get_logger()

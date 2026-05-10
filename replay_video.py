@@ -22,14 +22,14 @@ from typing import List, Tuple, Optional, Union, Dict
 import bisect
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
-from replay_generator import (
+from libs.replay_generator import (
     expand_solution, scramble_to_puzzle, puzzle_to_scramble,
     create_puzzle, apply_moves, reverse_solution, parse_scramble,
     parse_scramble_guess, calculate_manhattan_distance,
     get_repeated_lengths, compress_solution
 )
 
-from splits import decompress_string_to_array, read_solve_data
+from libs.splits import decompress_string_to_array, read_solve_data
 from gpu_renderer import GPURenderer, _render_timer_text, CancelError
 from debug_log import get_logger
 
@@ -1413,7 +1413,7 @@ def generate_frames(
             stats_data["grid_current"] = cur_stage_idx
 
             if w * h > 99:
-                from replay_generator import get_cubic_estimate
+                from libs.replay_generator import get_cubic_estimate
                 ce = get_cubic_estimate(round(total_time_ms), w, h)
                 stats_data["cubic_estimate"] = format_time_str(ce)
 

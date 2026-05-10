@@ -41,3 +41,4 @@ ai_brainstorm/*
 deepseek*
 logs/*
 .opencode/*
+test/*
