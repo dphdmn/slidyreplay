@@ -350,7 +350,7 @@ class GPURenderer:
                     usable = 0
 
                 if per_frame_ema > 0:
-                    max_by_budget = max(1, int(usable / per_frame_ema))
+                    max_by_budget = max(1, int(usable / per_frame_ema * 0.7))
                     batch_size = max(1, min(remaining, max_by_budget))
                 else:
                     batch_size = 1
@@ -361,7 +361,17 @@ class GPURenderer:
                 self._stats["batch_size"] = batch_size
                 self._stats["batch_mem_mb"] = (ch * cw * 3 * 4 * batch_size) // (1024 * 1024)
 
-                log.info(f"  BATCH: batch_start={batch_start}, batch_n={batch_n}, batch_size={batch_size}, free_mem={free_mem // (1024*1024)}MB, usable={usable // (1024*1024)}MB, per_frame_ema={per_frame_ema // (1024*1024) if per_frame_ema > 0 else 'N/A'}MB")
+                log.info(f"  BATCH: batch_start={batch_start}, batch_n={batch_n}, batch_size={batch_size}, free_mem={free_mem // (1024*1024)}MB, usable={usable // (1024*1024)}MB, per_frame_ema={per_frame_ema // (1024*1024)}MB")
+
+                # Early OOM guard — even the calibration batch needs VRAM
+                if batch_n == 1 and per_frame_ema == 0 and usable <= 0:
+                    msg = (
+                        f"GPU out of memory: no usable VRAM available "
+                        f"(0MB usable, {free_mem // (1024*1024)}MB free). "
+                        f"Try disabling GPU acceleration."
+                    )
+                    log.critical(msg)
+                    raise RuntimeError(msg)
 
                 # GPU out of memory — raise critical error
                 if batch_n == 1 and per_frame_ema > 0 and usable < per_frame_ema:
@@ -509,6 +519,7 @@ class GPURenderer:
                 del canvas, mats
                 if batch_has_colors:
                     del cols, sec, has_sec
+                torch.cuda.empty_cache()
 
                 batch_start = batch_end
 
