@@ -961,12 +961,16 @@ Examples:
     print(f"[ReplayVideoGenerator] {gpu_str}")
 
     def run_single(solution, output, **kwargs):
-        gen = ReplayVideoGenerator(cleanup_frames=True)
-        gen.generate_simple_replay(
-            solution=solution, output_path=output,
-            show_progress=True, use_gpu=use_gpu,
-            fps=kwargs.pop("fps", 60), **kwargs
-        )
+        try:
+            gen = ReplayVideoGenerator(cleanup_frames=True)
+            gen.generate_simple_replay(
+                solution=solution, output_path=output,
+                show_progress=True, use_gpu=use_gpu,
+                fps=kwargs.pop("fps", 60), **kwargs
+            )
+        except RuntimeError as e:
+            print(f"\n[CRITICAL ERROR] {e}", file=sys.stderr)
+            sys.exit(1)
 
     items = []
     if args.batch:

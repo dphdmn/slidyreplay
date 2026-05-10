@@ -261,8 +261,13 @@ class GPURenderer:
         cancel_check=None,
         frame_handler=None,
     ) -> List[Image.Image]:
-        if not self.available or not frame_params_list:
-            return self._cpu_fallback(frame_params_list, progress_callback, cancel_check)
+        if not self.available:
+            raise RuntimeError(
+                "GPU renderer is not available. CUDA device not found or "
+                "initialization failed. Disable GPU acceleration to use CPU rendering."
+            )
+        if not frame_params_list:
+            return []
 
         n = len(frame_params_list)
         w, h, ts = self.w, self.h, self.tile_size
@@ -358,11 +363,17 @@ class GPURenderer:
 
                 log.info(f"  BATCH: batch_start={batch_start}, batch_n={batch_n}, batch_size={batch_size}, free_mem={free_mem // (1024*1024)}MB, usable={usable // (1024*1024)}MB, per_frame_ema={per_frame_ema // (1024*1024) if per_frame_ema > 0 else 'N/A'}MB")
 
-                # Fallback to CPU only if physical memory cannot fit a single frame
+                # GPU out of memory — raise critical error
                 if batch_n == 1 and per_frame_ema > 0 and usable < per_frame_ema:
-                    log.warning(f"  GPU OOM FALLBACK: remaining={remaining}, usable={usable}, per_frame_ema={per_frame_ema}")
-                    return self._cpu_fallback(frame_params_list[batch_start:],
-                                              progress_callback, cancel_check)
+                    msg = (
+                        f"GPU out of memory: cannot fit a single frame in available VRAM "
+                        f"(needs ~{per_frame_ema // (1024*1024)}MB, "
+                        f"only ~{usable // (1024*1024)}MB available). "
+                        f"Try disabling GPU acceleration, reducing quality, "
+                        f"or using a smaller puzzle."
+                    )
+                    log.critical(msg)
+                    raise RuntimeError(msg)
 
                 self._stats["free_mem_mb"] = free_mem // (1024 * 1024)
                 self._stats["mem_used_mb"] = self._stats["total_mem_mb"] - self._stats["free_mem_mb"]
@@ -521,80 +532,4 @@ class GPURenderer:
             torch.cuda.empty_cache()
             log.info("GPURenderer.cleanup: CUDA tensors freed")
 
-    def _cpu_fallback(self, frame_params_list, progress_callback, cancel_check=None):
-        frames = []
-        w, h, ts = self.w, self.h, self.tile_size
-        tex_map = _render_number_textures(w * h, ts, self.font_size)
-
-        for i, p in enumerate(frame_params_list):
-            if cancel_check and cancel_check():
-                raise CancelError()
-            mat = p["matrix"]
-            colors_data = p.get("colors", None)
-            timer_img = p.get("timer_img")
-            stats_img = p.get("stats_img")
-
-            cw, ch = self.canvas_w, self.canvas_h
-            canvas = Image.new("RGB", (cw, ch), BG_COLOR)
-            draw = ImageDraw.Draw(canvas)
-
-            tx1, ty1, tx2, ty2 = self.timer_bbox
-            draw.rectangle((tx1, ty1, tx2, ty2), fill=TIMER_BG)
-
-            if timer_img:
-                ti_w, ti_h = timer_img.size
-                tx = tx1 + ((tx2 - tx1) - ti_w) // 2
-                ty = ty1 + ((ty2 - ty1) - ti_h) // 2
-                canvas.paste(timer_img, (tx, ty), timer_img)
-
-            gx, gy = self.grid_x, self.grid_y
-            for row in range(h):
-                for col in range(w):
-                    num = mat[row][col]
-                    sx, sy = gx + col * ts, gy + row * ts
-                    if colors_data is not None:
-                        mc, sc = colors_data[row][col]
-                        if mc is None:
-                            mc = TILE_BG
-                    else:
-                        mc = TILE_BG
-                    draw.rectangle((sx, sy, sx + ts - 1, sy + ts - 1), fill=mc)
-                    if ts > 1:
-                        draw.rectangle((sx, sy, sx + ts - 1, sy + ts - 1),
-                                       outline=TILE_BORDER_COLOR, width=TILE_BORDER_WIDTH)
-                    if sc is not None and ts > 1:
-                        bar_h = max(2, int(ts * 0.1))
-                        bar_off = max(2, int(ts * 0.06))
-                        bar_inset = max(2, int(ts * 0.1))
-                        bar_y0 = sy + ts - bar_h - bar_off
-                        bar_y1 = sy + ts - bar_off
-                        bar_x0 = sx + bar_inset
-                        bar_x1 = sx + ts - bar_inset
-                        draw.rectangle((bar_x0, bar_y0, bar_x1, bar_y1), fill=sc)
-                        draw.rectangle((bar_x0, bar_y0, bar_x1, bar_y1),
-                                       outline=TILE_BORDER_COLOR, width=1)
-                    if num != 0:
-                        text = str(num)
-                        f = _font(self.font_size)
-                        b = draw.textbbox((0, 0), text, font=f)
-                        tx2d = sx + ts // 2 - (b[0] + b[2]) // 2
-                        ty2d = sy + ts // 2 - (b[1] + b[3]) // 2
-                        draw.text((tx2d, ty2d), text, fill=TILE_TEXT_COLOR, font=f)
-
-            pw, ph = self.panel_w, self.panel_h
-            px, py = self.panel_x, self.panel_y
-            if pw > 0 and ph > 0:
-                panel = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
-                pdraw = ImageDraw.Draw(panel)
-                pdraw.rectangle((0, 0, pw - 1, ph - 1),
-                                fill=(*PANEL_BG, int(255 * PANEL_ALPHA)))
-                pdraw.rectangle((0, 0, pw - 1, ph - 1), outline=CYAN, width=1)
-                canvas.paste(panel, (px, py), panel)
-                if stats_img:
-                    canvas.paste(stats_img, (px, py), stats_img)
-
-            frames.append(canvas)
-            if progress_callback:
-                progress_callback(i + 1, len(frame_params_list))
-
-        return frames
+    # _cpu_fallback removed — GPU errors now raise RuntimeError instead of silently falling back
