@@ -5,6 +5,7 @@ import time
 import os
 import subprocess
 import sys
+import ctypes
 from concurrent.futures import ThreadPoolExecutor
 
 import ttkbootstrap as tb
@@ -23,6 +24,72 @@ if getattr(sys, 'frozen', False):
 else:
     base = os.path.dirname(os.path.abspath(__file__))
     script_dir = base
+
+_font_dir = os.path.join(base, "fonts")
+FONT_REGULAR = os.path.join(_font_dir, "Roboto-Regular.ttf")
+FONT_BOLD = os.path.join(_font_dir, "Roboto-Bold.ttf")
+FONT_MONO = os.path.join(_font_dir, "JetBrainsMono-Regular.ttf")
+FONT_MONO_BOLD = os.path.join(_font_dir, "JetBrainsMono-Bold.ttf")
+FONT_FAMILY = "Roboto"
+FONT_MONO_FAMILY = "JetBrains Mono"
+
+
+def _setup_placeholder(text_widget, placeholder):
+    text_widget._has_placeholder = False
+    def _on_focus_in(_):
+        if text_widget._has_placeholder:
+            text_widget.delete("1.0", "end-1c")
+            text_widget._has_placeholder = False
+            text_widget.config(fg="#d4d4d4")
+    def _on_focus_out(_):
+        if not text_widget.get("1.0", "end-1c").strip():
+            text_widget.delete("1.0", "end-1c")
+            text_widget.insert("1.0", placeholder)
+            text_widget._has_placeholder = True
+            text_widget.config(fg="#666666")
+    text_widget.bind("<FocusIn>", _on_focus_in, add="+")
+    text_widget.bind("<FocusOut>", _on_focus_out, add="+")
+    _on_focus_out(None)
+
+
+def _register_fonts():
+    for fp in (FONT_REGULAR, FONT_BOLD, FONT_MONO, FONT_MONO_BOLD):
+        if not os.path.exists(fp):
+            log.warning(f"Font file not found: {fp}")
+            continue
+        if sys.platform == "win32":
+            r = ctypes.windll.gdi32.AddFontResourceExW(fp, 0x10, 0)
+            if r:
+                log.info(f"Registered font: {fp}")
+            else:
+                log.warning(f"Failed to register font: {fp}")
+        elif sys.platform == "linux":
+            methods = 0
+            ok = 0
+            try:
+                lib = ctypes.CDLL("libfontconfig.so.1")
+                if hasattr(lib, "FcConfigAppFontAddFile"):
+                    r = lib.FcConfigAppFontAddFile(None, fp.encode("utf-8"))
+                    ok += bool(r)
+                methods += 1
+            except Exception as e:
+                log.info(f"fontconfig failed for {os.path.basename(fp)}: {e}")
+            if not ok:
+                try:
+                    font_dir = os.path.expanduser("~/.local/share/fonts")
+                    os.makedirs(font_dir, exist_ok=True)
+                    dest = os.path.join(font_dir, os.path.basename(fp))
+                    if not os.path.exists(dest):
+                        import shutil
+                        shutil.copy2(fp, dest)
+                        ok += 1
+                    methods += 1
+                except Exception as e:
+                    log.warning(f"Font copy fallback failed for {os.path.basename(fp)}: {e}")
+            if ok:
+                log.info(f"Registered Linux font: {fp}")
+            elif methods:
+                log.warning(f"All methods failed for: {fp}")
 
 
 def _open(path, status_callback=None):
@@ -111,20 +178,21 @@ class ReplayGUI(tb.Window):
 
         self.fps_var = tk.IntVar(value=60)
         self.force_fringe_var = tk.BooleanVar(value=False)
-        self.out_folder_var = tk.StringVar(
-            value=os.path.join(script_dir, "replays"))
-        self.progress_text = tk.StringVar(value="Ready")
-        self._gpu_info_var = tk.StringVar(value="")
+        self.quality_var = tk.DoubleVar(value=1.0)
+        self.double_quality_var = tk.BooleanVar(value=False)
 
         self.tps_var = tk.StringVar()
         self.time_var = tk.StringVar()
         self.size_var = tk.StringVar()
         self.scramble_var = tk.StringVar()
         self.movetimes_var = tk.StringVar()
+        self.out_folder_var = tk.StringVar(value=os.path.join(script_dir, "replays"))
         self.file_path_var = tk.StringVar()
+        self.progress_text = tk.StringVar(value="Ready")
+        self._gpu_info_var = tk.StringVar(value="")
 
+        _register_fonts()
         os.makedirs(self.out_folder_var.get(), exist_ok=True)
-
         self._build_ui()
         self._center_window()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -142,6 +210,8 @@ class ReplayGUI(tb.Window):
                 pass
 
     def _build_ui(self):
+        style = tb.Style()
+        style.configure("TCheckbutton", font=(FONT_FAMILY, 9))
         root = tb.Frame(self, padding=8)
         root.pack(fill="both", expand=True)
 
@@ -159,32 +229,45 @@ class ReplayGUI(tb.Window):
         # ── Settings (top of left) ──
         settings = tb.LabelFrame(left, text="Settings")
         settings.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        sinner = tb.Frame(settings)
-        sinner.pack(fill="both", expand=True, padx=8, pady=6)
+        settings.grid_columnconfigure(0, weight=1)
 
         r = 0
-        tb.Label(sinner, text="FPS", font=("Segoe UI", 9)).grid(row=r, column=0, sticky="w")
-        fps_frame = tb.Frame(sinner)
-        fps_frame.grid(row=r, column=1, sticky="ew", padx=(6, 0))
-        self.fps_scale = tb.Scale(fps_frame, from_=1, to=1000,
-                                  variable=self.fps_var, orient="horizontal", length=180)
-        self.fps_scale.pack(side="left")
-        self.fps_label = tb.Label(fps_frame, text="60", width=5, font=("Segoe UI", 9))
-        self.fps_label.pack(side="left", padx=(6, 0))
+
+        fps_row = tb.Frame(settings)
+        fps_row.grid(row=r, column=0, sticky="ew", pady=(0, 4))
+        fps_row.grid_columnconfigure(1, weight=1)
+        tb.Label(fps_row, text="FPS", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.fps_scale = tb.Scale(fps_row, from_=1, to=240,
+                                  variable=self.fps_var, orient="horizontal")
+        self.fps_scale.grid(row=0, column=1, sticky="ew", padx=(0, 6))
+        self.fps_label = tb.Label(fps_row, text="60", width=5, font=(FONT_FAMILY, 9))
+        self.fps_label.grid(row=0, column=2)
         self.fps_var.trace_add("write",
                                 lambda *a: self.fps_label.config(text=f"{self.fps_var.get():d}"))
         r += 1
 
-        fringe_row = tb.Frame(sinner)
-        fringe_row.grid(row=r, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        tb.Checkbutton(fringe_row, text="Force fringe", variable=self.force_fringe_var,
+        opts_row = tb.Frame(settings)
+        opts_row.grid(row=r, column=0, sticky="ew", pady=(6, 6))
+        tb.Checkbutton(opts_row, text="Force fringe", variable=self.force_fringe_var,
+                       bootstyle="round-toggle").pack(side="left", padx=(6, 18))
+        tb.Checkbutton(opts_row, text="Double quality (2x)", variable=self.double_quality_var,
                        bootstyle="round-toggle").pack(side="left")
+        def _on_dq_toggle(*_):
+            self.quality_var.set(2.0 if self.double_quality_var.get() else 1.0)
+            self._update_quality_warning()
+        self.double_quality_var.trace_add("write", _on_dq_toggle)
         r += 1
 
-        out_row = tb.Frame(sinner)
-        out_row.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        self.quality_warning = tb.Label(settings, text="⚠ 2x quality increases VRAM usage significantly — may cause out-of-memory errors on GPU",
+                                         font=(FONT_FAMILY, 8), foreground="#ffa500", anchor="w")
+        self.quality_warning.grid(row=r, column=0, sticky="ew", pady=(0, 4))
+        self.quality_warning.grid_remove()
+        r += 1
+
+        out_row = tb.Frame(settings)
+        out_row.grid(row=r, column=0, sticky="ew", pady=(0, 4))
         out_row.grid_columnconfigure(1, weight=1)
-        tb.Label(out_row, text="Output folder", font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        tb.Label(out_row, text="Output folder", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
         self.out_entry = tb.Entry(out_row, textvariable=self.out_folder_var)
         self.out_entry.grid(row=0, column=1, sticky="ew", padx=(0, 4))
         tb.Button(out_row, text="Browse...", command=self._browse_output,
@@ -192,8 +275,8 @@ class ReplayGUI(tb.Window):
         r += 1
 
         # ── GPU Acceleration toggle ──
-        gpu_row = tb.Frame(sinner)
-        gpu_row.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        gpu_row = tb.Frame(settings)
+        gpu_row.grid(row=r, column=0, sticky="ew", pady=(0, 4))
         gpu_row.grid_columnconfigure(0, weight=0)
 
         self._gpu_available = False
@@ -222,7 +305,7 @@ class ReplayGUI(tb.Window):
         )
         self.gpu_toggle.pack(side="left")
 
-        gpu_info_lbl = tb.Label(gpu_row, font=("Segoe UI", 8))
+        gpu_info_lbl = tb.Label(gpu_row, font=(FONT_FAMILY, 8))
         gpu_info_lbl.pack(side="left", padx=(8, 0))
         if self._gpu_available:
             gpu_info_lbl.config(text=f"({self._gpu_name})", bootstyle="success")
@@ -243,31 +326,30 @@ class ReplayGUI(tb.Window):
 
         # -- File tab --
         tb.Label(file_tab, text="Single input file (solution or replay URL):",
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 4))
+                 font=(FONT_FAMILY, 10, "bold")).pack(anchor="w", pady=(0, 4))
         file_row = tb.Frame(file_tab)
         file_row.pack(fill="x", pady=(0, 4))
         file_row.grid_columnconfigure(0, weight=1)
-        self.file_path_var = tk.StringVar()
         self.file_entry = tb.Entry(file_row, textvariable=self.file_path_var)
         self.file_entry.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         tb.Button(file_row, text="Browse...", command=self._browse_file,
                   bootstyle="secondary-outline", width=9).grid(row=0, column=1)
         self.file_meta_var = tk.StringVar(value="No file selected.")
         self.file_meta_label = tb.Label(file_tab, textvariable=self.file_meta_var,
-                                        font=("Segoe UI", 9), foreground="#aaaaaa",
+                                        font=(FONT_FAMILY, 9), foreground="#aaaaaa",
                                         anchor="w", wraplength=500)
         self.file_meta_label.pack(fill="x", anchor="w")
 
         # -- URL tab --
         tb.Label(url_tab, text="Replay URLs (one per line):",
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w")
+                 font=(FONT_FAMILY, 10, "bold")).pack(anchor="w")
         self.url_text = scrolledtext.ScrolledText(
-            url_tab, height=8, font=("Consolas", 10),
+            url_tab, height=8, font=(FONT_MONO_FAMILY, 10),
             bg="#1e1e1e", fg="#d4d4d4", insertbackground="#fff",
             relief="flat", borderwidth=0, highlightthickness=1,
             highlightbackground="#3a3a3a", highlightcolor="#3a3a3a")
         self.url_text.pack(fill="both", expand=True, pady=(4, 0))
-        self.url_text.insert("1.0", "# paste URLs here, one per line\n")
+        _setup_placeholder(self.url_text, "# paste URLs here, one per line")
 
         # -- Manual tab --
         manual_tab.grid_rowconfigure(3, weight=1)
@@ -276,39 +358,39 @@ class ReplayGUI(tb.Window):
         params = tb.Frame(manual_tab)
         params.grid(row=0, column=0, sticky="ew", pady=(0, 2))
         c = 0
-        tb.Label(params, text="TPS:", font=("Segoe UI", 9)).grid(row=0, column=c, sticky="w", padx=(0, 2))
+        tb.Label(params, text="TPS:", font=(FONT_FAMILY, 9)).grid(row=0, column=c, sticky="w", padx=(0, 2))
         c += 1
         self.tps_entry = tb.Entry(params, textvariable=self.tps_var, width=10)
         self.tps_entry.grid(row=0, column=c, padx=(0, 8))
         c += 1
-        tb.Label(params, text="Time (s):", font=("Segoe UI", 9)).grid(row=0, column=c, sticky="w", padx=(0, 2))
+        tb.Label(params, text="Time (s):", font=(FONT_FAMILY, 9)).grid(row=0, column=c, sticky="w", padx=(0, 2))
         c += 1
         self.time_entry = tb.Entry(params, textvariable=self.time_var, width=10)
         self.time_entry.grid(row=0, column=c, padx=(0, 8))
         c += 1
-        tb.Label(params, text="Size:", font=("Segoe UI", 9)).grid(row=0, column=c, sticky="w", padx=(0, 2))
+        tb.Label(params, text="Size:", font=(FONT_FAMILY, 9)).grid(row=0, column=c, sticky="w", padx=(0, 2))
         c += 1
         self.size_entry = tb.Entry(params, textvariable=self.size_var, width=10)
         self.size_entry.grid(row=0, column=c)
 
         params2 = tb.Frame(manual_tab)
         params2.grid(row=1, column=0, sticky="ew")
-        tb.Label(params2, text="Scramble:", font=("Segoe UI", 9)).pack(side="left")
+        tb.Label(params2, text="Scramble:", font=(FONT_FAMILY, 9)).pack(side="left")
         self.scramble_entry = tb.Entry(params2, textvariable=self.scramble_var, width=22)
         self.scramble_entry.pack(side="left", padx=(4, 8))
-        tb.Label(params2, text="Movetimes:", font=("Segoe UI", 9)).pack(side="left")
+        tb.Label(params2, text="Movetimes:", font=(FONT_FAMILY, 9)).pack(side="left")
         self.movetimes_entry = tb.Entry(params2, textvariable=self.movetimes_var, width=22)
         self.movetimes_entry.pack(side="left", padx=(4, 0))
 
         tb.Label(manual_tab, text="Solution strings (one per line):",
-                 font=("Segoe UI", 10, "bold")).grid(row=2, column=0, sticky="w", pady=(6, 0))
+                 font=(FONT_FAMILY, 10, "bold")).grid(row=2, column=0, sticky="w", pady=(6, 0))
         self.solution_text = scrolledtext.ScrolledText(
-            manual_tab, font=("Consolas", 10),
+            manual_tab, font=(FONT_MONO_FAMILY, 10),
             bg="#1e1e1e", fg="#d4d4d4", insertbackground="#fff",
             relief="flat", borderwidth=0, highlightthickness=1,
             highlightbackground="#3a3a3a", highlightcolor="#3a3a3a")
         self.solution_text.grid(row=3, column=0, sticky="nsew", pady=(2, 0))
-        self.solution_text.insert("1.0", "# solutions here, one per line\n")
+        _setup_placeholder(self.solution_text, "# solutions here, one per line")
         self.solution_text.bind("<<Modified>>", self._on_solution_change)
 
         # ── Action buttons ──
@@ -338,12 +420,12 @@ class ReplayGUI(tb.Window):
         self.progress_bar.pack(fill="x", padx=8, pady=(8, 2))
 
         prog_label = tb.Label(prog_frame, textvariable=self.progress_text,
-                              font=("Segoe UI", 9), anchor="w")
+                              font=(FONT_FAMILY, 9), anchor="w")
         prog_label.pack(fill="x", padx=8, pady=(0, 0))
 
         self._gpu_info_var = tk.StringVar(value="")
         gpu_label = tb.Label(prog_frame, textvariable=self._gpu_info_var,
-                             font=("Segoe UI", 8), anchor="w", foreground="#aaaaaa")
+                             font=(FONT_FAMILY, 8), anchor="w", foreground="#aaaaaa")
         gpu_label.pack(fill="x", padx=8, pady=(0, 6))
 
         # ── Generated replays ──
@@ -354,7 +436,7 @@ class ReplayGUI(tb.Window):
         lst_frame.grid_rowconfigure(0, weight=1)
 
         self.replay_listbox = tk.Listbox(
-            lst_frame, font=("Consolas", 9), activestyle="none",
+            lst_frame, font=(FONT_MONO_FAMILY, 9), activestyle="none",
             selectbackground="#2a6d9c", selectforeground="white",
             bg="#1a1a1a", fg="#cccccc", relief="flat", borderwidth=0,
             highlightthickness=1, highlightbackground="#333")
@@ -375,6 +457,12 @@ class ReplayGUI(tb.Window):
                   bootstyle="secondary-outline", width=8).pack(side="left")
 
 
+
+    def _update_quality_warning(self):
+        if self.double_quality_var.get():
+            self.quality_warning.grid()
+        else:
+            self.quality_warning.grid_remove()
 
     def _center_window(self):
         self.update_idletasks()
@@ -545,6 +633,7 @@ class ReplayGUI(tb.Window):
         try:
             params = {
                 "force_fringe": self.force_fringe_var.get(),
+                "quality": self.quality_var.get(),
                 "fps": self.fps_var.get(),
             }
             log.info(f"_process_item[{idx}]: base_params={params}")

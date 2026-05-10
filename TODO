@@ -1,4 +1,3 @@
-- Add  file input support everywhere in gui and readme etc
 - Clear the project for import in google collabs and linux support (especially ffmpeg)
 - Speedup feature
 - check the overlay generation, does it still generates ALL frames and not the ones script needs?

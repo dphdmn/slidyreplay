@@ -1256,121 +1256,7 @@ def generate_frames(
     if not custom_move_times:
         custom_move_times = []
 
-    # ── Stage 1: precompute all per-frame data sequentially ──
-    frame_params = []
-
-    # Optional GPU acceleration for tile grid rendering
-    puzzle_w_est = w * tile_size
-    canvas_w_est = (puzzle_w_est + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
-    panel_w_est = canvas_w_est - (PADDING + puzzle_w_est + PADDING) - PADDING
-    stats_h_est = _compute_stats_full_height(panel_w_est, has_grid_stages=True)
-    min_canvas_h = HEADER_H + PADDING + stats_h_est + PADDING
-    gpu = GPURenderer(w, h, raw_tile, quality, min_canvas_h=min_canvas_h)
-    use_gpu = use_gpu and gpu.available
-    log.info(f"  canvas={gpu.canvas_w}x{gpu.canvas_h}, GPU available={gpu.available}, use_gpu={use_gpu}, max_batch_pixels={getattr(gpu, '_max_pixels_per_batch', '?')}")
-
-    for frame_idx in range(sol_len + 1):
-        if cancel_check and cancel_check():
-            raise CancelError()
-        state = get_grids_state(grid_states, frame_idx - 1) if frame_idx > 0 else grid_states[0]
-        current_moves = frame_idx
-
-        # Precompute per-tile colors for this frame
-        tile_colors = []
-        for row_idx in range(h):
-            row_colors = []
-            for col_idx in range(w):
-                num = mc[row_idx][col_idx]
-                main_bg, sec_bg = get_tile_colors(num, state, all_fringe_schemes, w)
-                row_colors.append((main_bg or TILE_BG, sec_bg))
-            tile_colors.append(row_colors)
-        if frame_idx == 0:
-            cur_time_ms = 0
-            cur_md = all_md
-            moved_md = 0
-            cur_tps_val = 0.0
-        else:
-            if custom_move_times and len(custom_move_times) > frame_idx - 1:
-                cur_time_ms = custom_move_times[frame_idx - 1]
-            else:
-                cur_time_ms = fake_times[frame_idx - 1] if frame_idx - 1 < len(fake_times) else 0
-            cur_md = calculate_manhattan_distance(mc)
-            moved_md = all_md - cur_md
-            cur_tps_val = current_moves * 1000 / cur_time_ms if cur_time_ms > 0 else 0
-
-        cur_mmd = "High" if moved_md <= 0 else (current_moves / moved_md)
-        all_mmd = sol_len / all_md if all_md > 0 else 0
-        mmd_display = cur_mmd if isinstance(cur_mmd, str) else f"{cur_mmd:.3f}"
-
-        if cumulative_data:
-            base_time = cur_time_ms
-            base_moves = current_moves
-            if cumulative_data["time"] > 0:
-                cur_time_display = format_time_str(round(base_time + cumulative_data["time"]))
-                tps_display = ((cumulative_data["moves"] + base_moves) * 1000 / (base_time + cumulative_data["time"]))
-                cur_tps_display = f"{tps_display:.3f}"
-            else:
-                cur_time_display = format_time_str(round(base_time))
-                cur_tps_display = f"{cur_tps_val:.3f}"
-            moves_display = str(base_moves + cumulative_data["moves"])
-        else:
-            cur_time_display = format_time_str(round(cur_time_ms))
-            cur_tps_display = f"{cur_tps_val:.3f}".replace("inf", "Inf.")
-            moves_display = str(current_moves)
-
-        timer_text = f"{cur_time_display} ({moves_display} / {cur_tps_display})"
-
-        if isinstance(cur_mmd, str):
-            predicted_moves = cur_mmd
-        else:
-            predicted_moves = f"{round(cur_mmd * all_md)}"
-
-        stats_data = {
-            "time_all": format_time_str(round(total_time_ms)),
-            "moves_all": str(sol_len),
-            "md_all": str(all_md),
-            "md_cur": str(moved_md),
-            "mmd_all": f"{all_mmd:.3f}",
-            "mmd_cur": mmd_display,
-            "tps_all": f"{total_tps:.3f}",
-            "predicted_moves": predicted_moves,
-            "cubic_estimate": None,
-        }
-
-        move_idx = frame_idx - 1 if frame_idx > 0 else 0
-        cur_stage_idx = max(0, sum(1 for s in filtered_stages if s <= move_idx) - 1)
-        stats_data["grid_stages"] = grid_stages_list
-        stats_data["grid_current"] = cur_stage_idx
-
-        if w * h > 99:
-            from replay_generator import get_cubic_estimate
-            ce = get_cubic_estimate(round(total_time_ms), w, h)
-            stats_data["cubic_estimate"] = format_time_str(ce)
-
-        frame_params.append(dict(
-            matrix=[row[:] for row in mc],
-            grid_state=state,
-            all_fringe_schemes=all_fringe_schemes,
-            tile_size=tile_size,
-            font_size=font_size,
-            stats_data=stats_data,
-            score_title_text=score_title_text,
-            timer_text=timer_text,
-            is_movetimes_accurate=is_movetimes_accurate,
-            total_moves=sol_len,
-            total_time_ms=round(total_time_ms),
-            total_tps=total_tps,
-            colors=tile_colors,
-        ))
-
-        if frame_idx < sol_len:
-            move = expanded[frame_idx]
-            zp = find_zero(mc, w, h)
-            mc = move_matrix(mc, move, zp, w, h)
-
-    log.info(f"  frame_params created: {len(frame_params)} entries")
-
-    # ── Compute frame-to-state mapping for accurate playback ──
+    # ── Stage 1: determine which states are actually needed ──
     frame_time_ms = 1000.0 / fps
     preview_ms = 500.0
     final_ms = 1000.0
@@ -1398,9 +1284,121 @@ def generate_frames(
         frame_state.append(max(0, min(idx, sol_len)))
 
     states_needed = sorted(set(frame_state))
+    states_needed_set = set(states_needed)
     log.info(f"  frame_state: total_frames={total_frames}, unique_states={len(states_needed)}, frame_time_ms={frame_time_ms:.3f}")
-    log.info(f"  starts[-1]={starts[-1]}, total_duration_ms={move_times[-1] if move_times else 0}")
-    log.info(f"  states_needed sample: first_10={states_needed[:10]}, last_10={states_needed[-10:] if len(states_needed) > 10 else states_needed}")
+
+    # Optional GPU acceleration for tile grid rendering
+    puzzle_w_est = w * tile_size
+    canvas_w_est = (puzzle_w_est + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
+    panel_w_est = canvas_w_est - (PADDING + puzzle_w_est + PADDING) - PADDING
+    stats_h_est = _compute_stats_full_height(panel_w_est, has_grid_stages=True)
+    min_canvas_h = HEADER_H + PADDING + stats_h_est + PADDING
+    gpu = GPURenderer(w, h, raw_tile, quality, min_canvas_h=min_canvas_h)
+    use_gpu = use_gpu and gpu.available
+    log.info(f"  canvas={gpu.canvas_w}x{gpu.canvas_h}, GPU available={gpu.available}, use_gpu={use_gpu}, max_batch_pixels={getattr(gpu, '_max_pixels_per_batch', '?')}")
+
+    # ── Stage 2: precompute data only for states that will be rendered ──
+    frame_params = [None] * (sol_len + 1)
+    for frame_idx in range(sol_len + 1):
+        if frame_idx in states_needed_set:
+            mc_snapshot = [row[:] for row in mc]
+            state = get_grids_state(grid_states, frame_idx - 1) if frame_idx > 0 else grid_states[0]
+            current_moves = frame_idx
+
+            tile_colors = []
+            for row_idx in range(h):
+                row_colors = []
+                for col_idx in range(w):
+                    num = mc[row_idx][col_idx]
+                    main_bg, sec_bg = get_tile_colors(num, state, all_fringe_schemes, w)
+                    row_colors.append((main_bg or TILE_BG, sec_bg))
+                tile_colors.append(row_colors)
+
+            if frame_idx == 0:
+                cur_time_ms = 0
+                cur_md = all_md
+                moved_md = 0
+                cur_tps_val = 0.0
+            else:
+                if custom_move_times and len(custom_move_times) > frame_idx - 1:
+                    cur_time_ms = custom_move_times[frame_idx - 1]
+                else:
+                    cur_time_ms = fake_times[frame_idx - 1] if frame_idx - 1 < len(fake_times) else 0
+                cur_md = calculate_manhattan_distance(mc)
+                moved_md = all_md - cur_md
+                cur_tps_val = current_moves * 1000 / cur_time_ms if cur_time_ms > 0 else 0
+
+            cur_mmd = "High" if moved_md <= 0 else (current_moves / moved_md)
+            all_mmd = sol_len / all_md if all_md > 0 else 0
+            mmd_display = cur_mmd if isinstance(cur_mmd, str) else f"{cur_mmd:.3f}"
+
+            if cumulative_data:
+                base_time = cur_time_ms
+                base_moves = current_moves
+                if cumulative_data["time"] > 0:
+                    cur_time_display = format_time_str(round(base_time + cumulative_data["time"]))
+                    tps_display = ((cumulative_data["moves"] + base_moves) * 1000 / (base_time + cumulative_data["time"]))
+                    cur_tps_display = f"{tps_display:.3f}"
+                else:
+                    cur_time_display = format_time_str(round(base_time))
+                    cur_tps_display = f"{cur_tps_val:.3f}"
+                moves_display = str(base_moves + cumulative_data["moves"])
+            else:
+                cur_time_display = format_time_str(round(cur_time_ms))
+                cur_tps_display = f"{cur_tps_val:.3f}".replace("inf", "Inf.")
+                moves_display = str(current_moves)
+
+            timer_text = f"{cur_time_display} ({moves_display} / {cur_tps_display})"
+
+            if isinstance(cur_mmd, str):
+                predicted_moves = cur_mmd
+            else:
+                predicted_moves = f"{round(cur_mmd * all_md)}"
+
+            stats_data = {
+                "time_all": format_time_str(round(total_time_ms)),
+                "moves_all": str(sol_len),
+                "md_all": str(all_md),
+                "md_cur": str(moved_md),
+                "mmd_all": f"{all_mmd:.3f}",
+                "mmd_cur": mmd_display,
+                "tps_all": f"{total_tps:.3f}",
+                "predicted_moves": predicted_moves,
+                "cubic_estimate": None,
+            }
+
+            move_idx = frame_idx - 1 if frame_idx > 0 else 0
+            cur_stage_idx = max(0, sum(1 for s in filtered_stages if s <= move_idx) - 1)
+            stats_data["grid_stages"] = grid_stages_list
+            stats_data["grid_current"] = cur_stage_idx
+
+            if w * h > 99:
+                from replay_generator import get_cubic_estimate
+                ce = get_cubic_estimate(round(total_time_ms), w, h)
+                stats_data["cubic_estimate"] = format_time_str(ce)
+
+            frame_params[frame_idx] = dict(
+                matrix=mc_snapshot,
+                grid_state=state,
+                all_fringe_schemes=all_fringe_schemes,
+                tile_size=tile_size,
+                font_size=font_size,
+                stats_data=stats_data,
+                score_title_text=score_title_text,
+                timer_text=timer_text,
+                is_movetimes_accurate=is_movetimes_accurate,
+                total_moves=sol_len,
+                total_time_ms=round(total_time_ms),
+                total_tps=total_tps,
+                colors=tile_colors,
+            )
+
+        if frame_idx < sol_len:
+            move = expanded[frame_idx]
+            zp = find_zero(mc, w, h)
+            mc = move_matrix(mc, move, zp, w, h)
+
+    log.info(f"  frame_params created: {len(frame_params)} entries, needed={len(states_needed)}")
 
     # ── GPU path: render unique states, pipe via frame mapping ──
     if use_gpu and len(frame_params) > 1:
