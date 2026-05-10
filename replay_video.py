@@ -35,8 +35,6 @@ from debug_log import get_logger
 
 log = get_logger()
 
-# ─── Constants ─────────────────────────────────────────────────────
-
 # ─── Replay URL Parsing ────────────────────────────────────────────
 
 def parse_replay_url(url: str):
@@ -68,7 +66,7 @@ def parse_replay_url(url: str):
 
     return solution, tps, scramble, movetimes
 
-
+BASE_SIZE = 15
 BG_COLOR = (18, 18, 18)
 TILE_BG = (51, 51, 51)
 TILE_TEXT_COLOR = (0, 0, 0)
@@ -94,7 +92,7 @@ TILE_BORDER_RADIUS_RATIO = 0.4
 TILE_BORDER_WIDTH = 1
 
 PADDING = 20
-STATS_PANEL_WIDTH = 300
+STATS_PANEL_WIDTH = 320
 TIMER_HEIGHT = 30
 HEADER_H = 56
 INFO_H = 40
@@ -618,15 +616,13 @@ def pick_tile_size(width: int, height: int) -> int:
     max_dim = max(width, height)
     min_dim = min(width, height)
     if max_dim >= 30:
-        return 22
+        return BASE_SIZE
     elif max_dim >= 20:
-        return 32
-    elif max_dim >= 15:
-        return 36
+        return BASE_SIZE + 10
     elif max_dim >= 10:
-        return max(32, min(48, int(480 / max_dim)))
+        return BASE_SIZE + 14
     else:
-        return min(80, max(56, int(280 / min_dim)))
+        return min(BASE_SIZE * 40 // 11, max(BASE_SIZE * 28 // 11, BASE_SIZE * 140 // 11 // min_dim))
 
 
 def draw_filled_rect(draw, bbox, color):
@@ -803,13 +799,13 @@ def _make_stats_text(stats_data, is_movetimes_accurate, panel_w):
 
 
 def _stats_layout_info(panel_w):
-    """Compute layout constants for the centered stats panel."""
+    """Compute layout constants for the stats panel."""
     inner_w = panel_w - 20
     px = 10
     data_font = get_font(20, mono=True)
     hf = get_font(24, bold=True)
     gs_hf = get_font(18, bold=True)
-    gs_lf = get_font(14, mono=True)
+    gs_lf = get_font(13, mono=True)
     acc_font = get_font(16, mono=True)
 
     data_line_h = data_font.getbbox("Xy")[3] - data_font.getbbox("Xy")[1] + 4
@@ -828,7 +824,7 @@ def _stats_layout_info(panel_w):
 
 
 def _render_stats_full(stats_data, is_movetimes_accurate, panel_w):
-    """Render full stats panel - centered, big fonts, gaps, with cubic est in main section."""
+    """Render full stats panel - left-aligned labels, right-aligned values."""
     li = _stats_layout_info(panel_w)
     inner_w = li["inner_w"]; px = li["px"]
     data_font = li["data_font"]; hf = li["header_font"]
@@ -839,64 +835,56 @@ def _render_stats_full(stats_data, is_movetimes_accurate, panel_w):
     def add(x, y, text, fill, font):
         lines.append((x, y, text, fill, font))
 
-    def center_line(text, font, color, y_pos=None):
+    def lv_line(label, value, font, color):
         nonlocal y
-        tb = font.getbbox(text)
-        tw = tb[2] - tb[0]
-        x = px + (inner_w - tw) // 2
-        add(x, y if y_pos is None else y_pos, text, color, font)
+        add(px, y, label, color, font)
+        vb = font.getbbox(value)
+        vw = vb[2] - vb[0]
+        add(px + inner_w - vw, y, value, color, font)
+        y += row_h
 
     y = 10
 
-    # "Stats" header (centered)
+    # "Stats" header (left-aligned)
     hb = hf.getbbox("Stats")
-    add(px + (inner_w - (hb[2] - hb[0])) // 2, y, "Stats", CYAN, hf)
+    add(px, y, "Stats", CYAN, hf)
     y += (hb[3] - hb[1]) + 16
 
-    # Row 0: Time (total) [static, WHITE]
+    # Row 0: Time (total)
     ce = stats_data.get("cubic_estimate")
-    center_line(f"Time (total): {stats_data.get('time_all', '0.000')}", data_font, WHITE)
-    y += row_h
+    lv_line("Time (total): ", stats_data.get('time_all', '0.000'), data_font, WHITE)
 
-    # Row 1: Moves (total) [static, WHITE]
-    center_line(f"Moves (total): {stats_data.get('moves_all', '0')}", data_font, WHITE)
-    y += row_h
+    # Row 1: Moves (total)
+    lv_line("Moves (total): ", stats_data.get('moves_all', '0'), data_font, WHITE)
 
-    # Row 2: TPS (total) [static, WHITE]
-    center_line(f"TPS (total): {stats_data.get('tps_all', '0.000')}", data_font, WHITE)
-    y += row_h
+    # Row 2: TPS (total)
+    lv_line("TPS (total): ", stats_data.get('tps_all', '0.000'), data_font, WHITE)
 
-    # Row 3: Cubic est [static, WHITE]
-    center_line(f"Cubic est: {ce if ce else '---'}", data_font, WHITE)
-    y += row_h
+    # Row 3: Cubic est
+    lv_line("Cubic est: ", ce if ce else '---', data_font, WHITE)
 
-    # Row 4: Predicted moves [dynamic, CYAN]
-    center_line(f"Predicted moves: {stats_data.get('predicted_moves', '')}", data_font, CYAN)
-    y += row_h
+    # Row 4: Predicted moves
+    lv_line("Predicted moves: ", stats_data.get('predicted_moves', ''), data_font, CYAN)
 
-    # Row 5: MD (total) [static, WHITE]
-    center_line(f"MD (total): {stats_data.get('md_all', '0')}", data_font, WHITE)
-    y += row_h
+    # Row 5: MD (total)
+    lv_line("MD (total): ", stats_data.get('md_all', '0'), data_font, WHITE)
 
-    # Row 6: MD (current) [dynamic, CYAN]
-    center_line(f"MD (current): {stats_data.get('md_cur', '0')}", data_font, CYAN)
-    y += row_h
+    # Row 6: MD (current)
+    lv_line("MD (current): ", stats_data.get('md_cur', '0'), data_font, CYAN)
 
-    # Row 7: M/MD (total) [static, WHITE]
-    center_line(f"M/MD (total): {stats_data.get('mmd_all', '0.000')}", data_font, WHITE)
-    y += row_h
+    # Row 7: M/MD (total)
+    lv_line("M/MD (total): ", stats_data.get('mmd_all', '0.000'), data_font, WHITE)
 
-    # Row 8: M/MD (current) [dynamic, CYAN]
-    center_line(f"M/MD (current): {stats_data.get('mmd_cur', '0.000')}", data_font, CYAN)
-    y += row_h
+    # Row 8: M/MD (current)
+    lv_line("M/MD (current): ", stats_data.get('mmd_cur', '0.000'), data_font, CYAN)
 
     y += 4
 
-    # Movetimes accuracy (centered)
+    # Movetimes accuracy (left-aligned)
     acc_text = "Movetimes accurate" if is_movetimes_accurate else "NOT movetimes accurate"
     acc_color = ACCURATE_COLOR if is_movetimes_accurate else INACCURATE_COLOR
     ab = acc_font.getbbox(acc_text)
-    add(px + (inner_w - (ab[2] - ab[0])) // 2, y, acc_text, acc_color, acc_font)
+    add(px, y, acc_text, acc_color, acc_font)
     y += (ab[3] - ab[1]) + 6
 
     # Grid stages
@@ -904,7 +892,7 @@ def _render_stats_full(stats_data, is_movetimes_accurate, panel_w):
     cur_stage = stats_data.get("grid_current", 0)
     if stages:
         gb = gs_hf.getbbox("Grid stages")
-        add(px + (inner_w - (gb[2] - gb[0])) // 2, y, "Grid stages", CYAN, gs_hf)
+        add(px, y, "Grid stages", CYAN, gs_hf)
         y += (gb[3] - gb[1]) + 14
         raw_lines = []
         for st in stages:
@@ -928,9 +916,8 @@ def _render_stats_full(stats_data, is_movetimes_accurate, panel_w):
             else:
                 line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
             color = CYAN if i == cur_stage else WHITE
-            lb = gs_lf.getbbox(line)
-            add(px + (inner_w - (lb[2] - lb[0])) // 2, y, line, color, gs_lf)
-            y += (lb[3] - lb[1]) + 4
+            add(px, y, line, color, gs_lf)
+            y += (gs_lf.getbbox(line)[3] - gs_lf.getbbox(line)[1]) + 4
 
     total_h = y + 30
     im = Image.new("RGBA", (panel_w, total_h), (0, 0, 0, 0))
@@ -960,7 +947,7 @@ def _compute_stats_full_height(panel_w, has_grid_stages=True):
 
 
 def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_stages_list):
-    """Render static parts of stats panel (centered layout). Returns (image, layout_info)."""
+    """Render static parts of stats panel (left-aligned labels, right-aligned values). Returns (image, layout_info)."""
     li = _stats_layout_info(panel_w)
     inner_w = li["inner_w"]; px = li["px"]
     data_font = li["data_font"]; hf = li["header_font"]
@@ -971,71 +958,69 @@ def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_sta
     def add(x, y, text, fill, font):
         lines.append((x, y, text, fill, font))
 
-    def center_line(text, font, color):
+    def lv_line(label, value, font, color):
         nonlocal y
-        tb = font.getbbox(text)
-        tw = tb[2] - tb[0]
-        x = px + (inner_w - tw) // 2
-        add(x, y, text, color, font)
+        add(px, y, label, color, font)
+        vb = font.getbbox(value)
+        vw = vb[2] - vb[0]
+        add(px + inner_w - vw, y, value, color, font)
+        y += row_h
 
     y = 10
 
-    # "Stats" header
+    # "Stats" header (left-aligned)
     hb = hf.getbbox("Stats")
-    add(px + (inner_w - (hb[2] - hb[0])) // 2, y, "Stats", CYAN, hf)
+    add(px, y, "Stats", CYAN, hf)
     y += (hb[3] - hb[1]) + 16
 
     # Row 0: Time (total) [static, WHITE]
     ce = stats_data.get("cubic_estimate")
-    center_line(f"Time (total): {stats_data.get('time_all', '0.000')}", data_font, WHITE)
-    y += row_h
+    lv_line("Time (total): ", stats_data.get('time_all', '0.000'), data_font, WHITE)
 
     # Row 1: Moves (total) [static, WHITE]
-    center_line(f"Moves (total): {stats_data.get('moves_all', '0')}", data_font, WHITE)
-    y += row_h
+    lv_line("Moves (total): ", stats_data.get('moves_all', '0'), data_font, WHITE)
 
     # Row 2: TPS (total) [static, WHITE]
-    center_line(f"TPS (total): {stats_data.get('tps_all', '0.000')}", data_font, WHITE)
-    y += row_h
+    lv_line("TPS (total): ", stats_data.get('tps_all', '0.000'), data_font, WHITE)
 
     # Row 3: Cubic est [static, WHITE]
-    center_line(f"Cubic est: {ce if ce else '---'}", data_font, WHITE)
-    y += row_h
+    lv_line("Cubic est: ", ce if ce else '---', data_font, WHITE)
 
-    # Row 4: Predicted moves [dynamic, CYAN] - skip in static base
+    # Row 4: Predicted moves [dynamic label in static base]
+    add(px, y, "Predicted moves: ", CYAN, data_font)
     y_predicted = y
     y += row_h
 
     # Row 5: MD (total) [static, WHITE]
-    center_line(f"MD (total): {stats_data.get('md_all', '0')}", data_font, WHITE)
-    y += row_h
+    lv_line("MD (total): ", stats_data.get('md_all', '0'), data_font, WHITE)
 
-    # Row 6: MD (current) [dynamic, CYAN] - skip in static base
+    # Row 6: MD (current) [dynamic label in static base]
+    add(px, y, "MD (current): ", CYAN, data_font)
     y_md_cur = y
     y += row_h
 
     # Row 7: M/MD (total) [static, WHITE]
-    center_line(f"M/MD (total): {stats_data.get('mmd_all', '0.000')}", data_font, WHITE)
-    y += row_h
+    lv_line("M/MD (total): ", stats_data.get('mmd_all', '0.000'), data_font, WHITE)
 
-    # Row 8: M/MD (current) [dynamic, CYAN] - skip in static base
+    # Row 8: M/MD (current) [dynamic label in static base]
+    add(px, y, "M/MD (current): ", CYAN, data_font)
     y_mmd_cur = y
     y += row_h
 
     y += 4
 
-    # Movetimes accuracy (centered)
+    # Movetimes accuracy (left-aligned)
     acc_text = "Movetimes accurate" if is_movetimes_accurate else "NOT movetimes accurate"
     acc_color = ACCURATE_COLOR if is_movetimes_accurate else INACCURATE_COLOR
     ab = acc_font.getbbox(acc_text)
-    add(px + (inner_w - (ab[2] - ab[0])) // 2, y, acc_text, acc_color, acc_font)
+    add(px, y, acc_text, acc_color, acc_font)
     y += (ab[3] - ab[1]) + 6
 
     # Grid stages (all white in static base)
     stage_y_positions = []
     if grid_stages_list:
         gb = gs_hf.getbbox("Grid stages")
-        add(px + (inner_w - (gb[2] - gb[0])) // 2, y, "Grid stages", CYAN, gs_hf)
+        add(px, y, "Grid stages", CYAN, gs_hf)
         y += (gb[3] - gb[1]) + 14
         raw_lines = []
         for st in grid_stages_list:
@@ -1058,10 +1043,9 @@ def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_sta
                 line = f"{cum_s:>{w1}} | {split_s:>{w2}} {mvtps_s:<{w3}} | {label:<{w4}}"
             else:
                 line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
-            lb = gs_lf.getbbox(line)
-            add(px + (inner_w - (lb[2] - lb[0])) // 2, y, line, WHITE, gs_lf)
+            add(px, y, line, WHITE, gs_lf)
             stage_y_positions.append(y)
-            y += (lb[3] - lb[1]) + 4
+            y += (gs_lf.getbbox(line)[3] - gs_lf.getbbox(line)[1]) + 4
 
     total_h = y + 30
     im = Image.new("RGBA", (panel_w, total_h), (0, 0, 0, 0))
@@ -1083,7 +1067,7 @@ def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_sta
 
 
 def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info):
-    """Overlay dynamic values and stage highlight onto a static base (centered layout)."""
+    """Overlay dynamic values and stage highlight onto a static base (labels already drawn in base)."""
     overlay = Image.new("RGBA", static_base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
@@ -1092,23 +1076,19 @@ def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info):
     data_font = layout_info["data_font"]
     gs_lf = layout_info["gs_lf"]
 
-    def draw_centered(text, font, fill, y_pos):
-        tb = font.getbbox(text)
-        tw = tb[2] - tb[0]
-        x = px + (inner_w - tw) // 2
-        draw.text((x, y_pos), text, fill=(*fill, 255), font=font)
+    def draw_value(value, fill, y_pos):
+        vb = data_font.getbbox(value)
+        vw = vb[2] - vb[0]
+        draw.text((px + inner_w - vw, y_pos), value, fill=(*fill, 255), font=data_font)
 
-    # Predicted moves (dynamic)
-    predicted = stats_data.get("predicted_moves", "")
-    draw_centered(f"Predicted moves: {predicted}", data_font, CYAN, layout_info["y_predicted"])
+    # Predicted moves (dynamic value only)
+    draw_value(stats_data.get("predicted_moves", ""), CYAN, layout_info["y_predicted"])
 
-    # MD (current) (dynamic)
-    md_cur = stats_data.get("md_cur", "0")
-    draw_centered(f"MD (current): {md_cur}", data_font, CYAN, layout_info["y_md_cur"])
+    # MD (current) (dynamic value only)
+    draw_value(stats_data.get("md_cur", "0"), CYAN, layout_info["y_md_cur"])
 
-    # M/MD (current) (dynamic)
-    mmd_cur = stats_data.get("mmd_cur", "0.000")
-    draw_centered(f"M/MD (current): {mmd_cur}", data_font, CYAN, layout_info["y_mmd_cur"])
+    # M/MD (current) (dynamic value only)
+    draw_value(stats_data.get("mmd_cur", "0.000"), CYAN, layout_info["y_mmd_cur"])
 
     # Current grid stage highlight (CYAN)
     stages = stats_data.get("grid_stages", [])
@@ -1136,8 +1116,7 @@ def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info):
             line = f"{cum_s:>{w1}} | {split_s:>{w2}} {mvtps_s:<{w3}} | {label:<{w4}}"
         else:
             line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
-        lb = gs_lf.getbbox(line)
-        draw.text((px + (inner_w - (lb[2] - lb[0])) // 2, stage_y_positions[cur_stage]),
+        draw.text((px, stage_y_positions[cur_stage]),
                   line, fill=(*CYAN, 255), font=gs_lf)
 
     result = static_base.copy()
@@ -1145,8 +1124,26 @@ def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info):
     return result
 
 
+_nvenc_cache: Optional[bool] = None
+
+def _nvenc_available() -> bool:
+    global _nvenc_cache
+    if _nvenc_cache is not None:
+        return _nvenc_cache
+    try:
+        result = subprocess.run(
+            ['ffmpeg', '-encoders'],
+            capture_output=True, text=True, timeout=10,
+        )
+        _nvenc_cache = 'h264_nvenc' in result.stdout
+    except Exception:
+        _nvenc_cache = False
+    log.info(f"_nvenc_available: {_nvenc_cache}")
+    return _nvenc_cache
+
+
 def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60):
-    """Spawn ffmpeg with libx264 reading rawvideo from stdin. Returns the Popen object."""
+    """Spawn ffmpeg with libx264 (software) reading rawvideo from stdin."""
     cmd = [
         'ffmpeg', '-y',
         '-f', 'rawvideo',
@@ -1155,13 +1152,39 @@ def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60
         '-r', str(fps),
         '-i', '-',
         '-c:v', 'libx264',
-        '-preset', 'medium',
-        '-crf', '24',
+        '-preset', 'slow',
+        '-crf', '20',
+        '-profile:v', 'high',
+        '-level', '4.1',
         '-pix_fmt', 'yuv420p',
-        '-vsync', 'cfr',
+        '-fps_mode', 'cfr',
+        '-movflags', '+faststart',
         output_path,
     ]
-    log.info(f"_create_ffmpeg_pipe: cmd={' '.join(cmd)}")
+    log.info(f"_create_ffmpeg_pipe (libx264): cmd={' '.join(cmd)}")
+    return subprocess.Popen(cmd, stdin=subprocess.PIPE)
+
+
+def _create_ffmpeg_pipe_nvenc(output_path: str, width: int, height: int, fps: int = 60):
+    """Spawn ffmpeg with h264_nvenc (hardware) reading rawvideo from stdin."""
+    cmd = [
+        'ffmpeg', '-y',
+        '-f', 'rawvideo',
+        '-pix_fmt', 'rgb24',
+        '-s', f'{width}x{height}',
+        '-r', str(fps),
+        '-i', '-',
+        '-c:v', 'h264_nvenc',
+        '-preset', 'p7',
+        '-rc', 'vbr',
+        '-cq', '20',
+        '-profile:v', 'high',
+        '-pix_fmt', 'yuv420p',
+        '-fps_mode', 'cfr',
+        '-movflags', '+faststart',
+        output_path,
+    ]
+    log.info(f"_create_ffmpeg_pipe_nvenc: cmd={' '.join(cmd)}")
     return subprocess.Popen(cmd, stdin=subprocess.PIPE)
 
 
@@ -1448,9 +1471,13 @@ def generate_frames(
             state_to_count[state_idx] = state_to_count.get(state_idx, 0) + 1
         log.info(f"  state_to_count: {len(state_to_count)} unique states, counts={list(state_to_count.values())[:20]}...")
 
-        # Open ffmpeg pipe, then render — handler pipes frames concurrently with GPU
-        log.info(f"  OPENING FFMPEG PIPE: output={output_path}, canvas={canvas_w}x{canvas_h}, fps={fps}")
-        nvenc_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h, fps=fps)
+        # Open ffmpeg pipe — prefer NVENC on GPU path, fall back to libx264
+        encoder_name = "NVENC" if _nvenc_available() else "libx264"
+        log.info(f"  OPENING FFMPEG PIPE: output={output_path}, canvas={canvas_w}x{canvas_h}, fps={fps}, encoder={encoder_name}")
+        if _nvenc_available():
+            enc_proc = _create_ffmpeg_pipe_nvenc(output_path, canvas_w, canvas_h, fps=fps)
+        else:
+            enc_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h, fps=fps)
         unique_params = [frame_params[i] for i in states_needed]
         log.info(f"  GPU RENDER START: {len(unique_params)} unique frames to render")
 
@@ -1459,7 +1486,7 @@ def generate_frames(
             data = img.tobytes()
             log.info(f"  HANDLER: idx_in_unique={idx_in_unique}, state={states_needed[idx_in_unique]}, count={count}, data_size={len(data)} bytes")
             for _ in range(count):
-                nvenc_proc.stdin.write(data)
+                enc_proc.stdin.write(data)
 
         try:
             gpu.render_frames(
@@ -1471,9 +1498,9 @@ def generate_frames(
         finally:
             gpu.cleanup()
 
-        nvenc_proc.stdin.close()
-        nvenc_proc.wait()
-        log.info(f"  FFMPEG PIPE CLOSED: returncode={nvenc_proc.returncode}")
+        enc_proc.stdin.close()
+        enc_proc.wait()
+        log.info(f"  FFMPEG PIPE CLOSED: returncode={enc_proc.returncode}")
 
         log.info(f"  GPU PATH COMPLETE: returning {len(frame_state)} frame_state entries")
         return [], frame_state
