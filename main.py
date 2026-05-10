@@ -212,6 +212,7 @@ class ReplayGUI(tb.Window):
     def _build_ui(self):
         style = tb.Style()
         style.configure("TCheckbutton", font=(FONT_FAMILY, 9))
+        style.configure("Round.Toggle", font=(FONT_FAMILY, 10))
         root = tb.Frame(self, padding=8)
         root.pack(fill="both", expand=True)
 
@@ -234,51 +235,24 @@ class ReplayGUI(tb.Window):
         r = 0
 
         fps_row = tb.Frame(settings)
-        fps_row.grid(row=r, column=0, sticky="ew", pady=(0, 4))
+        fps_row.grid(row=r, column=0, sticky="ew", pady=(0, 10), padx=12)
         fps_row.grid_columnconfigure(1, weight=1)
         tb.Label(fps_row, text="FPS", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
-        self.fps_scale = tb.Scale(fps_row, from_=1, to=240,
+        self.fps_scale = tb.Scale(fps_row, from_=5, to=240,
                                   variable=self.fps_var, orient="horizontal")
         self.fps_scale.grid(row=0, column=1, sticky="ew", padx=(0, 6))
         self.fps_label = tb.Label(fps_row, text="60", width=5, font=(FONT_FAMILY, 9))
         self.fps_label.grid(row=0, column=2)
-        self.fps_var.trace_add("write",
-                                lambda *a: self.fps_label.config(text=f"{self.fps_var.get():d}"))
+        def _snap_fps(*_):
+            v = self.fps_var.get()
+            snapped = round(v / 5) * 5
+            if snapped != v:
+                self.fps_var.set(snapped)
+            self.fps_label.config(text=f"{snapped:d}")
+        self.fps_var.trace_add("write", _snap_fps)
         r += 1
 
-        opts_row = tb.Frame(settings)
-        opts_row.grid(row=r, column=0, sticky="ew", pady=(6, 6))
-        tb.Checkbutton(opts_row, text="Force fringe", variable=self.force_fringe_var,
-                       bootstyle="round-toggle").pack(side="left", padx=(6, 18))
-        tb.Checkbutton(opts_row, text="Double quality (2x)", variable=self.double_quality_var,
-                       bootstyle="round-toggle").pack(side="left")
-        def _on_dq_toggle(*_):
-            self.quality_var.set(2.0 if self.double_quality_var.get() else 1.0)
-            self._update_quality_warning()
-        self.double_quality_var.trace_add("write", _on_dq_toggle)
-        r += 1
-
-        self.quality_warning = tb.Label(settings, text="⚠ 2x quality increases VRAM usage significantly — may cause out-of-memory errors on GPU",
-                                         font=(FONT_FAMILY, 8), foreground="#ffa500", anchor="w")
-        self.quality_warning.grid(row=r, column=0, sticky="ew", pady=(0, 4))
-        self.quality_warning.grid_remove()
-        r += 1
-
-        out_row = tb.Frame(settings)
-        out_row.grid(row=r, column=0, sticky="ew", pady=(0, 4))
-        out_row.grid_columnconfigure(1, weight=1)
-        tb.Label(out_row, text="Output folder", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
-        self.out_entry = tb.Entry(out_row, textvariable=self.out_folder_var)
-        self.out_entry.grid(row=0, column=1, sticky="ew", padx=(0, 4))
-        tb.Button(out_row, text="Browse...", command=self._browse_output,
-                  bootstyle="secondary-outline", width=9).grid(row=0, column=2)
-        r += 1
-
-        # ── GPU Acceleration toggle ──
-        gpu_row = tb.Frame(settings)
-        gpu_row.grid(row=r, column=0, sticky="ew", pady=(0, 4))
-        gpu_row.grid_columnconfigure(0, weight=0)
-
+        # ── Checkboxes row: GPU + Force fringe + Double quality ──
         self._gpu_available = False
         self._gpu_name = ""
         try:
@@ -290,27 +264,61 @@ class ReplayGUI(tb.Window):
             pass
         self.use_gpu_var = tk.BooleanVar(value=self._gpu_available)
 
+        chk_row = tb.Frame(settings)
+        chk_row.grid(row=r, column=0, sticky="ew", pady=(8, 8), padx=12)
+        chk_row.grid_columnconfigure(0, weight=1)
+        chk_row.grid_columnconfigure(2, weight=1)
+        chk_inner = tb.Frame(chk_row)
+        chk_inner.grid(row=0, column=1)
+        self.gpu_toggle = tb.Checkbutton(
+            chk_inner, text="GPU acceleration", variable=self.use_gpu_var,
+            bootstyle="round-toggle success"
+        )
+        self.gpu_toggle.pack(side="left", padx=(0, 24))
+        tb.Checkbutton(chk_inner, text="Force fringe", variable=self.force_fringe_var,
+                       bootstyle="round-toggle").pack(side="left", padx=(0, 24))
+        tb.Checkbutton(chk_inner, text="Double quality (2x)", variable=self.double_quality_var,
+                       bootstyle="round-toggle").pack(side="left")
+        def _on_dq_toggle(*_):
+            self.quality_var.set(2.0 if self.double_quality_var.get() else 1.0)
+            self._update_quality_warning()
+        self.double_quality_var.trace_add("write", _on_dq_toggle)
+        r += 1
+
+        # ── GPU info label (below checkboxes, like quality warning) ──
+        self.gpu_info_lbl = tb.Label(settings, font=(FONT_FAMILY, 9), anchor="w")
+        self.gpu_info_lbl.grid(row=r, column=0, sticky="ew", pady=(0, 8), padx=12)
+        if self._gpu_available:
+            self.gpu_info_lbl.config(text=f"GPU ON ({self._gpu_name})", bootstyle="success")
+        else:
+            self.gpu_info_lbl.config(text="Not available — install CUDA (see README)", bootstyle="secondary")
+
         def _on_gpu_toggle():
             if self.use_gpu_var.get():
                 if self._gpu_available:
-                    gpu_info_lbl.config(text=f"GPU ON ({self._gpu_name})", bootstyle="success")
+                    self.gpu_info_lbl.config(text=f"GPU ON ({self._gpu_name})", bootstyle="success")
                 else:
-                    gpu_info_lbl.config(text="GPU not available — install CUDA (see README)", bootstyle="secondary")
+                    self.gpu_info_lbl.config(text="GPU not available — install CUDA (see README)", bootstyle="secondary")
             else:
-                gpu_info_lbl.config(text="GPU OFF (CPU)", bootstyle="secondary")
+                self.gpu_info_lbl.config(text="GPU OFF (CPU)", bootstyle="secondary")
+        self.gpu_toggle.config(command=_on_gpu_toggle)
+        r += 1
 
-        self.gpu_toggle = tb.Checkbutton(
-            gpu_row, text="GPU acceleration", variable=self.use_gpu_var,
-            bootstyle="round-toggle success", command=_on_gpu_toggle
-        )
-        self.gpu_toggle.pack(side="left")
+        self.quality_warning = tb.Label(settings, text="⚠ 2x quality increases VRAM usage significantly — may cause out-of-memory errors on GPU",
+                                         font=(FONT_FAMILY, 8), foreground="#ffa500", anchor="w")
+        self.quality_warning.grid(row=r, column=0, sticky="ew", pady=(0, 8), padx=12)
+        self.quality_warning.grid_remove()
+        r += 1
 
-        gpu_info_lbl = tb.Label(gpu_row, font=(FONT_FAMILY, 8))
-        gpu_info_lbl.pack(side="left", padx=(8, 0))
-        if self._gpu_available:
-            gpu_info_lbl.config(text=f"({self._gpu_name})", bootstyle="success")
-        else:
-            gpu_info_lbl.config(text="Not available — install CUDA (see README)", bootstyle="secondary")
+        out_row = tb.Frame(settings)
+        out_row.grid(row=r, column=0, sticky="ew", pady=(8, 8), padx=12)
+        out_row.grid_columnconfigure(1, weight=1)
+        tb.Label(out_row, text="Output folder", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.out_entry = tb.Entry(out_row, textvariable=self.out_folder_var)
+        self.out_entry.grid(row=0, column=1, sticky="ew", padx=(0, 4))
+        tb.Button(out_row, text="Browse...", command=self._browse_output,
+                  bootstyle="secondary-outline", width=9).grid(row=0, column=2)
+        r += 1
 
         # ── Notebook (below settings) ──
         nb = tb.Notebook(left, bootstyle="dark")
