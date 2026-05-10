@@ -37,8 +37,7 @@ python main.py --batch solutions.txt
 | `--compression` | Video encoder quality 10–40, lower = fewer artifacts but larger file (default: 18) |
 | `--movetimes` | Comma-separated move timings in seconds (overrides `--tps`/`--time`) |
 | `--fps` | Output framerate (default: 60) |
-| `--gpu` | Force GPU acceleration (default: auto-detect) |
-| `--no-gpu` | Disable GPU acceleration |
+| `--no-gpu` | Disable GPU acceleration (GPU is auto-detected by default) |
 | `--batch` | File with solutions/URLs (one per line) |
 | `--log` | Enable debug logging to `logs/debug_\<timestamp\>.log` |
 

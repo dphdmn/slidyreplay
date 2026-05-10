@@ -130,7 +130,7 @@ def process_replays(replays_dir, logs_dir, gpu_only):
                 details.append(d)
 
         gpu_out = os.path.join(logs_dir, f"{puzzle_label}_gpu.mp4")
-        t, d = run_bench(f"{puzzle_label} GPU", url, ["--gpu"], gpu_out)
+        t, d = run_bench(f"{puzzle_label} GPU", url, [], gpu_out)
         results.append(("GPU", t))
         if d:
             details.append(d)

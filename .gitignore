@@ -42,3 +42,4 @@ deepseek*
 logs/*
 .opencode/*
 test/*
+test.py

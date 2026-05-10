@@ -899,7 +899,7 @@ if __name__ == "__main__":
 Examples:
   python main.py --solution R2D2L2U2 --size 3x3 --tps 10 -o replay.mp4
   python main.py --url "https://slidysim.github.io/?replay=..." -o replay.mp4
-  python main.py --batch urls.txt --gpu
+  python main.py --batch urls.txt
   python main.py                    # launch GUI
         """
     )
@@ -914,8 +914,6 @@ Examples:
     parser.add_argument("--quality", type=float, default=1.0, help="Render quality (1.0-4.0)")
     parser.add_argument("--compression", type=int, default=18, help="Video encoder quality (10-40, lower = fewer artifacts but larger file, default: 18)")
     parser.add_argument("--fps", type=int, default=60, help="Output video frame rate (default: 60)")
-    parser.add_argument("--gpu", action="store_true", default=None,
-                        help="Enable GPU acceleration (default: auto-detect)")
     parser.add_argument("--no-gpu", action="store_true", default=None,
                         help="Disable GPU acceleration")
     parser.add_argument("--batch", help="File with solutions/URLs (one per line)")
@@ -950,8 +948,6 @@ Examples:
         torch_avail = False
     if args.no_gpu:
         use_gpu = False
-    elif args.gpu:
-        use_gpu = True
     else:
         use_gpu = torch_avail
 
