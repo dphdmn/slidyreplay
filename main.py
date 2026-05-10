@@ -12,7 +12,7 @@ import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 
 from replay_video import ReplayVideoGenerator, parse_replay_url, CancelError
-from libs.replay_generator import expand_solution, parse_scramble_guess
+from replay_generator import expand_solution, parse_scramble_guess
 from debug_log import get_logger, init_logfile
 
 log = get_logger()
@@ -106,7 +106,7 @@ def _open(path, status_callback=None):
 def _generate_filename(solution, tps, time_v, movetimes, size_arg=None, index=0):
     moves = len(expand_solution(solution))
     if tps and tps > 0:
-        display_tps = tps / 1000.0 if tps >= 1000 else tps
+        display_tps = tps
     else:
         display_tps = None
     if isinstance(movetimes, list) and len(movetimes) > 1:

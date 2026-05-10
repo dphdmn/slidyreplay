@@ -139,7 +139,7 @@ def splits(sol: str) -> Optional[List[List[Union[float, int]]]]:
     try:
         if len(replay_data) < 10:
             solution = replay_data[0]
-            tps_from_url = replay_data[1]
+            tps_from_url = replay_data[1] / 1000.0
             scramble = replay_data[2]
             move_times = replay_data[3]
         else:
@@ -224,7 +224,7 @@ def calculate_splits(grids_states: Dict, move_times, solution: str, scramble: st
             time = move_times[-1]
             tps = f"{(moves*1000 / time):.3f}"
         elif tps_from_url is not None and tps_from_url > 0:
-            tps_val = tps_from_url / 1000
+            tps_val = tps_from_url
             time = moves * 1000 / tps_val
             tps = f"{tps_val:.3f}"
     except Exception:

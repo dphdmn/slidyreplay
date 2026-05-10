@@ -22,14 +22,14 @@ from typing import List, Tuple, Optional, Union, Dict
 import bisect
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
-from libs.replay_generator import (
+from replay_generator import (
     expand_solution, scramble_to_puzzle, puzzle_to_scramble,
     create_puzzle, apply_moves, reverse_solution, parse_scramble,
     parse_scramble_guess, calculate_manhattan_distance,
     get_repeated_lengths, compress_solution
 )
 
-from libs.splits import decompress_string_to_array, read_solve_data
+from splits import decompress_string_to_array, read_solve_data
 from gpu_renderer import GPURenderer, _render_timer_text, CancelError
 from debug_log import get_logger
 
@@ -41,7 +41,7 @@ def parse_replay_url(url: str):
     parsed = decompress_string_to_array(url)
     if len(parsed) < 10:
         solution = parsed[0]
-        tps = parsed[1] if len(parsed) > 1 else None
+        tps = parsed[1] / 1000.0 if len(parsed) > 1 else None
         scramble = parsed[2] if len(parsed) > 2 else None
         movetimes = parsed[3] if len(parsed) > 3 else -1
     else:
@@ -606,10 +606,6 @@ def format_time_str(ms: int) -> str:
     return f"{minutes}:{sec:06.3f}"
 
 
-def normalize_tps(tps_val: int) -> str:
-    return f"{tps_val / 1000:.3f}"
-
-
 # ─── Puzzle Rendering ──────────────────────────────────────────────
 
 def pick_tile_size(width: int, height: int) -> int:
@@ -750,7 +746,7 @@ def render_frame(
 
 # ─── Timing Calculation (ported from replayGeneration.js) ──────────
 
-def calculate_move_timings(solution: str, tps: int, width: int, height: int, speed_factor: float = 1.0):
+def calculate_move_timings(solution: str, tps: float, width: int, height: int, speed_factor: float = 1.0):
     expanded = expand_solution(solution)
     sol_len = len(expanded)
     if sol_len <= 1:
@@ -761,7 +757,7 @@ def calculate_move_timings(solution: str, tps: int, width: int, height: int, spe
     k_w = width / longer_factor if speed_factor == 1.0 else speed_factor
     k_h = height / longer_factor if speed_factor == 1.0 else speed_factor
 
-    base_delay_ms = 1000000 * sol_len / (tps * (sol_len - 1))
+    base_delay_ms = 1000 * sol_len / (tps * (sol_len - 1))
     denom = (sol_len - 1 - repeated_width - repeated_height
              + repeated_width / k_w + repeated_height / k_h)
     delay_for_move = base_delay_ms * (sol_len - 1) / denom if denom != 0 else base_delay_ms
@@ -1206,7 +1202,7 @@ def _create_ffmpeg_pipe_nvenc(output_path: str, width: int, height: int, fps: in
 def generate_frames(
     matrix: List[List[int]],
     solution: str,
-    tps: int,
+    tps: float,
     all_fringe_schemes: dict,
     grid_states: dict,
     fake_times: List[float],
@@ -1291,7 +1287,7 @@ def generate_frames(
     all_md = calculate_manhattan_distance(mc)
 
     total_time_ms = fake_times[-1] if fake_times else 0
-    total_tps = tps / 1000.0
+    total_tps = tps
 
     if not custom_move_times:
         custom_move_times = []
@@ -1413,7 +1409,7 @@ def generate_frames(
             stats_data["grid_current"] = cur_stage_idx
 
             if w * h > 99:
-                from libs.replay_generator import get_cubic_estimate
+                from replay_generator import get_cubic_estimate
                 ce = get_cubic_estimate(round(total_time_ms), w, h)
                 stats_data["cubic_estimate"] = format_time_str(ce)
 
@@ -1753,8 +1749,7 @@ class ReplayVideoGenerator:
         else:
             tps_val = 15
 
-        tps_int = int(tps_val * 1000) if tps_val < 1000 else int(tps_val)
-        log.info(f"  tps_val={tps_val}, tps_int={tps_int}, is_movetimes_accurate={is_movetimes_accurate}, custom_move_times={'list' if isinstance(custom_move_times, list) else None}")
+        log.info(f"  tps_val={tps_val}, is_movetimes_accurate={is_movetimes_accurate}, custom_move_times={'list' if isinstance(custom_move_times, list) else None}")
 
         # Grids analysis
         cycled_numbers = get_cycles_numbers(matrix, solution_expanded)
@@ -1785,10 +1780,10 @@ class ReplayVideoGenerator:
 
         # Calculate timing
         if isinstance(movetimes, list) and len(movetimes) > 0:
-            delays, fake_times = calculate_move_timings(solution, tps_int, width, height, speed_factor)
+            delays, fake_times = calculate_move_timings(solution, tps_val, width, height, speed_factor)
             fake_times = [0.0] + list(movetimes)
         else:
-            delays, fake_times = calculate_move_timings(solution, tps_int, width, height, speed_factor)
+            delays, fake_times = calculate_move_timings(solution, tps_val, width, height, speed_factor)
 
         # Score title
         score_title_text = f"{width}x{height} sliding puzzle"
@@ -1813,7 +1808,7 @@ class ReplayVideoGenerator:
         frames, frame_state_map = generate_frames(
             matrix=matrix,
             solution=solution,
-            tps=tps_int,
+            tps=tps_val,
             all_fringe_schemes=all_fringe_schemes,
             grid_states=grid_states,
             fake_times=fake_times,

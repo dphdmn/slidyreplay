@@ -160,7 +160,7 @@ class ReplayGenerator:
             tps = len(solution_expanded) / time
         elif tps is None:
             tps = 15
-        tps_int = int(tps * 1000) if tps < 1000 else int(tps)
+        tps_int = int(tps * 1000)
         replay_data = [solution, tps_int, scramble, movetimes]
         return self.BASE_URL + compress_array_to_string(replay_data)
 
