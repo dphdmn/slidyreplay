@@ -35,6 +35,16 @@ from debug_log import get_logger
 
 log = get_logger()
 
+import psutil as _psutil
+_proc = _psutil.Process()
+_baseline_ram = _proc.memory_info().rss
+
+def log_ram(label: str) -> int:
+    cur = _proc.memory_info().rss
+    delta = cur - _baseline_ram
+    log.info(f"  RAM [{label}]: {cur // (1024*1024)}MB ({delta // (1024*1024):+d}MB vs baseline)")
+    return delta
+
 # ─── Replay URL Parsing ────────────────────────────────────────────
 
 def parse_replay_url(url: str):
@@ -1226,6 +1236,8 @@ def generate_frames(
     sol_len = len(expanded)
     h = len(matrix)
     w = len(matrix[0])
+    _t_stage1 = time_module.time()
+    log.info("====== STAGE 1: DATA PREP ======")
     log.info(f"generate_frames: {w}x{h}, sol_len={sol_len}, quality={quality}, fps={fps}, use_gpu={use_gpu}, output_path={output_path}")
 
     grid_keys = sorted([k for k in grid_states.keys() if isinstance(k, (int, float))])
@@ -1333,6 +1345,9 @@ def generate_frames(
     gpu = GPURenderer(w, h, raw_tile, quality, min_canvas_h=min_canvas_h)
     use_gpu = use_gpu and gpu.available
     log.info(f"  canvas={gpu.canvas_w}x{gpu.canvas_h}, GPU available={gpu.available}, use_gpu={use_gpu}, max_batch_pixels={getattr(gpu, '_max_pixels_per_batch', '?')}")
+    if use_gpu:
+        import torch as _torch_snapshot
+        log.info(f"  Python={sys.version.split()[0]}, torch={_torch_snapshot.__version__}, CUDA={_torch_snapshot.version.cuda}")
 
     # ── Stage 2: precompute data only for states that will be rendered ──
     frame_params = [None] * (sol_len + 1)
@@ -1438,6 +1453,7 @@ def generate_frames(
     log.info(f"  frame_params created: {len(frame_params)} entries, needed={len(states_needed)}")
 
     log.info(f"  render decision: use_gpu={use_gpu}, total_video_frames={len(frame_state)}, unique_states={len(states_needed)} ({len(states_needed)*100//len(frame_state) if frame_state else 0}%%)")
+    log.info(f"====== STAGE 1 DONE: {time_module.time() - _t_stage1:.1f}s ======")
     # ── GPU path: render unique states, pipe via frame mapping ──
     if use_gpu and len(frame_params) > 1:
         puzzle_w = w * tile_size
@@ -1463,6 +1479,8 @@ def generate_frames(
         workers = min(os.cpu_count() or 4, len(states_needed))
         overlay_done = 0
         overlay_total = len(states_needed)
+        _t_stage2 = time_module.time()
+        log.info("====== STAGE 2: OVERLAY PRE-RENDER ======")
         log.info(f"  OVERLAY PRE-RENDER: {overlay_total} states, {workers} workers")
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futs = {pool.submit(_render_overlays, i, frame_params[i]): i for i in states_needed}
@@ -1479,6 +1497,8 @@ def generate_frames(
                 if overlay_progress_callback:
                     overlay_progress_callback(overlay_done, overlay_total, _use_gpu=True)
         log.info(f"  OVERLAY PRE-RENDER DONE: {overlay_done}/{overlay_total}")
+        log_ram("after overlay pre-render")
+        log.info(f"====== STAGE 2 DONE: {time_module.time() - _t_stage2:.1f}s ======")
 
         # Pre-compute how many video frames each puzzle state spans
         state_to_count = {}
@@ -1494,12 +1514,14 @@ def generate_frames(
         else:
             enc_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h, fps=fps, compression=compression)
         unique_params = [frame_params[i] for i in states_needed]
+        _t_stage3 = time_module.time()
+        log.info("====== STAGE 3: GPU RENDER ======")
         log.info(f"  GPU RENDER START: {len(unique_params)} unique frames to render")
+        log_ram("before GPU render")
 
         def handler(img, idx_in_unique, total):
             count = state_to_count[states_needed[idx_in_unique]]
             data = img.tobytes()
-            log.info(f"  HANDLER: idx_in_unique={idx_in_unique}, state={states_needed[idx_in_unique]}, count={count}, data_size={len(data)} bytes")
             for _ in range(count):
                 enc_proc.stdin.write(data)
 
@@ -1516,11 +1538,16 @@ def generate_frames(
         finally:
             _close_pipe(enc_proc)
 
+        log.info(f"====== STAGE 3 DONE: {time_module.time() - _t_stage3:.1f}s ======")
+
         log.info(f"  GPU PATH COMPLETE: returning {len(frame_state)} frame_state entries")
+        log_ram("after GPU render")
+
         return [], frame_state
 
     # ── CPU path: render only states_needed, pipe via frame mapping ──
     log.info(f"  CPU PATH: {len(states_needed)} unique states to render")
+    log_ram("CPU: before font load")
     _font_start = time_module.time()
     get_font(font_size)
     get_font(24, bold=True)
@@ -1531,9 +1558,11 @@ def generate_frames(
     get_font(9)
     get_font(36, bold=True, mono=True)
     log.info(f"  fonts loaded: took {time_module.time() - _font_start:.3f}s")
+    log_ram("CPU: after font load")
 
     state_images = [None] * (sol_len + 1)
     num_needed = len(states_needed)
+    log_ram("CPU: before render")
 
     if parallel and num_needed > 1:
         workers = min(os.cpu_count() or 4, num_needed)
@@ -1564,6 +1593,7 @@ def generate_frames(
     first_rendered = next(img for img in state_images if img is not None)
     canvas_w, canvas_h = first_rendered.size
     log.info(f"  CPU RENDER DONE: canvas={canvas_w}x{canvas_h}")
+    log_ram("CPU: after render (all frames in mem)")
 
     # Pipe to ffmpeg in frame_state order
     log.info(f"  CPU FFMPEG PIPE: output={output_path}, total_frames={len(frame_state)}, compression={compression}")
@@ -1576,6 +1606,7 @@ def generate_frames(
     finally:
         _close_pipe(ffmpeg_proc)
     log.info(f"  CPU FFMPEG DONE: {written} frames written, returncode={ffmpeg_proc.returncode}")
+    log_ram("CPU: after ffmpeg pipe")
 
     return [], frame_state
 

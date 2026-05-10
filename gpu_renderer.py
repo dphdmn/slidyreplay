@@ -6,6 +6,13 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from typing import List, Optional
 from debug_log import get_logger
+import psutil as _psutil
+
+_gpu_proc = _psutil.Process()
+_gpu_baseline_ram = _gpu_proc.memory_info().rss
+
+def _ram_delta_mb() -> int:
+    return (_gpu_proc.memory_info().rss - _gpu_baseline_ram) // (1024 * 1024)
 
 log = get_logger()
 
@@ -323,6 +330,7 @@ class GPURenderer:
         log.info(f"render_frames: {n} frames, canvas={cw}x{ch}, chunk_rows={chunk_rows}, reserved_static={reserved_permanent // (1024*1024)}MB, target_used_mem={target_used_mem // (1024*1024)}MB")
 
         with torch.inference_mode():
+            _batch_t0 = _time_module.time()
             while batch_start < n:
                 if cancel_check and cancel_check():
                     raise CancelError()
@@ -361,7 +369,10 @@ class GPURenderer:
                 self._stats["batch_size"] = batch_size
                 self._stats["batch_mem_mb"] = (ch * cw * 3 * 4 * batch_size) // (1024 * 1024)
 
-                log.info(f"  BATCH: batch_start={batch_start}, batch_n={batch_n}, batch_size={batch_size}, free_mem={free_mem // (1024*1024)}MB, usable={usable // (1024*1024)}MB, per_frame_ema={per_frame_ema // (1024*1024)}MB")
+                log.info(f"  BATCH[{self._batch_counter}]: start={batch_start}, sz={batch_size}, "
+                         f"free={free_mem//(1024*1024)}MB, reserved={reserved_mem//(1024*1024)}MB, "
+                         f"usable={usable//(1024*1024)}MB, ema={per_frame_ema//(1024*1024)}MB, "
+                         f"batch_mem={self._stats['batch_mem_mb']}MB, t={_time_module.time()-_batch_t0:.2f}s, ram={_ram_delta_mb()}MB")
 
                 # Early OOM guard — even the calibration batch needs VRAM
                 if batch_n == 1 and per_frame_ema == 0 and usable <= 0:
@@ -514,16 +525,30 @@ class GPURenderer:
                     if marginal_cost > 0:
                         per_frame_ema = marginal_cost
                         self._stats["per_frame_ema_mb"] = per_frame_ema / (1024 * 1024)
+                        log.info(f"  CALIBRATION: reserved_peak={reserved_peak//(1024*1024)}MB, "
+                                 f"reserved_permanent={reserved_permanent//(1024*1024)}MB, "
+                                 f"marginal_cost={marginal_cost//(1024*1024)}MB, "
+                                 f"per_frame_ema={per_frame_ema/(1024*1024):.0f}MB")
 
                 # ── Free batch tensors ──
                 del canvas, mats
                 if batch_has_colors:
                     del cols, sec, has_sec
                 torch.cuda.empty_cache()
+                log.info(f"  BATCH[{self._batch_counter}] DONE: "
+                         f"t={_time_module.time()-_batch_t0:.2f}s, "
+                         f"peak={torch.cuda.max_memory_reserved(dev)//(1024*1024)}MB, "
+                         f"ram={_ram_delta_mb()}MB")
 
                 batch_start = batch_end
 
         log.info(f"render_frames: DONE. total_batches={self._batch_counter}, frames_rendered={batch_start}")
+        total_t = _time_module.time() - _batch_t0
+        log.info(f"===== GPU RENDER SUMMARY =====")
+        log.info(f"  total_time={total_t:.1f}s, batches={self._batch_counter}, "
+                 f"frames={n}, avg_batch_size={n/max(1,self._batch_counter):.1f}, "
+                 f"throughput={n/total_t:.0f} f/s (unique)")
+        log.info(f"  RAM delta: {_ram_delta_mb()}MB")
         torch.cuda.empty_cache()
         return frames if not frame_handler else []
 

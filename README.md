@@ -118,7 +118,7 @@ Builds a standalone `dist\ReplayVideoGenerator.exe` with PyInstaller. Requires `
 ## Dependencies
 
 - Python 3.9+
-- `ttkbootstrap`, `Pillow`, `tabulate`, `numpy`
+- `ttkbootstrap`, `Pillow`, `tabulate`, `numpy`, `psutil` (optional — for RAM logging with `--log`)
 - `torch` (optional — for GPU acceleration)
 - `ffmpeg` — must be installed and available in your PATH (or same folder as the script)
 
