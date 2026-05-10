@@ -34,7 +34,7 @@ python main.py --batch solutions.txt
 | `--scramble` | Scramble string |
 | `--output` / `-o` | Output file (default: `replay.mp4`) |
 | `--quality` | Render quality 1.0–4.0 (default: 1.0) |
-| `--crf` | Video encoder quality 10–40, lower = fewer artifacts but larger file (default: 18) |
+| `--compression` | Video encoder quality 10–40, lower = fewer artifacts but larger file (default: 18) |
 | `--fps` | Output framerate (default: 60) |
 | `--gpu` | Force GPU acceleration (default: auto-detect) |
 | `--no-gpu` | Disable GPU acceleration |

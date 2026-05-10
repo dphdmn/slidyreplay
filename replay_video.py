@@ -1142,7 +1142,7 @@ def _nvenc_available() -> bool:
     return _nvenc_cache
 
 
-def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60, crf: int = 18):
+def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18):
     """Spawn ffmpeg with libx264 (software) reading rawvideo from stdin."""
     cmd = [
         'ffmpeg', '-y',
@@ -1153,7 +1153,7 @@ def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60
         '-i', '-',
         '-c:v', 'libx264',
         '-preset', 'slow',
-        '-crf', str(crf),
+        '-crf', str(compression),
         '-profile:v', 'high',
         '-level', '4.1',
         '-pix_fmt', 'yuv420p',
@@ -1165,7 +1165,7 @@ def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60
     return subprocess.Popen(cmd, stdin=subprocess.PIPE)
 
 
-def _create_ffmpeg_pipe_nvenc(output_path: str, width: int, height: int, fps: int = 60, crf: int = 18):
+def _create_ffmpeg_pipe_nvenc(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18):
     """Spawn ffmpeg with h264_nvenc (hardware) reading rawvideo from stdin."""
     cmd = [
         'ffmpeg', '-y',
@@ -1177,7 +1177,7 @@ def _create_ffmpeg_pipe_nvenc(output_path: str, width: int, height: int, fps: in
         '-c:v', 'h264_nvenc',
         '-preset', 'p7',
         '-rc', 'vbr',
-        '-cq', str(crf),
+        '-cq', str(compression),
         '-profile:v', 'high',
         '-pix_fmt', 'yuv420p',
         '-fps_mode', 'cfr',
@@ -1207,7 +1207,7 @@ def generate_frames(
     cancel_check=None,
     output_path: str = None,
     fps: int = 60,
-    crf: int = 18,
+    compression: int = 18,
 ) -> Tuple[List[Image.Image], List[int]]:
     quality = quality + 1.0
     expanded = expand_solution(solution)
@@ -1474,11 +1474,11 @@ def generate_frames(
 
         # Open ffmpeg pipe — prefer NVENC on GPU path, fall back to libx264
         encoder_name = "NVENC" if _nvenc_available() else "libx264"
-        log.info(f"  OPENING FFMPEG PIPE: output={output_path}, canvas={canvas_w}x{canvas_h}, fps={fps}, crf={crf}, encoder={encoder_name}")
+        log.info(f"  OPENING FFMPEG PIPE: output={output_path}, canvas={canvas_w}x{canvas_h}, fps={fps}, compression={compression}, encoder={encoder_name}")
         if _nvenc_available():
-            enc_proc = _create_ffmpeg_pipe_nvenc(output_path, canvas_w, canvas_h, fps=fps, crf=crf)
+            enc_proc = _create_ffmpeg_pipe_nvenc(output_path, canvas_w, canvas_h, fps=fps, compression=compression)
         else:
-            enc_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h, fps=fps, crf=crf)
+            enc_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h, fps=fps, compression=compression)
         unique_params = [frame_params[i] for i in states_needed]
         log.info(f"  GPU RENDER START: {len(unique_params)} unique frames to render")
 
@@ -1551,8 +1551,8 @@ def generate_frames(
     log.info(f"  CPU RENDER DONE: canvas={canvas_w}x{canvas_h}")
 
     # Pipe to ffmpeg in frame_state order
-    log.info(f"  CPU FFMPEG PIPE: output={output_path}, total_frames={len(frame_state)}, crf={crf}")
-    ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h, fps=fps, crf=crf)
+    log.info(f"  CPU FFMPEG PIPE: output={output_path}, total_frames={len(frame_state)}, compression={compression}")
+    ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h, fps=fps, compression=compression)
     written = 0
     for state_idx in frame_state:
         ffmpeg_proc.stdin.write(np.array(state_images[state_idx]).tobytes())
@@ -1646,9 +1646,9 @@ class ReplayVideoGenerator:
         use_gpu: bool = True,
         cancel_check=None,
         fps: int = 60,
-        crf: int = 18,
+        compression: int = 18,
     ):
-        log.info(f"generate_simple_replay: output={output_path}, force_fringe={force_fringe}, fps={fps}, crf={crf}, quality={quality}, use_gpu={use_gpu}")
+        log.info(f"generate_simple_replay: output={output_path}, force_fringe={force_fringe}, fps={fps}, compression={compression}, quality={quality}, use_gpu={use_gpu}")
         log.info(f"  tps={tps}, time={time}, scramble_len={len(scramble) if scramble else 0}, size={size}")
         log.info(f"  movetimes_type={type(movetimes).__name__}, sol_len_approx={len(expand_solution(solution)) if isinstance(solution, str) else '?'}")
         if tps is not None and time is not None:
@@ -1776,7 +1776,7 @@ class ReplayVideoGenerator:
             cancel_check=cancel_check,
             output_path=output_path,
             fps=fps,
-            crf=crf,
+            compression=compression,
         )
 
         if show_progress:
