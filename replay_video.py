@@ -1278,6 +1278,7 @@ def generate_frames(
         })
         last_moves = cum_moves
 
+    log.info(f"  grid_stages: n_stages={n_stages}, filtered_stages={filtered_stages}")
     raw_tile = pick_tile_size(w, h)
     tile_size = max(raw_tile, int(raw_tile * quality))
     font_size = max(11, tile_size // 2)
@@ -1436,6 +1437,7 @@ def generate_frames(
 
     log.info(f"  frame_params created: {len(frame_params)} entries, needed={len(states_needed)}")
 
+    log.info(f"  render decision: use_gpu={use_gpu}, total_video_frames={len(frame_state)}, unique_states={len(states_needed)} ({len(states_needed)*100//len(frame_state) if frame_state else 0}%%)")
     # ── GPU path: render unique states, pipe via frame mapping ──
     if use_gpu and len(frame_params) > 1:
         puzzle_w = w * tile_size
@@ -1519,6 +1521,7 @@ def generate_frames(
 
     # ── CPU path: render only states_needed, pipe via frame mapping ──
     log.info(f"  CPU PATH: {len(states_needed)} unique states to render")
+    _font_start = time_module.time()
     get_font(font_size)
     get_font(24, bold=True)
     get_font(20, mono=True)
@@ -1527,6 +1530,7 @@ def generate_frames(
     get_font(16, mono=True)
     get_font(9)
     get_font(36, bold=True, mono=True)
+    log.info(f"  fonts loaded: took {time_module.time() - _font_start:.3f}s")
 
     state_images = [None] * (sol_len + 1)
     num_needed = len(states_needed)
@@ -1730,6 +1734,7 @@ class ReplayVideoGenerator:
 
         solution_expanded = expand_solution(solution)
         sol_len = len(solution_expanded)
+        log.info(f"  matrix source: {'provided scramble' if scramble is not None else 'size' if size is not None else 'guessed from solution'}, {width}x{height}")
         log.info(f"  matrix={width}x{height}, sol_len={sol_len}")
 
         # Compute TPS and movetimes
@@ -1781,6 +1786,7 @@ class ReplayVideoGenerator:
             grid_states = generate_grids_stats(grids_data)
 
         all_fringe_schemes = get_all_fringe_schemes(grid_states)
+        log.info(f"  grids_data: enableGridsStatus={grids_data.get('enableGridsStatus')}, fringe_schemes={len(all_fringe_schemes)}, force_fringe={force_fringe}")
 
         # Calculate timing
         if isinstance(movetimes, list) and len(movetimes) > 0:
@@ -1788,6 +1794,7 @@ class ReplayVideoGenerator:
             fake_times = [0.0] + list(movetimes)
         else:
             delays, fake_times = calculate_move_timings(solution, tps_val, width, height, speed_factor)
+        log.info(f"  timing: delays_count={len(delays)}, fake_times_range=[{fake_times[0]:.1f}, {fake_times[-1]:.1f}]ms")
 
         # Score title
         score_title_text = f"{width}x{height} sliding puzzle"
@@ -1809,6 +1816,7 @@ class ReplayVideoGenerator:
             if external_progress_cb:
                 external_progress_cb(cur, tot, **kwargs)
 
+        log.info(f"  calling generate_frames: fringe_schemes={len(all_fringe_schemes)}, grid_states_keys={len(grid_states)}, delays={len(delays)}, fake_times={len(fake_times)}")
         frames, frame_state_map = generate_frames(
             matrix=matrix,
             solution=solution,
@@ -1830,6 +1838,8 @@ class ReplayVideoGenerator:
             fps=fps,
             compression=compression,
         )
+
+        log.info(f"  generate_frames returned: frames_count={len(frames)}, frame_state_map_len={len(frame_state_map)}")
 
         if show_progress:
             print()
