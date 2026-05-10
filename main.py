@@ -180,6 +180,7 @@ class ReplayGUI(tb.Window):
         self.force_fringe_var = tk.BooleanVar(value=False)
         self.quality_var = tk.DoubleVar(value=1.0)
         self.double_quality_var = tk.BooleanVar(value=False)
+        self.crf_var = tk.IntVar(value=18)
 
         self.tps_var = tk.StringVar()
         self.time_var = tk.StringVar()
@@ -308,6 +309,20 @@ class ReplayGUI(tb.Window):
                                          font=(FONT_FAMILY, 8), foreground="#ffa500", anchor="w")
         self.quality_warning.grid(row=r, column=0, sticky="ew", pady=(0, 8), padx=12)
         self.quality_warning.grid_remove()
+        r += 1
+
+        crf_row = tb.Frame(settings)
+        crf_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
+        crf_row.grid_columnconfigure(1, weight=1)
+        tb.Label(crf_row, text="CRF (lower = fewer artifacts, larger file)", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        crf_scale = tb.Scale(crf_row, from_=10, to=40, variable=self.crf_var, orient="horizontal",
+                              bootstyle="primary", length=200)
+        crf_scale.grid(row=0, column=1, sticky="ew", padx=(0, 6))
+        self.crf_value_lbl = tb.Label(crf_row, text=str(self.crf_var.get()), font=(FONT_FAMILY, 9, "bold"), width=3)
+        self.crf_value_lbl.grid(row=0, column=2, sticky="w")
+        def _on_crf_change(*_):
+            self.crf_value_lbl.config(text=str(self.crf_var.get()))
+        self.crf_var.trace_add("write", _on_crf_change)
         r += 1
 
         out_row = tb.Frame(settings)
@@ -643,6 +658,7 @@ class ReplayGUI(tb.Window):
                 "force_fringe": self.force_fringe_var.get(),
                 "quality": self.quality_var.get(),
                 "fps": self.fps_var.get(),
+                "crf": self.crf_var.get(),
             }
             log.info(f"_process_item[{idx}]: base_params={params}")
 
@@ -896,6 +912,7 @@ Examples:
     parser.add_argument("--scramble", help="Scramble string")
     parser.add_argument("--output", "-o", default="replay.mp4", help="Output file path")
     parser.add_argument("--quality", type=float, default=1.0, help="Render quality (1.0-4.0)")
+    parser.add_argument("--crf", type=int, default=18, help="Video encoder quality (10-40, lower = fewer artifacts but larger file, default: 18)")
     parser.add_argument("--fps", type=int, default=60, help="Output video frame rate (default: 60)")
     parser.add_argument("--gpu", action="store_true", default=None,
                         help="Enable GPU acceleration (default: auto-detect)")
@@ -977,16 +994,16 @@ Examples:
                 run_single(sol, args.output or "replay.mp4",
                            tps=tps or args.tps, scramble=scramble,
                            movetimes=movetimes, quality=args.quality,
-                           fps=args.fps)
+                           fps=args.fps, crf=args.crf)
             except Exception:
                 run_single(val, args.output or "replay.mp4",
                            tps=args.tps, time=args.time,
                            scramble=args.scramble, size=args.size,
                            quality=args.quality,
-                           fps=args.fps)
+                           fps=args.fps, crf=args.crf)
         else:
             run_single(val, args.output or "replay.mp4",
                        tps=args.tps, time=args.time,
-                        scramble=args.scramble, size=args.size,
-                        quality=args.quality,
-                        fps=args.fps)
+                         scramble=args.scramble, size=args.size,
+                         quality=args.quality,
+                         fps=args.fps, crf=args.crf)
