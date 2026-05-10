@@ -1002,13 +1002,13 @@ Examples:
                            fps=args.fps, compression=args.compression)
             except Exception:
                 run_single(val, args.output or "replay.mp4",
-                           tps=args.tps, time=args.time,
+                           tps=None if movetimes else args.tps, time=args.time,
                            scramble=args.scramble, size=args.size,
                            quality=args.quality, movetimes=movetimes,
                            fps=args.fps, compression=args.compression)
         else:
             run_single(val, args.output or "replay.mp4",
-                       tps=args.tps, time=args.time,
+                       tps=None if movetimes else args.tps, time=args.time,
                        scramble=args.scramble, size=args.size,
                        quality=args.quality, movetimes=movetimes,
                        fps=args.fps, compression=args.compression)
