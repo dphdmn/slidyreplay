@@ -20,13 +20,13 @@ import tempfile
 def run_bench(label: str, url: str, extra_args: list, output_path: str) -> tuple:
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
-    url_file = tempfile.NamedTemporaryFile(mode="w", suffix=".url", delete=False)
-    url_file.write(url)
-    url_file.close()
+    tmp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".tmp", delete=False)
+    tmp_file.write(url)
+    tmp_file.close()
 
     cmd = [
         sys.executable, os.path.join(script_dir, "main.py"),
-        "--url-file", url_file.name,
+        "--file", tmp_file.name,
         "--quality", "1.0",
         "--output", output_path,
     ] + extra_args
@@ -48,7 +48,7 @@ def run_bench(label: str, url: str, extra_args: list, output_path: str) -> tuple
     detail["elapsed"] = round(elapsed, 3)
     detail["returncode"] = result.returncode
     try:
-        os.unlink(url_file.name)
+        os.unlink(tmp_file.name)
     except OSError:
         pass
 

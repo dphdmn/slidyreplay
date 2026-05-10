@@ -17,7 +17,7 @@ Launches a dark-themed GUI with URL, File, and Manual input tabs, FPS slider, GP
 ```
 python main.py --solution R2D2L2U2 --size 3x3 --tps 10 -o replay.mp4
 python main.py --url "https://slidysim.github.io/?replay=..." -o replay.mp4
-python main.py --url-file url.txt -o replay.mp4
+python main.py --file input.txt -o replay.mp4
 python main.py --batch solutions.txt
 ```
 
@@ -27,7 +27,7 @@ python main.py --batch solutions.txt
 |------|-------------|
 | `--solution` / `-s` | Solution string |
 | `--url` / `-u` | Replay URL |
-| `--url-file` | File containing a replay URL or solution string |
+| `--file` | File containing a replay URL or solution string |
 | `--tps` | Tiles per second (omit if using `--time`) |
 | `--time` | Total time in seconds (omit if using `--tps`) |
 | `--size` | Puzzle size (e.g. `3x3`, `10x10`) |
