@@ -31,7 +31,7 @@ echo Building exe...
 cd /d "%GUI_DIR%"
 python -m PyInstaller --onefile --windowed --name "ReplayVideoGenerator" ^
     --icon "assets\15PUZZLE_ICON.ico" ^
-    --add-data "assets\15PUZZLE_ICON.ico;assets" ^
+    --add-data "assets\15PUZZLE_ICON.png;assets" ^
     --add-data "ffmpeg\ffmpeg.exe;." ^
     --hidden-import "ttkbootstrap" ^
     --hidden-import "PIL" ^

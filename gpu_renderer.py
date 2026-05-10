@@ -1,5 +1,6 @@
 import math
 import json
+import os
 import time as _time_module
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -19,8 +20,11 @@ try:
 except ImportError:
     pass
 
-FONT = "calibri.ttf"
-FONT_MONO = "consola.ttf"
+_font_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+FONT = os.path.join(_font_dir, "Roboto-Regular.ttf")
+FONT_BOLD = os.path.join(_font_dir, "Roboto-Bold.ttf")
+FONT_MONO = os.path.join(_font_dir, "JetBrainsMono-Regular.ttf")
+FONT_MONO_BOLD = os.path.join(_font_dir, "JetBrainsMono-Bold.ttf")
 BG_COLOR = (18, 18, 18)
 TILE_BG = (51, 51, 51)
 TILE_TEXT_COLOR = (0, 0, 0)
@@ -50,11 +54,17 @@ def _font(size, bold=False, mono=False):
     cached = _font_cache.get(key)
     if cached is not None:
         return cached
-    name = FONT_MONO if mono else FONT
     try:
+        if mono:
+            name = FONT_MONO_BOLD if bold else FONT_MONO
+        else:
+            name = FONT_BOLD if bold else FONT
         f = ImageFont.truetype(name, size)
     except Exception:
-        f = ImageFont.load_default()
+        try:
+            f = ImageFont.truetype(FONT_MONO if mono else FONT, size)
+        except Exception:
+            f = ImageFont.load_default()
     _font_cache[key] = f
     return f
 

@@ -1,0 +1,5 @@
+ttkbootstrap
+Pillow
+tabulate
+numpy
+torch

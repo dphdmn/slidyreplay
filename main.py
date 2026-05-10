@@ -3,6 +3,7 @@ from tkinter import filedialog, scrolledtext
 import threading
 import time
 import os
+import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
@@ -22,6 +23,17 @@ if getattr(sys, 'frozen', False):
 else:
     base = os.path.dirname(os.path.abspath(__file__))
     script_dir = base
+
+
+def _open(path, status_callback=None):
+    if sys.platform == "win32":
+        os.startfile(path)
+    else:
+        try:
+            subprocess.Popen(["xdg-open", path])
+        except OSError:
+            if status_callback:
+                status_callback("Could not open file: xdg-open not found")
 
 
 def _generate_filename(solution, tps, time_v, movetimes, size_arg=None, index=0):
@@ -87,13 +99,6 @@ class ReplayGUI(tb.Window):
         self.title("Replay Video Generator")
         self.minsize(960, 640)
 
-        ico = os.path.join(base, "assets", "15PUZZLE_ICON.ico")
-        if os.path.exists(ico):
-            try:
-                self.iconbitmap(ico)
-            except Exception:
-                pass
-
         self.generated_files = []
         self._executor = None
         self._batch_futures = []
@@ -124,6 +129,17 @@ class ReplayGUI(tb.Window):
         self._center_window()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.deiconify()
+        self.after(0, self._set_icon)
+
+    def _set_icon(self):
+        icon_path = os.path.join(base, "assets", "15PUZZLE_ICON.png")
+        if os.path.exists(icon_path):
+            try:
+                from PIL import Image, ImageTk
+                self._icon = ImageTk.PhotoImage(Image.open(icon_path))
+                self.iconphoto(True, self._icon)
+            except Exception:
+                pass
 
     def _build_ui(self):
         root = tb.Frame(self, padding=8)
@@ -735,13 +751,13 @@ class ReplayGUI(tb.Window):
         if sel and sel[0] < len(self.generated_files):
             path = self.generated_files[sel[0]]
             if os.path.exists(path):
-                os.startfile(path)
+                _open(path, self.progress_text.set)
             else:
                 self.progress_text.set(f"File not found: {path}")
 
     def _open_folder(self):
         if self.generated_files:
-            os.startfile(os.path.dirname(self.generated_files[-1]))
+            _open(os.path.dirname(self.generated_files[-1]), self.progress_text.set)
 
     def _clear_list(self):
         self.generated_files.clear()
@@ -859,11 +875,18 @@ Examples:
             mode, val = "manual", item
 
         if mode == "url":
-            sol, tps, scramble, movetimes = parse_replay_url(val)
-            run_single(sol, args.output or "replay.mp4",
-                       tps=tps or args.tps, scramble=scramble,
-                       movetimes=movetimes, quality=args.quality,
-                       fps=args.fps)
+            try:
+                sol, tps, scramble, movetimes = parse_replay_url(val)
+                run_single(sol, args.output or "replay.mp4",
+                           tps=tps or args.tps, scramble=scramble,
+                           movetimes=movetimes, quality=args.quality,
+                           fps=args.fps)
+            except Exception:
+                run_single(val, args.output or "replay.mp4",
+                           tps=args.tps, time=args.time,
+                           scramble=args.scramble, size=args.size,
+                           quality=args.quality,
+                           fps=args.fps)
         else:
             run_single(val, args.output or "replay.mp4",
                        tps=args.tps, time=args.time,

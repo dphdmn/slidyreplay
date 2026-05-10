@@ -85,8 +85,11 @@ GREEN = (0, 255, 0)
 GRAY = (128, 128, 128)
 LIGHT_GRAY = (200, 200, 200)
 
-FONT_FAMILY = "calibri.ttf"
-FONT_FAMILY_MONO = "consola.ttf"
+_font_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+FONT_FAMILY = os.path.join(_font_dir, "Roboto-Regular.ttf")
+FONT_FAMILY_BOLD = os.path.join(_font_dir, "Roboto-Bold.ttf")
+FONT_FAMILY_MONO = os.path.join(_font_dir, "JetBrainsMono-Regular.ttf")
+FONT_FAMILY_MONO_BOLD = os.path.join(_font_dir, "JetBrainsMono-Bold.ttf")
 TILE_BORDER_RADIUS_RATIO = 0.4
 TILE_BORDER_WIDTH = 1
 
@@ -580,10 +583,14 @@ def get_font(size: int, bold: bool = False, mono: bool = False) -> ImageFont.Fre
     if key in _font_cache:
         return _font_cache[key]
     try:
-        font = ImageFont.truetype(FONT_FAMILY_MONO if mono else FONT_FAMILY, size)
+        if mono:
+            name = FONT_FAMILY_MONO_BOLD if bold else FONT_FAMILY_MONO
+        else:
+            name = FONT_FAMILY_BOLD if bold else FONT_FAMILY
+        font = ImageFont.truetype(name, size)
     except Exception:
         try:
-            font = ImageFont.truetype("arial.ttf", size)
+            font = ImageFont.truetype(FONT_FAMILY_MONO if mono else FONT_FAMILY, size)
         except Exception:
             font = ImageFont.load_default()
     _font_cache[key] = font
