@@ -747,6 +747,9 @@ class ReplayGUI(tb.Window):
 
     def _on_item_progress(self, idx, raw_cur, raw_tot, **kwargs):
         item = self._item_progress[idx]
+        _use_gpu = kwargs.pop("_use_gpu", False)
+        if _use_gpu:
+            item["is_gpu"] = True
         if kwargs.get("gpu_stats"):
             item["gpu_stats"] = kwargs["gpu_stats"]
         if raw_cur < item["prev_cur"]:
@@ -759,7 +762,7 @@ class ReplayGUI(tb.Window):
             if "phase0_tot" not in item:
                 item["phase0_tot"] = raw_tot
             item["adjusted_cur"] = raw_cur
-            item["adjusted_tot"] = item["phase0_tot"] * 2
+            item["adjusted_tot"] = item["phase0_tot"] * 2 if item.get("is_gpu") else item["phase0_tot"]
         else:
             p0_tot = item["phase0_tot"]
             base = item.get("phase1_base", p0_tot)
@@ -971,7 +974,7 @@ Examples:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#"):
-                    items.append(line)
+                    items.append(("batch", line))
     elif args.file:
         with open(args.file, "r") as f:
             items.append(("url", f.read().strip()))
@@ -983,27 +986,34 @@ Examples:
         parser.print_help()
         sys.exit(1)
 
-    for item in items:
+    batch_out = args.output or "replay.mp4"
+    for idx, item in enumerate(items):
         if isinstance(item, tuple):
             mode, val = item
         else:
             mode, val = "manual", item
 
-        if mode == "url":
+        if len(items) > 1 and mode == "batch":
+            root, ext = os.path.splitext(batch_out)
+            output_path = f"{root}_{idx+1:03d}{ext}"
+        else:
+            output_path = batch_out
+
+        if mode in ("url", "batch"):
             try:
                 sol, tps, scramble, movetimes = parse_replay_url(val)
-                run_single(sol, args.output or "replay.mp4",
+                run_single(sol, output_path,
                            tps=tps or args.tps, scramble=scramble,
                            movetimes=movetimes, quality=args.quality,
                            fps=args.fps, compression=args.compression)
             except Exception:
-                run_single(val, args.output or "replay.mp4",
+                run_single(val, output_path,
                            tps=None if movetimes else args.tps, time=args.time,
                            scramble=args.scramble, size=args.size,
                            quality=args.quality, movetimes=movetimes,
                            fps=args.fps, compression=args.compression)
         else:
-            run_single(val, args.output or "replay.mp4",
+            run_single(val, output_path,
                        tps=None if movetimes else args.tps, time=args.time,
                        scramble=args.scramble, size=args.size,
                        quality=args.quality, movetimes=movetimes,

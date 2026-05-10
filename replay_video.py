@@ -1475,7 +1475,7 @@ def generate_frames(
                 p["stats_arr"] = np.array(stats_img)
                 overlay_done += 1
                 if overlay_progress_callback:
-                    overlay_progress_callback(overlay_done, overlay_total)
+                    overlay_progress_callback(overlay_done, overlay_total, _use_gpu=True)
         log.info(f"  OVERLAY PRE-RENDER DONE: {overlay_done}/{overlay_total}")
 
         # Pre-compute how many video frames each puzzle state spans
@@ -1505,7 +1505,7 @@ def generate_frames(
             try:
                 gpu.render_frames(
                     unique_params,
-                    progress_callback=lambda cur, tot, **kw: progress_callback(cur, tot, **kw) if progress_callback else None,
+                    progress_callback=lambda cur, tot, **kw: progress_callback(cur, tot, _use_gpu=True, **kw) if progress_callback else None,
                     cancel_check=cancel_check,
                     frame_handler=handler,
                 )
@@ -1547,14 +1547,14 @@ def generate_frames(
                     done += 1
                     remaining.remove(fut)
                     if progress_callback:
-                        progress_callback(done, num_needed)
+                        progress_callback(done, num_needed, _use_gpu=False)
     else:
         for seq_idx, i in enumerate(states_needed):
             if cancel_check and cancel_check():
                 raise CancelError()
             state_images[i] = _render_one_frame(frame_params[i])
             if progress_callback:
-                progress_callback(seq_idx + 1, num_needed)
+                progress_callback(seq_idx + 1, num_needed, _use_gpu=False)
 
     # Derive canvas dimensions from first rendered image
     first_rendered = next(img for img in state_images if img is not None)
@@ -1587,7 +1587,7 @@ class TerminalProgress:
         self.last_current = 0
         self.window_rate = 0.0
         self.last_draw = 0
-        self._last_print_time = 0.0
+        self._last_print_time = -999.0
         self.width = 40
         self._gpu_stats = None
         self._is_tty = sys.stdout.isatty()
@@ -1665,8 +1665,12 @@ class TerminalProgress:
         self._phase_prev_cur = current
         if self._phase0_total is None:
             self._phase0_total = total
+        _use_gpu = kwargs.get("_use_gpu", False)
         adjusted_cur = current + self._phase_offset
-        adjusted_tot = self._phase0_total * 2
+        if _use_gpu:
+            adjusted_tot = self._phase0_total * 2
+        else:
+            adjusted_tot = self._phase0_total
         self.total = adjusted_tot
         gpu_stats = kwargs.get("gpu_stats")
         if gpu_stats is not None:
