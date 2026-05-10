@@ -1596,16 +1596,36 @@ class TerminalProgress:
         self._gpu_stats = None
         self._is_tty = sys.stdout.isatty()
         self._term_width = shutil.get_terminal_size().columns if self._is_tty else 120
+        # Phase-combining state (overlay pre-render + gpu render → single bar)
+        self._phase_offset = 0
+        self._phase0_total = None
+        self._phase_prev_cur = None
+        self._max_line_width = 0
 
-    def _build_line(self, current: int, rate: float, eta_str: str) -> str:
+    def _time_str(self, t: float) -> str:
+        if t >= 3600:
+            return f"{t/3600:.0f}h{(t%3600)/60:.0f}m"
+        elif t >= 60:
+            return f"{t/60:.0f}m{t%60:.0f}s"
+        else:
+            return f"{t:.1f}s"
+
+    def _build_line(self, current: int, elapsed: float, rate: float, eta: float) -> str:
         frac = current / self.total if self.total > 0 else 0
-        filled = int(self.width * frac)
-        bar = "#" * filled + "-" * (self.width - filled)
         pct = frac * 100
-        line = f"{self.desc}: [{bar}] {pct:.0f}% | {current}/{self.total} | {rate:.1f} fr/s | ETA: {eta_str}"
+        total_t = elapsed + eta
+        suffix = f" {pct:.0f}% | {rate:.0f}/s | {self._time_str(elapsed)}/{self._time_str(total_t)}"
         if self._gpu_stats and self._gpu_stats.get("batch_size"):
             s = self._gpu_stats
-            line += f" | GPU: {s.get('gpu_name', '?')} | Mem: {s.get('mem_used_mb', 0)}/{s.get('total_mem_mb', 0)}MB | Batch: {s.get('batch_size', 0)}"
+            mb = s.get('mem_used_mb', 0) / 1024
+            tb = s.get('total_mem_mb', 0) / 1024
+            suffix += f" | {mb:.1f}/{tb:.1f}GB | Batch: {s.get('batch_size', 0)}"
+        prefix = f"{self.desc}: ["
+        fixed_len = len(prefix) + 1 + len(suffix)  # +1 for "]"
+        bar_w = max(2, min(40, self._term_width - fixed_len))
+        filled = int(bar_w * frac)
+        bar = "#" * filled + "-" * (bar_w - filled)
+        line = f"{prefix}{bar}]{suffix}"
         return line
 
     def update(self, current: int):
@@ -1625,17 +1645,11 @@ class TerminalProgress:
             self.last_current = current
         rate = self.window_rate if self.window_rate > 0 else current / elapsed if elapsed > 0 else 0
         eta = (self.total - current) / rate if rate > 0 else 0
-        if eta >= 3600:
-            eta_str = f"{eta/3600:.0f}h{(eta%3600)/60:.0f}m"
-        elif eta >= 60:
-            eta_str = f"{eta/60:.0f}m{eta%60:.0f}s"
-        else:
-            eta_str = f"{eta:.0f}s"
-        line = self._build_line(current, rate, eta_str)
+        line = self._build_line(current, elapsed, rate, eta)
         if self._is_tty:
-            # Pad/truncate to terminal width so line never wraps and \r overwrites fully
-            display = line[:self._term_width].ljust(self._term_width)
-            print(f"\r{display}", end="", flush=True)
+            # Track max width so shorter updates fully overwrite longer ones
+            self._max_line_width = max(self._max_line_width, len(line))
+            print(f"\r{line.ljust(self._max_line_width)}", end="", flush=True)
         else:
             # Pipe/file: each update on its own line
             print(line, flush=True)
@@ -1647,11 +1661,21 @@ class TerminalProgress:
         self.desc = desc
 
     def __call__(self, current, total, **kwargs):
-        self.total = total
+        # Phase transition: when cur goes backwards, a new phase started
+        if (self._phase_prev_cur is not None and
+            current < self._phase_prev_cur and
+            self._phase0_total is not None):
+            self._phase_offset += self._phase0_total
+        self._phase_prev_cur = current
+        if self._phase0_total is None:
+            self._phase0_total = total
+        adjusted_cur = current + self._phase_offset
+        adjusted_tot = self._phase0_total * 2
+        self.total = adjusted_tot
         gpu_stats = kwargs.get("gpu_stats")
         if gpu_stats is not None:
             self._gpu_stats = gpu_stats
-        self.update(current)
+        self.update(adjusted_cur)
 
 
 # ─── Main API ──────────────────────────────────────────────────────
@@ -1776,20 +1800,12 @@ class ReplayVideoGenerator:
             print(f"Puzzle: {width}x{height}, Moves: {sol_len}, TPS: {tps_val:.3f}")
             print(f"Tile size: {pick_tile_size(width, height)}px x quality={quality}, Frames: {total_frames}")
             print(f"Output: {output_path}")
-            prog = TerminalProgress(total_frames, "Generating frames")
+            prog = TerminalProgress(total_frames, "Render")
         else:
             prog = None
 
         def progress_cb(cur, tot, **kwargs):
             if prog:
-                prog.set_desc("Rendering frames")
-                prog(cur, tot, **kwargs)
-            if external_progress_cb:
-                external_progress_cb(cur, tot, **kwargs)
-
-        def overlay_progress_cb(cur, tot, **kwargs):
-            if prog:
-                prog.set_desc("Pre-rendering overlays")
                 prog(cur, tot, **kwargs)
             if external_progress_cb:
                 external_progress_cb(cur, tot, **kwargs)
@@ -1807,7 +1823,7 @@ class ReplayVideoGenerator:
             custom_move_times=custom_move_times,
             cumulative_data=None,
             progress_callback=progress_cb if (show_progress or external_progress_cb) else None,
-            overlay_progress_callback=overlay_progress_cb if (show_progress or external_progress_cb) else None,
+            overlay_progress_callback=progress_cb if (show_progress or external_progress_cb) else None,
             quality=quality,
             use_gpu=use_gpu,
             cancel_check=cancel_check,
