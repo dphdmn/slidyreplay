@@ -35,6 +35,7 @@ python main.py --batch solutions.txt
 | `--output` / `-o` | Output file (default: `replay.mp4`) |
 | `--quality` | Render quality 1.0–4.0 (default: 1.0) |
 | `--compression` | Video encoder quality 10–40, lower = fewer artifacts but larger file (default: 18) |
+| `--movetimes` | Comma-separated move timings in seconds (overrides `--tps`/`--time`) |
 | `--fps` | Output framerate (default: 60) |
 | `--gpu` | Force GPU acceleration (default: auto-detect) |
 | `--no-gpu` | Disable GPU acceleration |

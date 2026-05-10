@@ -919,10 +919,15 @@ Examples:
     parser.add_argument("--no-gpu", action="store_true", default=None,
                         help="Disable GPU acceleration")
     parser.add_argument("--batch", help="File with solutions/URLs (one per line)")
+    parser.add_argument("--movetimes", help="Comma-separated move timings (overrides --tps/--time)")
     parser.add_argument("--log", action="store_true", default=False,
                         help="Enable debug logging to file (logs/debug_<timestamp>.log)")
 
     args = parser.parse_args()
+
+    movetimes = None
+    if args.movetimes:
+        movetimes = [float(x) for x in args.movetimes.split(",")]
 
     log_path = None
     if args.log:
@@ -999,11 +1004,11 @@ Examples:
                 run_single(val, args.output or "replay.mp4",
                            tps=args.tps, time=args.time,
                            scramble=args.scramble, size=args.size,
-                           quality=args.quality,
+                           quality=args.quality, movetimes=movetimes,
                            fps=args.fps, compression=args.compression)
         else:
             run_single(val, args.output or "replay.mp4",
                        tps=args.tps, time=args.time,
-                         scramble=args.scramble, size=args.size,
-                         quality=args.quality,
-                         fps=args.fps, compression=args.compression)
+                       scramble=args.scramble, size=args.size,
+                       quality=args.quality, movetimes=movetimes,
+                       fps=args.fps, compression=args.compression)
