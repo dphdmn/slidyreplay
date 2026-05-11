@@ -60,24 +60,24 @@ Example: `8x8_23.564_707_30.003_movetimes_5.mp4`
 
 The GUI shows the GPU name when available, or "Not available — install CUDA" when PyTorch/CUDA is missing. GPU is enabled by default when available and falls back to CPU automatically.
 
-### Benchmarks (NVIDIA GeForce GTX 1660 SUPER)
+### Benchmarks (NVIDIA GeForce GTX 1660 SUPER) (v2.1)
 
 **Settings:** quality=1.0, 60 FPS
 
 | Puzzle | Moves | CPU    | GPU    | Speedup |
 | ------ | ----- | ------ | ------ | ------- |
-| 4×4    | 26    | 3.6s   | 3.2s   | 1.1×    |
-| 5×5    | 98    | 6.1s   | 3.8s   | 1.6×    |
-| 6×6    | 213   | 10.8s  | 4.9s   | 2.2×    |
-| 7×7    | 425   | 22.9s  | 7.5s   | 3.1×    |
-| 8×8    | 707   | 38.7s  | 10.5s  | 3.7×    |
-| 9×9    | 1251  | 69.1s  | 16.4s  | 4.2×    |
-| 10×10  | 1569  | 100.0s | 18.5s  | 5.4×    |
-| 12×12  | 2883  | —      | 36.3s  | —       |
-| 16×16  | 7132  | —      | 101.7s | —       |
-| 20×20  | 14203 | —      | 213.9s | —       |
+| 4×4    | 26    | 4.3s   | 0.8s   | 5.4×    |
+| 5×5    | 98    | 4.6s   | 1.4s   | 3.3×    |
+| 6×6    | 213   | 6.1s   | 2.7s   | 2.3×    |
+| 7×7    | 425   | 9.9s   | 5.4s   | 1.8×    |
+| 8×8    | 707   | 18.9s  | 8.5s   | 2.2×    |
+| 9×9    | 1251  | 25.9s  | 14.0s  | 1.8×    |
+| 10×10  | 1569  | 26.9s  | 16.2s  | 1.7×    |
+| 12×12  | 2883  | —      | 36.4s  | —       |
+| 16×16  | 7132  | —      | 112.6s | —       |
+| 20×20  | 14203 | —      | 217.0s | —       |
 
-Puzzles 12×12 and above are GPU-only — CPU rendering becomes impractically slow at high tile counts.
+The most benefit from GPU rendering is currently achieved by running encoding in parallel with the rendering stage.
 
 ### Installing GPU support
 
