@@ -1343,7 +1343,7 @@ def generate_frames(
     puzzle_w_est = w * tile_size
     canvas_w_est = (puzzle_w_est + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
     panel_w_est = canvas_w_est - (PADDING + puzzle_w_est + PADDING) - PADDING
-    stats_h_est = _compute_stats_full_height(panel_w_est, has_grid_stages=True)
+    stats_h_est = _compute_stats_full_height(panel_w_est, has_grid_stages=len(grid_stages_list) > 1)
     min_canvas_h = HEADER_H + PADDING + stats_h_est + PADDING
     if gpu_renderer is not None:
         gpu = gpu_renderer
