@@ -1255,6 +1255,8 @@ def generate_frames(
     output_path: str = None,
     fps: int = 60,
     compression: int = 18,
+    shared_pool: Optional[ProcessPoolExecutor] = None,
+    gpu_renderer: Optional[GPURenderer] = None,
 ) -> Tuple[List[Image.Image], List[int]]:
     quality = quality + 1.0
     expanded = expand_solution(solution)
@@ -1384,7 +1386,10 @@ def generate_frames(
     panel_w_est = canvas_w_est - (PADDING + puzzle_w_est + PADDING) - PADDING
     stats_h_est = _compute_stats_full_height(panel_w_est, has_grid_stages=True)
     min_canvas_h = HEADER_H + PADDING + stats_h_est + PADDING
-    gpu = GPURenderer(w, h, raw_tile, quality, min_canvas_h=min_canvas_h)
+    if gpu_renderer is not None:
+        gpu = gpu_renderer
+    else:
+        gpu = GPURenderer(w, h, raw_tile, quality, min_canvas_h=min_canvas_h)
     use_gpu = use_gpu and gpu.available
     log.info(f"  canvas={gpu.canvas_w}x{gpu.canvas_h}, GPU available={gpu.available}, use_gpu={use_gpu}, max_batch_pixels={getattr(gpu, '_max_pixels_per_batch', '?')}")
     if use_gpu:
@@ -1589,7 +1594,8 @@ def generate_frames(
                     overlay_render_data=extra_overlay_args,
                 )
             finally:
-                gpu.cleanup()
+                if gpu_renderer is None:
+                    gpu.cleanup()
         finally:
             _close_pipe(enc_proc)
 
@@ -1622,7 +1628,8 @@ def generate_frames(
     if parallel and num_needed > 1:
         workers = min(os.cpu_count() or 4, num_needed)
         done = 0
-        with ProcessPoolExecutor(max_workers=workers) as pool:
+        pool = shared_pool if shared_pool is not None else ProcessPoolExecutor(max_workers=workers)
+        try:
             batch_size = _calc_render_batch_size(num_needed, workers)
             fut_to_indices = {}
             for i in range(0, num_needed, batch_size):
@@ -1645,6 +1652,9 @@ def generate_frames(
                         if progress_callback:
                             progress_callback(done, num_needed, _use_gpu=False)
                     remaining.remove(fut)
+        finally:
+            if shared_pool is None:
+                pool.shutdown()
     else:
         for seq_idx, i in enumerate(states_needed):
             if cancel_check and cancel_check():
@@ -1781,6 +1791,57 @@ class TerminalProgress:
         self.update(adjusted_cur, actual_current=current, actual_total=total)
 
 
+# ─── Batch Helpers ─────────────────────────────────────────────────
+
+def _quick_infer_size(solution: str, scramble: Optional[str] = None, size=None) -> Optional[Tuple[int, int]]:
+    """Quickly determine puzzle (width, height) without full render setup.
+    Uses the first available source: size param > scramble > guess from solution."""
+    if size is not None:
+        if isinstance(size, str) and 'x' in size:
+            parts = size.lower().split('x')
+            return (int(parts[0]), int(parts[1]))
+        if isinstance(size, (tuple, list)) and len(size) == 2:
+            return (int(size[0]), int(size[1]))
+        return None
+    if scramble:
+        try:
+            from replay_generator import scramble_to_puzzle
+            matrix = scramble_to_puzzle(scramble)
+            return (len(matrix[0]), len(matrix))
+        except Exception:
+            pass
+    try:
+        from replay_generator import parse_scramble_guess, expand_solution
+        matrix = parse_scramble_guess(solution)
+        if matrix:
+            return (len(matrix[0]), len(matrix))
+    except Exception:
+        pass
+    try:
+        sol_len = len(expand_solution(solution))
+        side = math.isqrt(sol_len)
+        if side * side == sol_len:
+            return (side, side)
+    except Exception:
+        pass
+    return None
+
+
+def _batch_cpu_worker(item: dict) -> str:
+    """ProcessPoolExecutor worker — renders one solution with inner parallelism disabled."""
+    gen = ReplayVideoGenerator()
+    kwargs = {k: v for k, v in item.items() if k != "solution" and k != "output_path"}
+    gen.generate_simple_replay(
+        solution=item["solution"],
+        output_path=item["output_path"],
+        use_gpu=False,
+        parallel=False,
+        show_progress=False,
+        **kwargs,
+    )
+    return item["output_path"]
+
+
 # ─── Main API ──────────────────────────────────────────────────────
 
 class ReplayVideoGenerator:
@@ -1806,6 +1867,8 @@ class ReplayVideoGenerator:
         cancel_check=None,
         fps: int = 60,
         compression: int = 18,
+        parallel: bool = True,
+        gpu_renderer=None,
     ):
         log.info(f"generate_simple_replay: output={output_path}, force_fringe={force_fringe}, fps={fps}, compression={compression}, quality={quality}, use_gpu={use_gpu}")
         log.info(f"  tps={tps}, time={time}, scramble_len={len(scramble) if scramble else 0}, size={size}")
@@ -1931,11 +1994,13 @@ class ReplayVideoGenerator:
             progress_callback=progress_cb if (show_progress or external_progress_cb) else None,
             overlay_progress_callback=progress_cb if (show_progress or external_progress_cb) else None,
             quality=quality,
+            parallel=parallel,
             use_gpu=use_gpu,
             cancel_check=cancel_check,
             output_path=output_path,
             fps=fps,
             compression=compression,
+            gpu_renderer=gpu_renderer,
         )
 
         log.info(f"  generate_frames returned: frames_count={len(frames)}, frame_state_map_len={len(frame_state_map)}")
@@ -1948,6 +2013,125 @@ class ReplayVideoGenerator:
             print(f"Done! Video saved to: {output_path} (took {elapsed:.1f}s)")
 
         return output_path
+
+    def batch_render(
+        self,
+        items: List[dict],
+        use_gpu: bool = True,
+        max_workers: Optional[int] = None,
+        show_progress: bool = True,
+        external_progress_cb=None,
+        cancel_check=None,
+    ) -> List[str]:
+        """Render multiple solutions in a single batch.
+
+        CPU mode: one ProcessPoolExecutor for all items (cross-solution parallelism),
+        inner per-solution pools disabled.  GPU mode: sequential, grouped by puzzle
+        size to reuse GPURenderer between same-size items.
+
+        items: list of dicts with keys matching generate_simple_replay params
+               (at minimum: 'solution', 'output_path').
+        returns: list of output paths.
+        """
+        if not items:
+            return []
+
+        n = len(items)
+        output_paths = []
+
+        # Phase 1: quick-scan items for size grouping
+        for item in items:
+            size = _quick_infer_size(
+                item.get("solution", ""),
+                scramble=item.get("scramble"),
+                size=item.get("size"),
+            )
+            item["_inferred_size"] = size
+
+        if use_gpu:
+            # ── GPU path: sequential, group by size ──
+            groups: Dict[tuple, List[dict]] = {}
+            for item in items:
+                sz = item.get("_inferred_size") or (0, 0)
+                kval = (sz[0], sz[1], item.get("quality", 1.0))
+                groups.setdefault(kval, []).append(item)
+
+            renderer = None
+            prev_key = None
+            try:
+                for key in sorted(groups.keys()):
+                    group = groups[key]
+                    if renderer is None or key != prev_key:
+                        if renderer is not None:
+                            renderer.cleanup()
+                        w, h, quality = key
+                        eff_q = quality + 1.0
+                        raw_ts = pick_tile_size(w, h)
+                        eff_ts = max(raw_ts, int(raw_ts * eff_q))
+                        pw_est = w * eff_ts
+                        cw_est = (pw_est + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
+                        pnl_w = cw_est - (PADDING + pw_est + PADDING) - PADDING
+                        min_ch = HEADER_H + PADDING + _compute_stats_full_height(pnl_w, has_grid_stages=True) + PADDING
+                        renderer = GPURenderer(w, h, raw_ts, quality=eff_q, min_canvas_h=min_ch)
+
+                    for item in group:
+                        if cancel_check and cancel_check():
+                            raise CancelError()
+                        kwargs = {k: v for k, v in item.items()
+                                  if k not in ("solution", "output_path", "_inferred_size")}
+                        self.generate_simple_replay(
+                            solution=item["solution"],
+                            output_path=item["output_path"],
+                            use_gpu=True,
+                            show_progress=False,
+                            external_progress_cb=external_progress_cb,
+                            cancel_check=cancel_check,
+                            gpu_renderer=renderer,
+                            **kwargs,
+                        )
+                        output_paths.append(item["output_path"])
+                        if external_progress_cb:
+                            external_progress_cb(len(output_paths), n)
+
+                    prev_key = key
+            finally:
+                if renderer is not None:
+                    renderer.cleanup()
+        else:
+            # ── CPU path: one pool, cross-solution parallelism ──
+            max_workers = max_workers or os.cpu_count() or 4
+            cpu_items = []
+            for item in items:
+                kwargs = {k: v for k, v in item.items()
+                          if k not in ("solution", "output_path", "_inferred_size")}
+                cpu_items.append({
+                    "solution": item["solution"],
+                    "output_path": item["output_path"],
+                    **kwargs,
+                })
+
+            with ProcessPoolExecutor(max_workers=max_workers) as pool:
+                fut_to_idx = {}
+                for idx, citem in enumerate(cpu_items):
+                    fut = pool.submit(_batch_cpu_worker, citem)
+                    fut_to_idx[fut] = idx
+
+                from concurrent.futures import as_completed
+                done_set = set()
+                while len(done_set) < len(cpu_items):
+                    if cancel_check and cancel_check():
+                        raise CancelError()
+                    for fut in as_completed(fut_to_idx):
+                        if fut in done_set:
+                            continue
+                        fut.result()
+                        done_set.add(fut)
+                        output_paths.append(cpu_items[fut_to_idx[fut]]["output_path"])
+                        if external_progress_cb:
+                            external_progress_cb(len(output_paths), n)
+                        break
+
+        return output_paths
 
 
 # ─── CLI Entry Point ───────────────────────────────────────────────

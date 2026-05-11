@@ -635,20 +635,29 @@ class ReplayGUI(tb.Window):
         self._batch_futures = []
         self._executor = ThreadPoolExecutor(max_workers=1)
 
-        def on_done(idx, fut):
-            try:
-                fut.result()
-            except CancelError:
-                self._item_progress[idx]["cancelled"] = True
-            except Exception as e:
-                self._item_progress[idx]["error"] = str(e)
-            self._item_progress[idx]["done"] = True
+        if total == 1:
+            # Single item: existing per-item path (preserves detailed progress)
+            def on_done(idx, fut):
+                try:
+                    fut.result()
+                except CancelError:
+                    self._item_progress[idx]["cancelled"] = True
+                except Exception as e:
+                    self._item_progress[idx]["error"] = str(e)
+                self._item_progress[idx]["done"] = True
 
-        for idx, (mode, input_str) in enumerate(items):
-            fut = self._executor.submit(
-                self._process_item, idx, mode, input_str, output_dir, total)
-            fut.add_done_callback(lambda f, i=idx: on_done(i, f))
-            self._batch_futures.append(fut)
+            for idx, (mode, input_str) in enumerate(items):
+                fut = self._executor.submit(
+                    self._process_item, idx, mode, input_str, output_dir, total)
+                fut.add_done_callback(lambda f, i=idx: on_done(i, f))
+                self._batch_futures.append(fut)
+        else:
+            # Batch: build all items, submit once via batch_render
+            self._batch_done = 0
+            self._batch_total = total
+            self._batch_cancelled = False
+            fut = self._executor.submit(self._process_batch, items, output_dir)
+            self._batch_futures = [fut]
 
         self.after(1000, self._poll_batch)
 
@@ -746,6 +755,87 @@ class ReplayGUI(tb.Window):
             self.after(0, lambda m=f"Item {idx+1} failed: {e}": self.progress_text.set(m))
             raise
 
+    def _build_batch_items(self, items, output_dir):
+        """Convert GUI (mode, input_str) pairs into batch_render item dicts."""
+        batch_items = []
+        for idx, (mode, input_str) in enumerate(items):
+            params = {
+                "force_fringe": self.force_fringe_var.get(),
+                "quality": self.quality_var.get(),
+                "fps": self.fps_var.get(),
+                "compression": self.compression_var.get(),
+            }
+
+            if mode == "url":
+                solution, tps, scramble, movetimes = parse_replay_url(input_str)
+                if tps is not None:
+                    params["tps"] = tps
+                if scramble:
+                    params["scramble"] = scramble
+                if isinstance(movetimes, list) and len(movetimes) > 0:
+                    params["movetimes"] = movetimes
+            else:
+                solution = input_str
+                tps_s = self.tps_var.get().strip()
+                tps = float(tps_s) if tps_s else None
+                time_s = self.time_var.get().strip()
+                time_v = float(time_s) if time_s else None
+                if time_v and tps:
+                    tps = None
+                if tps:
+                    params["tps"] = tps
+                if time_v:
+                    params["time"] = time_v
+                scramble_s = self.scramble_var.get().strip()
+                if scramble_s:
+                    params["scramble"] = scramble_s
+                size_s = self.size_var.get().strip()
+                if size_s:
+                    params["size"] = size_s
+                movetimes_s = self.movetimes_var.get().strip()
+                if movetimes_s:
+                    params["movetimes"] = [int(x.strip()) for x in movetimes_s.split(",")]
+
+            out_path = _pick_output_filename(output_dir, _generate_filename(
+                solution, params.get("tps"), params.get("time"),
+                params.get("movetimes", -1), params.get("size")))
+
+            batch_items.append({"solution": solution, "output_path": out_path, **params})
+        return batch_items
+
+    def _process_batch(self, items, output_dir):
+        """Run batch_render on all items in a single background thread."""
+        batch_items = self._build_batch_items(items, output_dir)
+        total = len(batch_items)
+        log.info(f"_process_batch: {total} items prepared")
+
+        def on_progress(cur, _tot):
+            if self.cancel_flag:
+                return
+            pct = cur * 100 / total
+            self.after(0, lambda: self.progress_bar.configure(value=pct))
+            self.after(0, lambda: self.progress_text.set(f"{cur}/{total} items rendered..."))
+
+        try:
+            gen = ReplayVideoGenerator()
+            paths = gen.batch_render(
+                batch_items,
+                use_gpu=self.use_gpu_var.get(),
+                show_progress=False,
+                external_progress_cb=on_progress,
+                cancel_check=lambda: self.cancel_flag,
+            )
+            log.info(f"_process_batch: completed {len(paths)} items")
+            for p in paths:
+                self.after(0, lambda p=p: self._add_to_list(p))
+            return paths
+        except CancelError:
+            log.info("_process_batch: CANCELLED")
+            raise
+        except Exception as e:
+            log.error(f"_process_batch: FAILED: {e}", exc_info=True)
+            raise
+
     def _on_item_progress(self, idx, raw_cur, raw_tot, **kwargs):
         item = self._item_progress[idx]
         now = time.time()
@@ -791,9 +881,33 @@ class ReplayGUI(tb.Window):
 
         total = len(self._batch_futures)
         done_count = sum(1 for f in self._batch_futures if f.done())
+
+        # Batch mode (single future from _process_batch)
+        if total == 1 and hasattr(self, '_batch_total') and self._batch_total > 1:
+            fut = self._batch_futures[0]
+            if not fut.done():
+                self.after(500, self._poll_batch)
+                return
+            elapsed = time.time() - self._start_time
+            elapsed_str = f"{elapsed:.1f}s" if elapsed < 60 else f"{int(elapsed//60)}m {elapsed%60:.0f}s"
+            try:
+                paths = fut.result()
+                self.progress_text.set(f"{len(paths)} replay(s) generated. {elapsed_str}")
+            except CancelError:
+                self.progress_text.set(f"Cancelled. {elapsed_str}")
+            except Exception as e:
+                self.progress_text.set(f"Batch failed: {e}. {elapsed_str}")
+            self.progress_bar["value"] = 100
+            self._set_ui_busy(False)
+            if self._executor:
+                self._executor.shutdown(wait=False)
+                self._executor = None
+            self._batch_futures = []
+            return
+
+        # Single-item mode (per-item futures)
         log.info(f"_poll_batch: done={done_count}/{total}")
 
-        # item-weighted overall progress (no snapping)
         overall_pct = 0.0
         running = 0
         for p in self._item_progress.values():
@@ -805,7 +919,6 @@ class ReplayGUI(tb.Window):
 
         overall_pct *= 100
 
-        # Rolling rate (EMA) for accurate ETA across fast/slow phases
         now = time.time()
         dt = now - self._last_poll_time
         dp = overall_pct - self._last_poll_pct
@@ -818,7 +931,6 @@ class ReplayGUI(tb.Window):
         elapsed = time.time() - self._start_time
         elapsed_str = f"{elapsed:.1f}s" if elapsed < 60 else f"{int(elapsed//60)}m {elapsed%60:.0f}s"
 
-        # Don't overwrite "Cancelling..." while cancelled
         if not self.cancel_flag:
             display_pct = min(overall_pct, 99.0) if running else overall_pct
             self.progress_bar["value"] = display_pct
@@ -1001,34 +1113,67 @@ Examples:
         sys.exit(1)
 
     batch_out = args.output or "replay.mp4"
-    for idx, item in enumerate(items):
-        if isinstance(item, tuple):
-            mode, val = item
-        else:
-            mode, val = "manual", item
 
-        if len(items) > 1 and mode == "batch":
+    if len(items) > 1 and args.batch:
+        # Batch mode: collect all items and render via batch_render
+        batch_items = []
+        for idx, item in enumerate(items):
+            mode, val = item if isinstance(item, tuple) else ("manual", item)
             root, ext = os.path.splitext(batch_out)
             output_path = f"{root}_{idx+1:03d}{ext}"
-        else:
-            output_path = batch_out
 
-        if mode in ("url", "batch"):
+            kwargs = dict(quality=args.quality, fps=args.fps, compression=args.compression)
             try:
                 sol, tps, scramble, movetimes = parse_replay_url(val)
-                run_single(sol, output_path,
-                           tps=tps or args.tps, scramble=scramble,
-                           movetimes=movetimes, quality=args.quality,
-                           fps=args.fps, compression=args.compression)
+                kwargs["tps"] = tps or args.tps
+                if scramble:
+                    kwargs["scramble"] = scramble
+                if isinstance(movetimes, list) and movetimes:
+                    kwargs["movetimes"] = movetimes
             except Exception:
+                sol = val
+                if args.tps is not None:
+                    kwargs["tps"] = args.tps
+                if args.time is not None:
+                    kwargs["time"] = args.time
+                if args.scramble:
+                    kwargs["scramble"] = args.scramble
+                if args.size:
+                    kwargs["size"] = args.size
+                if movetimes:
+                    kwargs["movetimes"] = movetimes
+
+            batch_items.append({"solution": sol, "output_path": output_path, **kwargs})
+
+        gen = ReplayVideoGenerator()
+        gen.batch_render(batch_items, use_gpu=use_gpu, show_progress=True)
+    else:
+        # Single item: existing sequential path
+        for idx, item in enumerate(items):
+            mode, val = item if isinstance(item, tuple) else ("manual", item)
+
+            if len(items) > 1 and mode == "batch":
+                root, ext = os.path.splitext(batch_out)
+                output_path = f"{root}_{idx+1:03d}{ext}"
+            else:
+                output_path = batch_out
+
+            if mode in ("url", "batch"):
+                try:
+                    sol, tps, scramble, movetimes = parse_replay_url(val)
+                    run_single(sol, output_path,
+                               tps=tps or args.tps, scramble=scramble,
+                               movetimes=movetimes, quality=args.quality,
+                               fps=args.fps, compression=args.compression)
+                except Exception:
+                    run_single(val, output_path,
+                               tps=None if movetimes else args.tps, time=args.time,
+                               scramble=args.scramble, size=args.size,
+                               quality=args.quality, movetimes=movetimes,
+                               fps=args.fps, compression=args.compression)
+            else:
                 run_single(val, output_path,
                            tps=None if movetimes else args.tps, time=args.time,
                            scramble=args.scramble, size=args.size,
                            quality=args.quality, movetimes=movetimes,
                            fps=args.fps, compression=args.compression)
-        else:
-            run_single(val, output_path,
-                       tps=None if movetimes else args.tps, time=args.time,
-                       scramble=args.scramble, size=args.size,
-                       quality=args.quality, movetimes=movetimes,
-                       fps=args.fps, compression=args.compression)
