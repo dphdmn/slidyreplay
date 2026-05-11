@@ -108,12 +108,13 @@ python benchmark.py --big   # big puzzles only (GPU only)
 All outputs saved to logs/ folder (for performance testing only).
 
 ## Build (Windows)
-(Work in progress)
+Builds a standalone `dist\ReplayVideoGenerator.exe` (no-GPU version only):
 ```
-build.bat
+build_no_gpu.bat
 ```
+Requires `ffmpeg\ffmpeg.exe`.
 
-Builds a standalone `dist\ReplayVideoGenerator.exe` with PyInstaller. Requires `ffmpeg\ffmpeg.exe` (auto-copied from PATH if missing).
+For GPU acceleration, use the repository directly (`python main.py`) instead of the standalone build.
 
 ## Dependencies
 
