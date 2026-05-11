@@ -103,7 +103,7 @@ def _open(path, status_callback=None):
                 status_callback("Could not open file: xdg-open not found")
 
 
-def _generate_filename(solution, tps, time_v, movetimes, size_arg=None, index=0):
+def _generate_filename(solution, tps, time_v, movetimes, size_arg=None, index=0, speed_factor=1.0):
     moves = len(expand_solution(solution))
     if tps and tps > 0:
         display_tps = tps
@@ -141,6 +141,8 @@ def _generate_filename(solution, tps, time_v, movetimes, size_arg=None, index=0)
         parts.append(f"{display_tps:.3f}")
     if is_movetimes_accurate:
         parts.append("movetimes")
+    if speed_factor is not None and speed_factor != 1.0:
+        parts.append(f"{speed_factor}x")
     name = "_".join(parts)
     name = name.translate(str.maketrans("", "", '\\/:*?\"<>|'))
     if index:
@@ -181,6 +183,7 @@ class ReplayGUI(tb.Window):
         self.quality_var = tk.DoubleVar(value=1.0)
         self.double_quality_var = tk.BooleanVar(value=False)
         self.compression_var = tk.IntVar(value=18)
+        self.speed_factor_var = tk.StringVar(value="1.0")
 
         self.tps_var = tk.StringVar()
         self.time_var = tk.StringVar()
@@ -323,6 +326,14 @@ class ReplayGUI(tb.Window):
         def _on_compression_change(*_):
             self.compression_value_lbl.config(text=str(self.compression_var.get()))
         self.compression_var.trace_add("write", _on_compression_change)
+        r += 1
+
+        speed_row = tb.Frame(settings)
+        speed_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
+        speed_row.grid_columnconfigure(1, weight=1)
+        tb.Label(speed_row, text="Speed (×)", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.speed_entry = tb.Entry(speed_row, textvariable=self.speed_factor_var, width=10)
+        self.speed_entry.grid(row=0, column=1, sticky="w", padx=(0, 6))
         r += 1
 
         out_row = tb.Frame(settings)
@@ -480,6 +491,12 @@ class ReplayGUI(tb.Window):
                   bootstyle="secondary-outline", width=8).pack(side="left")
 
 
+
+    def _get_speed_factor(self) -> float:
+        try:
+            return float(self.speed_factor_var.get().strip() or "1.0")
+        except ValueError:
+            return 1.0
 
     def _update_quality_warning(self):
         if self.double_quality_var.get():
@@ -671,6 +688,7 @@ class ReplayGUI(tb.Window):
                 "quality": self.quality_var.get(),
                 "fps": self.fps_var.get(),
                 "compression": self.compression_var.get(),
+                "speed_factor": self._get_speed_factor(),
             }
             log.info(f"_process_item[{idx}]: base_params={params}")
 
@@ -725,7 +743,8 @@ class ReplayGUI(tb.Window):
             filename_time = params.get("time", None)
             base_name = _generate_filename(
                 solution, filename_tps, filename_time,
-                params.get("movetimes", -1), params.get("size"))
+                params.get("movetimes", -1), params.get("size"),
+                speed_factor=self._get_speed_factor())
             out_path = _pick_output_filename(output_dir, base_name)
             log.info(f"_process_item[{idx}]: output={out_path}")
 
@@ -766,6 +785,7 @@ class ReplayGUI(tb.Window):
                 "quality": self.quality_var.get(),
                 "fps": self.fps_var.get(),
                 "compression": self.compression_var.get(),
+                "speed_factor": self._get_speed_factor(),
             }
 
             if mode == "url":
@@ -800,7 +820,8 @@ class ReplayGUI(tb.Window):
 
             out_path = _pick_output_filename(output_dir, _generate_filename(
                 solution, params.get("tps"), params.get("time"),
-                params.get("movetimes", -1), params.get("size")))
+                params.get("movetimes", -1), params.get("size"),
+                speed_factor=self._get_speed_factor()))
 
             batch_items.append({"solution": solution, "output_path": out_path, **params})
         return batch_items
@@ -1062,10 +1083,15 @@ Examples:
                         help="Disable GPU acceleration")
     parser.add_argument("--batch", help="File with solutions/URLs (one per line)")
     parser.add_argument("--movetimes", help="Comma-separated move timings (overrides --tps/--time)")
+    parser.add_argument("--speedup", type=float, default=1.0,
+                        help="Speed multiplier (e.g. 2.0 = 2x faster video, 0.5 = half speed)")
     parser.add_argument("--log", action="store_true", default=False,
                         help="Enable debug logging to file (logs/debug_<timestamp>.log)")
 
     args = parser.parse_args()
+
+    if args.speedup <= 0:
+        parser.error("--speedup must be > 0")
 
     movetimes = None
     if args.movetimes:
@@ -1141,7 +1167,8 @@ Examples:
             root, ext = os.path.splitext(batch_out)
             output_path = f"{root}_{idx+1:03d}{ext}"
 
-            kwargs = dict(quality=args.quality, fps=args.fps, compression=args.compression)
+            kwargs = dict(quality=args.quality, fps=args.fps, compression=args.compression,
+                          speed_factor=args.speedup)
             try:
                 sol, tps, scramble, movetimes = parse_replay_url(val)
                 kwargs["tps"] = tps or args.tps
@@ -1183,16 +1210,19 @@ Examples:
                     run_single(sol, output_path,
                                tps=tps or args.tps, scramble=scramble,
                                movetimes=movetimes, quality=args.quality,
-                               fps=args.fps, compression=args.compression)
+                               fps=args.fps, compression=args.compression,
+                               speed_factor=args.speedup)
                 except Exception:
                     run_single(val, output_path,
                                tps=None if movetimes else args.tps, time=args.time,
                                scramble=args.scramble, size=args.size,
                                quality=args.quality, movetimes=movetimes,
-                               fps=args.fps, compression=args.compression)
+                               fps=args.fps, compression=args.compression,
+                               speed_factor=args.speedup)
             else:
                 run_single(val, output_path,
                            tps=None if movetimes else args.tps, time=args.time,
                            scramble=args.scramble, size=args.size,
                            quality=args.quality, movetimes=movetimes,
-                           fps=args.fps, compression=args.compression)
+                           fps=args.fps, compression=args.compression,
+                           speed_factor=args.speedup)

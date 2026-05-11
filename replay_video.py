@@ -796,8 +796,8 @@ def calculate_move_timings(solution: str, tps: float, width: int, height: int, s
 
     repeated_width, repeated_height = get_repeated_lengths(expanded)
     longer_factor = 2
-    k_w = width / longer_factor if speed_factor == 1.0 else speed_factor
-    k_h = height / longer_factor if speed_factor == 1.0 else speed_factor
+    k_w = width / longer_factor
+    k_h = height / longer_factor
 
     base_delay_ms = 1000 * sol_len / (tps * (sol_len - 1))
     denom = (sol_len - 1 - repeated_width - repeated_height
@@ -817,6 +817,13 @@ def calculate_move_timings(solution: str, tps: float, width: int, height: int, s
         else:
             delays.append(delay_for_move)
         fake_times.append(fake_times[mi - 1] + delays[mi])
+
+    if speed_factor != 1.0:
+        inv = 1.0 / speed_factor
+        delays = [d * inv for d in delays]
+        fake_times = [0.0]
+        for mi in range(1, sol_len):
+            fake_times.append(fake_times[mi - 1] + delays[mi])
 
     return delays, fake_times
 
@@ -907,12 +914,16 @@ def _render_stats_full(stats_data, is_movetimes_accurate, panel_w):
     lv_line("TPS (total): ", stats_data.get('tps_all', '0.000'), data_font, WHITE)
 
     # Row 3: Cubic est
+    ce = stats_data.get("cubic_estimate")
     lv_line("Cubic est: ", ce if ce else '---', data_font, WHITE)
 
-    # Row 4: Predicted moves
+    # Row 4: Playback speed
+    lv_line("Playback speed: ", stats_data.get('speed_playback', '1.00×'), data_font, WHITE)
+
+    # Row 5: Predicted moves
     lv_line("Predicted moves: ", stats_data.get('predicted_moves', ''), data_font, CYAN)
 
-    # Row 5: MD (total)
+    # Row 6: MD (total)
     lv_line("MD (total): ", stats_data.get('md_all', '0'), data_font, WHITE)
 
     # Row 6: MD (current)
@@ -982,7 +993,7 @@ def _compute_stats_full_height(panel_w, has_grid_stages=True):
 
     y = 10
     y += (hf.getbbox("Stats")[3] - hf.getbbox("Stats")[1]) + 16
-    y += 9 * row_h
+    y += 10 * row_h
     y += 4
     y += (acc_font.getbbox("Movetimes accurate")[3] - acc_font.getbbox("Movetimes accurate")[1]) + 6
     if has_grid_stages:
@@ -1032,7 +1043,10 @@ def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_sta
     # Row 3: Cubic est [static, WHITE]
     lv_line("Cubic est: ", ce if ce else '---', data_font, WHITE)
 
-    # Row 4: Predicted moves [dynamic label in static base]
+    # Row 4: Playback speed [static, WHITE]
+    lv_line("Playback speed: ", stats_data.get('speed_playback', '1.00×'), data_font, WHITE)
+
+    # Row 5: Predicted moves [dynamic label in static base]
     add(px, y, "Predicted moves: ", CYAN, data_font)
     y_predicted = y
     y += row_h
@@ -1216,6 +1230,8 @@ def generate_frames(
     grid_states: dict,
     fake_times: List[float],
     delays: List[float],
+    original_fake_times: Optional[List[float]],
+    original_custom_move_times: Optional[List[float]],
     is_movetimes_accurate: bool,
     score_title_text: str = "",
     custom_move_times: Optional[List[float]] = None,
@@ -1231,6 +1247,7 @@ def generate_frames(
     compression: int = 18,
     shared_pool: Optional[ProcessPoolExecutor] = None,
     gpu_renderer: Optional['GPURenderer'] = None,
+    speed_factor: float = 1.0,
 ) -> Tuple[List[Image.Image], List[int]]:
     quality = quality + 1.0
     expanded = expand_solution(solution)
@@ -1279,14 +1296,15 @@ def generate_frames(
             split_moves = cum_moves - last_moves
         stage_time = 0
         cum_stage_time = 0
-        if custom_move_times and len(custom_move_times) > s - 1 and s > 0:
+        _grid_ct = original_custom_move_times if original_custom_move_times else custom_move_times
+        if _grid_ct and len(_grid_ct) > s - 1 and s > 0:
             if s == sol_len:
-                cum_stage_time = custom_move_times[-1]
-                stage_time = custom_move_times[-1] - last_time
+                cum_stage_time = _grid_ct[-1]
+                stage_time = _grid_ct[-1] - last_time
             else:
-                cum_stage_time = custom_move_times[s - 1]
-                stage_time = custom_move_times[s - 1] - last_time
-            last_time = custom_move_times[s - 1] if s < sol_len else custom_move_times[-1]
+                cum_stage_time = _grid_ct[s - 1]
+                stage_time = _grid_ct[s - 1] - last_time
+            last_time = _grid_ct[s - 1] if s < sol_len else _grid_ct[-1]
         split_tps = split_moves * 1000 / stage_time if stage_time > 0 else 0
         grid_stages_list.append({
             "cum_moves": cum_moves,
@@ -1317,7 +1335,8 @@ def generate_frames(
     current_md = all_md
     zp = find_zero(mc, w, h)
 
-    total_time_ms = fake_times[-1] if fake_times else 0
+    total_time_ms = (original_fake_times[-1] if original_fake_times
+                     else fake_times[-1]) if fake_times else 0
     total_tps = tps
 
     if not custom_move_times:
@@ -1419,10 +1438,12 @@ def generate_frames(
                 moved_md = 0
                 cur_tps_val = 0.0
             else:
-                if custom_move_times and len(custom_move_times) > frame_idx - 1:
-                    cur_time_ms = custom_move_times[frame_idx - 1]
+                _use_orig_ct = original_custom_move_times if original_custom_move_times else custom_move_times
+                if _use_orig_ct and len(_use_orig_ct) > frame_idx - 1:
+                    cur_time_ms = _use_orig_ct[frame_idx - 1]
                 else:
-                    cur_time_ms = fake_times[frame_idx - 1] if frame_idx - 1 < len(fake_times) else 0
+                    _ft = original_fake_times if original_fake_times else fake_times
+                    cur_time_ms = _ft[frame_idx - 1] if frame_idx - 1 < len(_ft) else 0
                 cur_md = current_md
                 moved_md = all_md - cur_md
                 cur_tps_val = current_moves * 1000 / cur_time_ms if cur_time_ms > 0 else 0
@@ -1464,6 +1485,7 @@ def generate_frames(
                 "tps_all": f"{total_tps:.3f}",
                 "predicted_moves": predicted_moves,
                 "cubic_estimate": None,
+                "speed_playback": f"{speed_factor:.2f}×" if speed_factor != 1.0 else "1.00×",
             }
 
             move_idx = frame_idx - 1 if frame_idx > 0 else 0
@@ -1939,10 +1961,20 @@ class ReplayVideoGenerator:
 
         # Calculate timing
         if isinstance(movetimes, list) and len(movetimes) > 0:
-            delays, fake_times = calculate_move_timings(solution, tps_val, width, height, speed_factor)
-            fake_times = [0] + list(movetimes)
+            delays, _fake_unused = calculate_move_timings(solution, tps_val, width, height, speed_factor)
+            inv = 1.0 / speed_factor if speed_factor != 1.0 else 1.0
+            custom_move_times_sped = [t * inv for t in movetimes]
+            original_fake_times = [0] + list(movetimes)
+            original_custom_move_times = list(movetimes)
+            fake_times = [0] + custom_move_times_sped
         else:
             delays, fake_times = calculate_move_timings(solution, tps_val, width, height, speed_factor)
+            if speed_factor != 1.0:
+                _, original_fake_times = calculate_move_timings(solution, tps_val, width, height, 1.0)
+            else:
+                original_fake_times = fake_times
+            custom_move_times_sped = None
+            original_custom_move_times = None
         log.info(f"  timing: delays_count={len(delays)}, fake_times_range=[{fake_times[0]:g}, {fake_times[-1]:g}]ms")
 
         # Score title
@@ -1966,6 +1998,7 @@ class ReplayVideoGenerator:
                 external_progress_cb(cur, tot, **kwargs)
 
         log.info(f"  calling generate_frames: fringe_schemes={len(all_fringe_schemes)}, grid_states_keys={len(grid_states)}, delays={len(delays)}, fake_times={len(fake_times)}")
+        _orig_cmt = original_custom_move_times
         frames, frame_state_map = generate_frames(
             matrix=matrix,
             solution=solution,
@@ -1974,9 +2007,11 @@ class ReplayVideoGenerator:
             grid_states=grid_states,
             fake_times=fake_times,
             delays=delays,
+            original_fake_times=original_fake_times,
+            original_custom_move_times=_orig_cmt,
             is_movetimes_accurate=is_movetimes_accurate,
             score_title_text=score_title_text,
-            custom_move_times=custom_move_times,
+            custom_move_times=custom_move_times_sped,
             cumulative_data=None,
             progress_callback=progress_cb if (show_progress or external_progress_cb) else None,
             overlay_progress_callback=progress_cb if (show_progress or external_progress_cb) else None,
@@ -1988,6 +2023,7 @@ class ReplayVideoGenerator:
             fps=fps,
             compression=compression,
             gpu_renderer=gpu_renderer,
+            speed_factor=speed_factor,
         )
 
         log.info(f"  generate_frames returned: frames_count={len(frames)}, frame_state_map_len={len(frame_state_map)}")

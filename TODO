@@ -1,11 +1,9 @@
-- --speedup (factor) playback specific (create fakemovetimes, keep main movetimes for stats)
-- --no-layout option, don't render stats, only puzzle
-- --noborder option, don't render border
-- --no-numbers option, don't render numbers
-- analyse base size use, rework tile sizing in gpu
+- --no-layout option, don't render stats, only puzzle without timer, grid stages, etc., must reduce render times by a lot, and render much less unique frames as no timer is visible to update every frame
+
+- --no-border option, don't render border for the tiles / --no-secondary-border don't render border for the grids subschemes --no-numbers option, don't render numbers
+
 - fix font size on big puzzles
 - Frames section in benchmark should be updated to actually unique frames rendered
-- fix gpu render having bigger file size by default
 - concact bulk render results
 
 - hard major optimization ideas draft:
