@@ -29,6 +29,7 @@ def run_bench(label: str, url: str, extra_args: list, output_path: str) -> tuple
         "--file", tmp_file.name,
         "--quality", "1.0",
         "--output", output_path,
+        "--log",
     ] + extra_args
 
     detail = {
@@ -69,12 +70,18 @@ def run_bench(label: str, url: str, extra_args: list, output_path: str) -> tuple
     return elapsed, detail
 
 
-def parse_puzzle_info(url: str):
+def parse_puzzle_info(content: str):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, script_dir)
     from replay_video import parse_replay_url
-    from replay_generator import parse_scramble_guess, expand_solution
-    sol, tps, scramble, movetimes = parse_replay_url(url)
+    from replay_generator import parse_scramble_guess, expand_solution, guess_size
+    try:
+        sol, tps, scramble, movetimes = parse_replay_url(content)
+    except Exception:
+        sol = content
+        tps = None
+        scramble = None
+        movetimes = -1
     matrix = parse_scramble_guess(sol)
     expanded = expand_solution(sol)
     has_mt = isinstance(movetimes, list) and len(movetimes) > 0
