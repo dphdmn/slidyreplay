@@ -1688,9 +1688,10 @@ def generate_frames(
 # ─── Progress Display ──────────────────────────────────────────────
 
 class TerminalProgress:
-    def __init__(self, total: int, desc: str = "Generating frames"):
+    def __init__(self, total: int, desc: str = "Generating frames", hide_rate: bool = False):
         self.total = total
         self.desc = desc
+        self.hide_rate = hide_rate
         self.start_time = time_module.time()
         self.last_update_time = self.start_time
         self.last_current = 0
@@ -1720,7 +1721,7 @@ class TerminalProgress:
         frac = current / self.total if self.total > 0 else 0
         pct = frac * 100
         total_t = elapsed + eta
-        suffix = f" {pct:.0f}% | {rate:.0f}/s | {self._time_str(elapsed)}/{self._time_str(total_t)}"
+        suffix = f" {pct:.0f}% | {self._time_str(elapsed)}/{self._time_str(total_t)}" if self.hide_rate else f" {pct:.0f}% | {rate:.0f}/s | {self._time_str(elapsed)}/{self._time_str(total_t)}"
         if self._gpu_stats and self._gpu_stats.get("batch_size"):
             s = self._gpu_stats
             mb = s.get('mem_used_mb', 0) / 1024
@@ -2119,6 +2120,7 @@ class ReplayVideoGenerator:
                     fut_to_idx[fut] = idx
 
                 from concurrent.futures import as_completed
+                _batch_prog = TerminalProgress(n, "Batch", hide_rate=True) if show_progress else None
                 done_set = set()
                 while len(done_set) < len(cpu_items):
                     if cancel_check and cancel_check():
@@ -2129,12 +2131,11 @@ class ReplayVideoGenerator:
                         result = fut.result()
                         done_set.add(fut)
                         out_path = result["path"]
-                        elapsed = result["elapsed"]
                         output_paths.append(out_path)
                         if external_progress_cb:
                             external_progress_cb(len(output_paths), n)
-                        if show_progress:
-                            print(f"  [{len(output_paths)}/{n}] {os.path.basename(out_path)} — {elapsed:.1f}s")
+                        if _batch_prog:
+                            _batch_prog(len(output_paths), n)
                         break
 
         return output_paths

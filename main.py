@@ -814,6 +814,9 @@ class ReplayGUI(tb.Window):
         _pb_last = [0.0]
         _pb_prev = [0]
 
+        def _fmt(t):
+            return f"{t:.1f}s" if t < 60 else f"{int(t//60)}m {t%60:.0f}s"
+
         def on_progress(cur, _tot, **_):
             if self.cancel_flag:
                 return
@@ -826,9 +829,10 @@ class ReplayGUI(tb.Window):
             rate = dc / dt if dt > 0 else 0
             remaining = total - cur
             eta = remaining / rate if rate > 0 else 0
+            expected = elapsed + eta
             pct = cur * 100 / total
-            eta_str = f"ETA {eta:.0f}s" if eta < 60 else f"ETA {int(eta//60)}m {eta%60:.0f}s" if eta < 3600 else ""
-            label = f"{cur}/{total} — {rate:.2f}/s — {eta_str}"
+            exp_str = _fmt(expected) if rate > 0 and expected < elapsed * 100 else "?"
+            label = f"{cur}/{total} — {_fmt(elapsed)}/{exp_str}"
             self.after(0, lambda v=pct: self.progress_bar.configure(value=v))
             self.after(0, lambda t=f"{label}": self.progress_text.set(t))
 
@@ -952,11 +956,15 @@ class ReplayGUI(tb.Window):
             display_pct = min(overall_pct, 99.0) if running else overall_pct
             self.progress_bar["value"] = display_pct
 
-            eta_str = ""
+            expected_str = ""
             if overall_pct > 1 and running:
                 eta = (100 - overall_pct) / self._rolling_rate if self._rolling_rate > 0 else 0
-                if eta < 3600:
-                    eta_str = f" — ETA {eta:.1f}s" if eta < 60 else f" — ETA {int(eta//60)}m {eta%60:.0f}s"
+                expected = elapsed + eta
+                if expected < elapsed * 100:
+                    exp_s = f"{expected:.1f}s" if expected < 60 else f"{int(expected//60)}m {expected%60:.0f}s"
+                    expected_str = f"/{exp_s}"
+                else:
+                    expected_str = "/?"
 
             gpu_str = ""
             for p in self._item_progress.values():
@@ -965,13 +973,7 @@ class ReplayGUI(tb.Window):
                     gpu_str = f"GPU: {gs.get('gpu_name', '?')} | VRAM: {gs.get('mem_used_mb', 0)}/{gs.get('total_mem_mb', 0)} MB | Batch: {gs.get('batch_size', 0)} frames"
                     break
             self._gpu_info_var.set(gpu_str)
-            parts = []
-            if running:
-                parts.append(f"{running} active")
-            if done_count:
-                parts.append(f"{done_count}/{total} completed")
-            label = " — ".join(parts) + f" ({display_pct:.0f}%)" if parts else ""
-            self.progress_text.set(f"{elapsed_str} — {label}{eta_str}")
+            self.progress_text.set(f"{elapsed_str}{expected_str} ({display_pct:.0f}%)")
 
         if done_count == total:
             errors = sum(1 for p in self._item_progress.values() if p["error"])
