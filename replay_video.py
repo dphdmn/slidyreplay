@@ -1682,7 +1682,7 @@ class TerminalProgress:
         line = f"{prefix}{bar}]{suffix}"
         return line
 
-    def update(self, current: int, actual_current: Optional[int] = None):
+    def update(self, current: int, actual_current: Optional[int] = None, actual_total: Optional[int] = None):
         now = time_module.time()
         # Throttle: redraw at most every ~100ms to avoid flooding console scrollback
         if current < self.total and now - self._last_print_time < 0.1:
@@ -1699,7 +1699,8 @@ class TerminalProgress:
             self.last_update_time = now
             self.last_current = _rate_source
         rate = self.window_rate if self.window_rate > 0 else _rate_source / elapsed if elapsed > 0 else 0
-        eta = (self.total - current) / rate if rate > 0 else 0
+        _remaining_source = (actual_total - _rate_source) if (actual_total is not None and actual_current is not None) else (self.total - current)
+        eta = _remaining_source / rate if rate > 0 else 0
         line = self._build_line(current, elapsed, rate, eta)
         if self._is_tty:
             # Track max width so shorter updates fully overwrite longer ones
@@ -1735,7 +1736,7 @@ class TerminalProgress:
         gpu_stats = kwargs.get("gpu_stats")
         if gpu_stats is not None:
             self._gpu_stats = gpu_stats
-        self.update(adjusted_cur, actual_current=current)
+        self.update(adjusted_cur, actual_current=current, actual_total=total)
 
 
 # ─── Main API ──────────────────────────────────────────────────────
