@@ -637,6 +637,7 @@ class ReplayGUI(tb.Window):
 
         if total == 1:
             # Single item: existing per-item path (preserves detailed progress)
+            self._is_batch = False
             def on_done(idx, fut):
                 try:
                     fut.result()
@@ -653,6 +654,7 @@ class ReplayGUI(tb.Window):
                 self._batch_futures.append(fut)
         else:
             # Batch: build all items, submit once via batch_render
+            self._is_batch = True
             self._batch_done = 0
             self._batch_total = total
             self._batch_cancelled = False
@@ -808,13 +810,27 @@ class ReplayGUI(tb.Window):
         batch_items = self._build_batch_items(items, output_dir)
         total = len(batch_items)
         log.info(f"_process_batch: {total} items prepared")
+        _pb_start = time.time()
+        _pb_last = [0.0]
+        _pb_prev = [0]
 
         def on_progress(cur, _tot, **_):
             if self.cancel_flag:
                 return
+            now = time.time()
+            dt = now - _pb_last[0]
+            dc = cur - _pb_prev[0]
+            _pb_last[0] = now
+            _pb_prev[0] = cur
+            elapsed = now - _pb_start
+            rate = dc / dt if dt > 0 else 0
+            remaining = total - cur
+            eta = remaining / rate if rate > 0 else 0
             pct = cur * 100 / total
-            self.after(0, lambda: self.progress_bar.configure(value=pct))
-            self.after(0, lambda: self.progress_text.set(f"{cur}/{total} items rendered..."))
+            eta_str = f"ETA {eta:.0f}s" if eta < 60 else f"ETA {int(eta//60)}m {eta%60:.0f}s" if eta < 3600 else ""
+            label = f"{cur}/{total} — {rate:.2f}/s — {eta_str}"
+            self.after(0, lambda v=pct: self.progress_bar.configure(value=v))
+            self.after(0, lambda t=f"{label}": self.progress_text.set(t))
 
         try:
             gen = ReplayVideoGenerator()
@@ -883,7 +899,7 @@ class ReplayGUI(tb.Window):
         done_count = sum(1 for f in self._batch_futures if f.done())
 
         # Batch mode (single future from _process_batch)
-        if total == 1 and hasattr(self, '_batch_total') and self._batch_total > 1:
+        if getattr(self, '_is_batch', False):
             fut = self._batch_futures[0]
             if not fut.done():
                 self.after(500, self._poll_batch)
@@ -903,6 +919,7 @@ class ReplayGUI(tb.Window):
                 self._executor.shutdown(wait=False)
                 self._executor = None
             self._batch_futures = []
+            self._is_batch = False
             return
 
         # Single-item mode (per-item futures)

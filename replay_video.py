@@ -1827,19 +1827,22 @@ def _quick_infer_size(solution: str, scramble: Optional[str] = None, size=None) 
     return None
 
 
-def _batch_cpu_worker(item: dict) -> str:
-    """ProcessPoolExecutor worker — renders one solution with inner parallelism disabled."""
+def _batch_cpu_worker(item: dict) -> dict:
+    """ProcessPoolExecutor worker — renders one solution with inner parallelism disabled.
+    Returns metadata dict for clean progress display."""
     gen = ReplayVideoGenerator()
     kwargs = {k: v for k, v in item.items() if k != "solution" and k != "output_path"}
+    t0 = time_module.time()
     gen.generate_simple_replay(
         solution=item["solution"],
         output_path=item["output_path"],
         use_gpu=False,
         parallel=False,
-        show_progress=True,
+        show_progress=False,
         **kwargs,
     )
-    return item["output_path"]
+    elapsed = time_module.time() - t0
+    return {"path": item["output_path"], "elapsed": elapsed}
 
 
 # ─── Main API ──────────────────────────────────────────────────────
@@ -2123,14 +2126,15 @@ class ReplayVideoGenerator:
                     for fut in as_completed(fut_to_idx):
                         if fut in done_set:
                             continue
-                        fut.result()
+                        result = fut.result()
                         done_set.add(fut)
-                        out_path = cpu_items[fut_to_idx[fut]]["output_path"]
+                        out_path = result["path"]
+                        elapsed = result["elapsed"]
                         output_paths.append(out_path)
                         if external_progress_cb:
                             external_progress_cb(len(output_paths), n)
                         if show_progress:
-                            print(f"  [{len(output_paths)}/{n}] {os.path.basename(out_path)}")
+                            print(f"  [{len(output_paths)}/{n}] {os.path.basename(out_path)} — {elapsed:.1f}s")
                         break
 
         return output_paths
