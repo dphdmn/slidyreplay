@@ -1685,7 +1685,7 @@ class TerminalProgress:
     def update(self, current: int, actual_current: Optional[int] = None, actual_total: Optional[int] = None):
         now = time_module.time()
         # Throttle: redraw at most every ~100ms to avoid flooding console scrollback
-        if current < self.total and now - self._last_print_time < 0.1:
+        if current < self.total and now - self._last_print_time < 1.0:
             return
         elapsed = now - self.start_time
         window_elapsed = now - self.last_update_time

@@ -1,6 +1,11 @@
-- Speedup feature
-- fix cancel button
+- Speedup feature --speedup (factor) playback specific (create fakemovetimes, keep main movetimes for stats)
+- --no-layout option, don't render stats, only puzzle
+- --noborder option, don't render border
+- -no-numbers option, don't render numbers
+- analyse base size use, rework tile sizing in gpu
+- fix font size on big puzzles
 
+- hard major optimization ideas draft:
  changes between frames are small (like one tile changes every frame), but its kinda hard to use?) Decent idea is precomputing the ids of the tiles affected by the moves, and reuse previous frames data for unaffected frames (that's what video codecs do pretty much but at pixel level), no idea how would that interfere with gpu doing it's parallel rendering tho, I have no clue what cuda is doing
 Maybe I won't even need gpu accel with precomputing stuff 
 Plus I would need to consider the skipped frames (lower fps) etc, good news that changes between frames calculations can run in parallel without issues, just by splitting solution in parts

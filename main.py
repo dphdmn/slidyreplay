@@ -629,7 +629,8 @@ class ReplayGUI(tb.Window):
             self._item_progress[idx] = {"phase": 0, "prev_cur": 0,
                                         "adjusted_cur": 0, "adjusted_tot": 1,
                                         "done": False, "path": None, "error": None,
-                                        "cancelled": False}
+                                        "cancelled": False,
+                                        "_last_update_time": 0}
 
         self._batch_futures = []
         self._executor = ThreadPoolExecutor(max_workers=1)
@@ -649,7 +650,7 @@ class ReplayGUI(tb.Window):
             fut.add_done_callback(lambda f, i=idx: on_done(i, f))
             self._batch_futures.append(fut)
 
-        self.after(200, self._poll_batch)
+        self.after(1000, self._poll_batch)
 
     def _process_item(self, idx, mode, input_str, output_dir, total):
         log.info(f"_process_item[{idx}]: mode={mode}, input_str_len={len(input_str)}")
@@ -747,6 +748,11 @@ class ReplayGUI(tb.Window):
 
     def _on_item_progress(self, idx, raw_cur, raw_tot, **kwargs):
         item = self._item_progress[idx]
+        now = time.time()
+        if raw_cur < raw_tot and now - item["_last_update_time"] < 1.0:
+            item["prev_cur"] = raw_cur
+            return
+        item["_last_update_time"] = now
         _use_gpu = kwargs.pop("_use_gpu", False)
         if _use_gpu:
             item["is_gpu"] = True
@@ -803,7 +809,7 @@ class ReplayGUI(tb.Window):
         now = time.time()
         dt = now - self._last_poll_time
         dp = overall_pct - self._last_poll_pct
-        if dt > 0.05 and dp >= 0:
+        if dt > 0.5 and dp >= 0:
             inst = dp / dt
             self._rolling_rate = inst if self._rolling_rate <= 0 else self._rolling_rate * 0.7 + inst * 0.3
         self._last_poll_time = now
@@ -860,7 +866,7 @@ class ReplayGUI(tb.Window):
             self._batch_futures = []
             return
 
-        self.after(200, self._poll_batch)
+        self.after(1000, self._poll_batch)
 
     def _add_to_list(self, path):
         self.generated_files.append(path)
