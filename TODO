@@ -1,7 +1,7 @@
-- Speedup feature --speedup (factor) playback specific (create fakemovetimes, keep main movetimes for stats)
+- --speedup (factor) playback specific (create fakemovetimes, keep main movetimes for stats)
 - --no-layout option, don't render stats, only puzzle
 - --noborder option, don't render border
-- -no-numbers option, don't render numbers
+- --no-numbers option, don't render numbers
 - analyse base size use, rework tile sizing in gpu
 - fix font size on big puzzles
 
