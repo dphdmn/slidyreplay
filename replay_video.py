@@ -1155,8 +1155,6 @@ def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info):
     return result
 
 
-_nvenc_cache: Optional[bool] = None
-
 def _close_pipe(proc: subprocess.Popen) -> None:
     try:
         proc.stdin.close()
@@ -1172,24 +1170,8 @@ def _close_pipe(proc: subprocess.Popen) -> None:
         proc.wait()
 
 
-def _nvenc_available() -> bool:
-    global _nvenc_cache
-    if _nvenc_cache is not None:
-        return _nvenc_cache
-    try:
-        result = subprocess.run(
-            ['ffmpeg', '-encoders'],
-            capture_output=True, text=True, timeout=10,
-        )
-        _nvenc_cache = 'h264_nvenc' in result.stdout
-    except Exception:
-        _nvenc_cache = False
-    log.info(f"_nvenc_available: {_nvenc_cache}")
-    return _nvenc_cache
-
-
 def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18):
-    """Spawn ffmpeg with libx264 (software) reading rawvideo from stdin."""
+    """Spawn ffmpeg with libx264 reading rawvideo from stdin."""
     cmd = [
         'ffmpeg', '-y',
         '-f', 'rawvideo',
@@ -1208,29 +1190,6 @@ def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60
         output_path,
     ]
     log.info(f"_create_ffmpeg_pipe (libx264): cmd={' '.join(cmd)}")
-    return subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
-
-
-def _create_ffmpeg_pipe_nvenc(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18):
-    """Spawn ffmpeg with h264_nvenc (hardware) reading rawvideo from stdin."""
-    cmd = [
-        'ffmpeg', '-y',
-        '-f', 'rawvideo',
-        '-pix_fmt', 'rgb24',
-        '-s', f'{width}x{height}',
-        '-r', str(fps),
-        '-i', '-',
-        '-c:v', 'h264_nvenc',
-        '-preset', 'p7',
-        '-rc', 'vbr',
-        '-cq', str(compression),
-        '-profile:v', 'high',
-        '-pix_fmt', 'yuv420p',
-        '-fps_mode', 'cfr',
-        '-movflags', '+faststart',
-        output_path,
-    ]
-    log.info(f"_create_ffmpeg_pipe_nvenc: cmd={' '.join(cmd)}")
     return subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 
@@ -1565,13 +1524,9 @@ def generate_frames(
             state_to_count[state_idx] = state_to_count.get(state_idx, 0) + 1
         log.info(f"  state_to_count: {len(state_to_count)} unique states, counts={list(state_to_count.values())[:20]}...")
 
-        # Open ffmpeg pipe — prefer NVENC on GPU path, fall back to libx264
-        encoder_name = "NVENC" if _nvenc_available() else "libx264"
-        log.info(f"  OPENING FFMPEG PIPE: output={output_path}, canvas={canvas_w}x{canvas_h}, fps={fps}, compression={compression}, encoder={encoder_name}")
-        if _nvenc_available():
-            enc_proc = _create_ffmpeg_pipe_nvenc(output_path, canvas_w, canvas_h, fps=fps, compression=compression)
-        else:
-            enc_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h, fps=fps, compression=compression)
+        # Open ffmpeg pipe — always use libx264 for consistent CRF encoding
+        log.info(f"  OPENING FFMPEG PIPE: output={output_path}, canvas={canvas_w}x{canvas_h}, fps={fps}, compression={compression}, encoder=libx264")
+        enc_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h, fps=fps, compression=compression)
         unique_params = [frame_params[i] for i in states_needed]
         _t_stage3 = time_module.time()
         log.info("====== STAGE 3: GPU RENDER ======")
