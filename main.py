@@ -1085,6 +1085,8 @@ Examples:
     parser.add_argument("--movetimes", help="Comma-separated move timings (overrides --tps/--time)")
     parser.add_argument("--speedup", type=float, default=1.0,
                         help="Speed multiplier (e.g. 2.0 = 2x faster video, 0.5 = half speed)")
+    parser.add_argument("--force-fringe", action="store_true", default=False,
+                        help="Force fringe colors (disable grids detection)")
     parser.add_argument("--log", action="store_true", default=False,
                         help="Enable debug logging to file (logs/debug_<timestamp>.log)")
 
@@ -1168,7 +1170,7 @@ Examples:
             output_path = f"{root}_{idx+1:03d}{ext}"
 
             kwargs = dict(quality=args.quality, fps=args.fps, compression=args.compression,
-                          speed_factor=args.speedup)
+                          speed_factor=args.speedup, force_fringe=args.force_fringe)
             try:
                 sol, tps, scramble, movetimes = parse_replay_url(val)
                 kwargs["tps"] = tps or args.tps
@@ -1211,18 +1213,21 @@ Examples:
                                tps=tps or args.tps, scramble=scramble,
                                movetimes=movetimes, quality=args.quality,
                                fps=args.fps, compression=args.compression,
-                               speed_factor=args.speedup)
+                               speed_factor=args.speedup,
+                               force_fringe=args.force_fringe)
                 except Exception:
                     run_single(val, output_path,
                                tps=None if movetimes else args.tps, time=args.time,
                                scramble=args.scramble, size=args.size,
                                quality=args.quality, movetimes=movetimes,
                                fps=args.fps, compression=args.compression,
-                               speed_factor=args.speedup)
+                               speed_factor=args.speedup,
+                               force_fringe=args.force_fringe)
             else:
                 run_single(val, output_path,
                            tps=None if movetimes else args.tps, time=args.time,
                            scramble=args.scramble, size=args.size,
                            quality=args.quality, movetimes=movetimes,
                            fps=args.fps, compression=args.compression,
-                           speed_factor=args.speedup)
+                           speed_factor=args.speedup,
+                           force_fringe=args.force_fringe)

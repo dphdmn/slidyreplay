@@ -36,8 +36,11 @@ python main.py --batch solutions.txt
 | `--quality` | Render quality 1.0–4.0 (default: 1.0) |
 | `--compression` | Video encoder quality 10–40, lower = fewer artifacts but larger file (default: 18) |
 | `--movetimes` | Comma-separated move timings in seconds (overrides `--tps`/`--time`) |
+| `--speedup` | Speed multiplier (e.g. 2.0 = 2× faster, 0.5 = half speed) (default: 1.0) |
+| `--force-fringe` | Force fringe colors (disable grids detection) |
 | `--fps` | Output framerate (default: 60) |
 | `--no-gpu` | Disable GPU acceleration (GPU is auto-detected by default) |
+| `--force-fringe` | Force fringe colors (disable grids detection) |
 | `--batch` | File with solutions/URLs (one per line) |
 | `--log` | Enable debug logging to `logs/debug_\<timestamp\>.log` |
 
