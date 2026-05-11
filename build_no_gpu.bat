@@ -2,7 +2,7 @@
 REM SlidyReplay — CPU-only standalone EXE build
 REM Requires: pip install pyinstaller
 
-pyinstaller --onefile --windowed ^
+python -m PyInstaller --onefile --windowed ^
   --name "ReplayVideoGenerator" ^
   --icon assets\15PUZZLE_ICON.ico ^
   --add-data "fonts;fonts" ^
