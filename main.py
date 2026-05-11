@@ -809,7 +809,7 @@ class ReplayGUI(tb.Window):
         total = len(batch_items)
         log.info(f"_process_batch: {total} items prepared")
 
-        def on_progress(cur, _tot):
+        def on_progress(cur, _tot, **_):
             if self.cancel_flag:
                 return
             pct = cur * 100 / total

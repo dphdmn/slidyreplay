@@ -1836,7 +1836,7 @@ def _batch_cpu_worker(item: dict) -> str:
         output_path=item["output_path"],
         use_gpu=False,
         parallel=False,
-        show_progress=False,
+        show_progress=True,
         **kwargs,
     )
     return item["output_path"]
@@ -2083,8 +2083,7 @@ class ReplayVideoGenerator:
                             solution=item["solution"],
                             output_path=item["output_path"],
                             use_gpu=True,
-                            show_progress=False,
-                            external_progress_cb=external_progress_cb,
+                            show_progress=show_progress,
                             cancel_check=cancel_check,
                             gpu_renderer=renderer,
                             **kwargs,
@@ -2126,9 +2125,12 @@ class ReplayVideoGenerator:
                             continue
                         fut.result()
                         done_set.add(fut)
-                        output_paths.append(cpu_items[fut_to_idx[fut]]["output_path"])
+                        out_path = cpu_items[fut_to_idx[fut]]["output_path"]
+                        output_paths.append(out_path)
                         if external_progress_cb:
                             external_progress_cb(len(output_paths), n)
+                        if show_progress:
+                            print(f"  [{len(output_paths)}/{n}] {os.path.basename(out_path)}")
                         break
 
         return output_paths
