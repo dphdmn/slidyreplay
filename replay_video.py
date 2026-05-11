@@ -1625,6 +1625,8 @@ def generate_frames(
     num_needed = len(states_needed)
     log_ram("CPU: before render")
 
+    RENDER_W = 50
+
     if parallel and num_needed > 1:
         workers = min(os.cpu_count() or 4, num_needed)
         done = 0
@@ -1650,7 +1652,8 @@ def generate_frames(
                         state_images[idx] = img
                         done += 1
                         if progress_callback:
-                            progress_callback(done, num_needed, _use_gpu=False)
+                            cur = done * RENDER_W // num_needed
+                            progress_callback(cur, 100, _desc="Render" if done == 1 else None)
                     remaining.remove(fut)
         finally:
             if shared_pool is None:
@@ -1661,22 +1664,25 @@ def generate_frames(
                 raise CancelError()
             state_images[i] = _render_one_frame(frame_params[i])
             if progress_callback:
-                progress_callback(seq_idx + 1, num_needed, _use_gpu=False)
+                cur = (seq_idx + 1) * RENDER_W // num_needed
+                progress_callback(cur, 100, _desc="Render" if seq_idx == 0 else None)
 
-    # Derive canvas dimensions from first rendered image
     first_rendered = next(img for img in state_images if img is not None)
     canvas_w, canvas_h = first_rendered.size
     log.info(f"  CPU RENDER DONE: canvas={canvas_w}x{canvas_h}")
     log_ram("CPU: after render (all frames in mem)")
 
-    # Pipe to ffmpeg in frame_state order
-    log.info(f"  CPU FFMPEG PIPE: output={output_path}, total_frames={len(frame_state)}, compression={compression}")
+    total_video_frames = len(frame_state)
+    log.info(f"  CPU FFMPEG PIPE: output={output_path}, total_frames={total_video_frames}, compression={compression}")
     ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h, fps=fps, compression=compression)
     written = 0
     try:
-        for state_idx in frame_state:
+        for idx, state_idx in enumerate(frame_state):
             ffmpeg_proc.stdin.write(np.array(state_images[state_idx]).tobytes())
             written += 1
+            if progress_callback:
+                cur = RENDER_W + written * (100 - RENDER_W) // total_video_frames
+                progress_callback(cur, 100, _desc="Encode" if written == 1 else None)
     finally:
         _close_pipe(ffmpeg_proc)
     log.info(f"  CPU FFMPEG DONE: {written} frames written, returncode={ffmpeg_proc.returncode}")
@@ -1789,6 +1795,9 @@ class TerminalProgress:
         gpu_stats = kwargs.get("gpu_stats")
         if gpu_stats is not None:
             self._gpu_stats = gpu_stats
+        _desc = kwargs.get("_desc")
+        if _desc:
+            self.set_desc(_desc)
         self.update(adjusted_cur, actual_current=current, actual_total=total)
 
 
