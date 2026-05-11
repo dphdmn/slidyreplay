@@ -60,24 +60,23 @@ Example: `8x8_23.564_707_30.003_movetimes_5.mp4`
 
 The GUI shows the GPU name when available, or "Not available — install CUDA" when PyTorch/CUDA is missing. GPU is enabled by default when available and falls back to CPU automatically.
 
-### Benchmarks (NVIDIA GeForce GTX 1660 SUPER) (v2.1)
+### Benchmarks (NVIDIA GeForce GTX 1660 SUPER)
 
-**Settings:** quality=1.0, 60 FPS
+**Settings:** quality=1.0, 60 FPS.
 
 | Puzzle | Moves | CPU    | GPU    | Speedup |
 | ------ | ----- | ------ | ------ | ------- |
-| 4×4    | 26    | 4.3s   | 0.8s   | 5.4×    |
-| 5×5    | 98    | 4.6s   | 1.4s   | 3.3×    |
-| 6×6    | 213   | 6.1s   | 2.7s   | 2.3×    |
-| 7×7    | 425   | 9.9s   | 5.4s   | 1.8×    |
-| 8×8    | 707   | 18.9s  | 8.5s   | 2.2×    |
-| 9×9    | 1251  | 25.9s  | 14.0s  | 1.8×    |
-| 10×10  | 1569  | 26.9s  | 16.2s  | 1.7×    |
+| 4×4    | 26    | 1.1s   | 0.6s   | 1.8×    |
+| 5×5    | 98    | 2.0s   | 1.6s   | 1.3×    |
+| 6×6    | 213   | 3.8s   | 2.9s   | 1.3×    |
+| 7×7    | 425   | 7.7s   | 6.0s   | 1.3×    |
+| 8×8    | 707   | 14.0s  | 11.1s  | 1.3×    |
+| 9×9    | 1251  | 26.7s  | 18.1s  | 1.5×    |
+| 10×10  | 1569  | 27.4s  | 22.3s  | 1.2×    |
 | 12×12  | 2883  | —      | 36.4s  | —       |
 | 16×16  | 7132  | —      | 112.6s | —       |
 | 20×20  | 14203 | —      | 217.0s | —       |
 
-The most benefit from GPU rendering is currently achieved by running encoding in parallel with the rendering stage.
 
 ### Installing GPU support
 

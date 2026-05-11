@@ -30,10 +30,14 @@ from replay_generator import (
 )
 
 from splits import decompress_string_to_array, read_solve_data
-from gpu_renderer import GPURenderer, _render_timer_text, CancelError
 from debug_log import get_logger
 
 log = get_logger()
+
+
+class CancelError(Exception):
+    pass
+
 
 import psutil as _psutil
 _proc = _psutil.Process()
@@ -663,6 +667,17 @@ def draw_multiline_text(draw, xy, text, fill, font, line_spacing=4):
         y += (bbox[3] - bbox[1]) + line_spacing
 
 
+def _render_timer_text(timer_text: str) -> Image.Image:
+    font = get_font(36, bold=True, mono=True)
+    b = font.getbbox(timer_text)
+    w = b[2] - b[0]
+    h = b[3] - b[1]
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(im)
+    draw.text((-b[0], -b[1]), timer_text, fill=(*CYAN, 255), font=font)
+    return im
+
+
 def render_frame(
     matrix: List[List[int]],
     grid_state: dict,
@@ -1215,7 +1230,7 @@ def generate_frames(
     fps: int = 60,
     compression: int = 18,
     shared_pool: Optional[ProcessPoolExecutor] = None,
-    gpu_renderer: Optional[GPURenderer] = None,
+    gpu_renderer: Optional['GPURenderer'] = None,
 ) -> Tuple[List[Image.Image], List[int]]:
     quality = quality + 1.0
     expanded = expand_solution(solution)
@@ -1342,15 +1357,19 @@ def generate_frames(
     # Optional GPU acceleration for tile grid rendering
     puzzle_w_est = w * tile_size
     canvas_w_est = (puzzle_w_est + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
-    panel_w_est = canvas_w_est - (PADDING + puzzle_w_est + PADDING) - PADDING
-    stats_h_est = _compute_stats_full_height(panel_w_est, has_grid_stages=len(grid_stages_list) > 1)
-    min_canvas_h = HEADER_H + PADDING + stats_h_est + PADDING
-    if gpu_renderer is not None:
-        gpu = gpu_renderer
+    if use_gpu:
+        panel_w_est = canvas_w_est - (PADDING + puzzle_w_est + PADDING) - PADDING
+        stats_h_est = _compute_stats_full_height(panel_w_est, has_grid_stages=len(grid_stages_list) > 1)
+        min_canvas_h = HEADER_H + PADDING + stats_h_est + PADDING
+        if gpu_renderer is not None:
+            gpu = gpu_renderer
+        else:
+            from gpu_renderer import GPURenderer
+            gpu = GPURenderer(w, h, raw_tile, quality, min_canvas_h=min_canvas_h)
+        use_gpu = use_gpu and gpu.available
+        log.info(f"  canvas={gpu.canvas_w}x{gpu.canvas_h}, GPU available={gpu.available}, use_gpu={use_gpu}, max_batch_pixels={getattr(gpu, '_max_pixels_per_batch', '?')}")
     else:
-        gpu = GPURenderer(w, h, raw_tile, quality, min_canvas_h=min_canvas_h)
-    use_gpu = use_gpu and gpu.available
-    log.info(f"  canvas={gpu.canvas_w}x{gpu.canvas_h}, GPU available={gpu.available}, use_gpu={use_gpu}, max_batch_pixels={getattr(gpu, '_max_pixels_per_batch', '?')}")
+        log.info(f"  GPU disabled, use_gpu=False")
     if use_gpu:
         import torch as _torch_snapshot
         log.info(f"  Python={sys.version.split()[0]}, torch={_torch_snapshot.__version__}, CUDA={_torch_snapshot.version.cuda}")
@@ -2017,6 +2036,7 @@ class ReplayVideoGenerator:
             item["_inferred_size"] = size
 
         if use_gpu:
+            from gpu_renderer import GPURenderer
             # ── GPU path: sequential, group by size ──
             groups: Dict[tuple, List[dict]] = {}
             for item in items:
