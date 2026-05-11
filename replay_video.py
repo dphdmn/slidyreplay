@@ -1250,6 +1250,13 @@ def generate_frames(
             filtered_stages.append(k)
     filtered_stages.append(sol_len)
 
+    _sorted_grid_keys = sorted([k for k in grid_states.keys() if isinstance(k, (int, float))])
+    _sorted_grid_keys.append(sol_len + 1)
+
+    def _fast_grid_state(grid_states, move_index):
+        idx = bisect.bisect_left(_sorted_grid_keys, move_index + 1) - 1
+        return grid_states[_sorted_grid_keys[idx]] if idx >= 0 else grid_states[0]
+
     grid_stages_list = []
     last_moves = 0
     last_time = 0
@@ -1296,8 +1303,18 @@ def generate_frames(
     font_size = max(11, tile_size // 2)
     log.info(f"  tile_size={tile_size}, raw_tile={raw_tile}, font_size={font_size}")
 
+    def _update_manhattan_distance(md: int, matrix, move, zero_pos, w: int, h: int) -> int:
+        dr, dc = {'R': (0, -1), 'L': (0, 1), 'U': (1, 0), 'D': (-1, 0)}[move]
+        nr, nc = zero_pos[0] + dr, zero_pos[1] + dc
+        moved_val = matrix[zero_pos[0]][zero_pos[1]]
+        old_md = abs((moved_val - 1) // w - nr) + abs((moved_val - 1) % w - nc)
+        new_md = abs((moved_val - 1) // w - zero_pos[0]) + abs((moved_val - 1) % w - zero_pos[1])
+        return md - old_md + new_md
+
     mc = [row[:] for row in matrix]
     all_md = calculate_manhattan_distance(mc)
+    current_md = all_md
+    zp = find_zero(mc, w, h)
 
     total_time_ms = fake_times[-1] if fake_times else 0
     total_tps = tps
@@ -1349,22 +1366,44 @@ def generate_frames(
         import torch as _torch_snapshot
         log.info(f"  Python={sys.version.split()[0]}, torch={_torch_snapshot.__version__}, CUDA={_torch_snapshot.version.cuda}")
 
+    # ── Build tile color cache per grid stage ──
+    _tile_color_cache = {}
+    for stage_move in sorted(list(set(filtered_stages))):
+        if stage_move == 0:
+            cache_state = grid_states[0]
+        else:
+            cache_state = get_grids_state(grid_states, stage_move - 1)
+        if id(cache_state) not in _tile_color_cache:
+            color_matrix = []
+            for num in range(1, h * w + 1):
+                main_bg, sec_bg = get_tile_colors(num, cache_state, all_fringe_schemes, w)
+                color_matrix.append((main_bg or TILE_BG, sec_bg))
+            _tile_color_cache[id(cache_state)] = color_matrix
+
     # ── Stage 2: precompute data only for states that will be rendered ──
     frame_params = [None] * (sol_len + 1)
     for frame_idx in range(sol_len + 1):
         if frame_idx in states_needed_set:
             mc_snapshot = [row[:] for row in mc]
-            state = get_grids_state(grid_states, frame_idx - 1) if frame_idx > 0 else grid_states[0]
+            state = _fast_grid_state(grid_states, frame_idx - 1) if frame_idx > 0 else grid_states[0]
             current_moves = frame_idx
 
+            _t_tc_start = time_module.time()
+            cached_colors = _tile_color_cache.get(id(state))
+            if cached_colors is None:
+                cached_colors = _tile_color_cache.get(id(grid_states[0]))
             tile_colors = []
             for row_idx in range(h):
                 row_colors = []
                 for col_idx in range(w):
                     num = mc[row_idx][col_idx]
-                    main_bg, sec_bg = get_tile_colors(num, state, all_fringe_schemes, w)
-                    row_colors.append((main_bg or TILE_BG, sec_bg))
+                    if num == 0:
+                        row_colors.append((TILE_BG, None))
+                    else:
+                        row_colors.append(cached_colors[num - 1])
                 tile_colors.append(row_colors)
+            if frame_idx % 500 == 0 and frame_idx > 0:
+                log.info(f"    state {frame_idx}: tile_colors took {time_module.time() - _t_tc_start:.3f}s")
 
             if frame_idx == 0:
                 cur_time_ms = 0
@@ -1376,7 +1415,7 @@ def generate_frames(
                     cur_time_ms = custom_move_times[frame_idx - 1]
                 else:
                     cur_time_ms = fake_times[frame_idx - 1] if frame_idx - 1 < len(fake_times) else 0
-                cur_md = calculate_manhattan_distance(mc)
+                cur_md = current_md
                 moved_md = all_md - cur_md
                 cur_tps_val = current_moves * 1000 / cur_time_ms if cur_time_ms > 0 else 0
 
@@ -1447,10 +1486,16 @@ def generate_frames(
 
         if frame_idx < sol_len:
             move = expanded[frame_idx]
-            zp = find_zero(mc, w, h)
+            dr, dc = {'R': (0, -1), 'L': (0, 1), 'U': (1, 0), 'D': (-1, 0)}[move]
+            new_zp = (zp[0] + dr, zp[1] + dc)
             mc = move_matrix(mc, move, zp, w, h)
+            current_md = _update_manhattan_distance(current_md, mc, move, zp, w, h)
+            zp = new_zp
+            if frame_idx % 1000 == 0 and frame_idx > 0:
+                log.info(f"  mutation for move {frame_idx // 1000}k: {time_module.time() - _t_stage1:.3f}s total so far")
 
-    log.info(f"  frame_params created: {len(frame_params)} entries, needed={len(states_needed)}")
+    _t_fp = time_module.time()
+    log.info(f"  frame_params loop: {_t_fp - _t_stage1:.3f}s total, {len(states_needed)} states built, {sol_len + 1} iterations")
 
     log.info(f"  render decision: use_gpu={use_gpu}, total_video_frames={len(frame_state)}, unique_states={len(states_needed)} ({len(states_needed)*100//len(frame_state) if frame_state else 0}%%)")
     log.info(f"====== STAGE 1 DONE: {time_module.time() - _t_stage1:.1f}s ======")
@@ -1470,35 +1515,11 @@ def generate_frames(
         grid_stages_list = first_stats.get("grid_stages", [])
         static_base, static_layout = _make_stats_static_base(panel_w_val, first_stats, first_is_accurate, grid_stages_list)
 
-        def _render_overlays(i, p):
-            timer_img = _render_timer_text(p["timer_text"])
-            stats_img = _apply_stats_dynamic(p["stats_data"], panel_w_val, static_base, static_layout)
-            return i, timer_img, stats_img
-
-        # Only pre-render overlays for states that will actually be rendered
-        workers = min(os.cpu_count() or 4, len(states_needed))
-        overlay_done = 0
-        overlay_total = len(states_needed)
-        _t_stage2 = time_module.time()
-        log.info("====== STAGE 2: OVERLAY PRE-RENDER ======")
-        log.info(f"  OVERLAY PRE-RENDER: {overlay_total} states, {workers} workers")
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futs = {pool.submit(_render_overlays, i, frame_params[i]): i for i in states_needed}
-            for fut in as_completed(futs):
-                if cancel_check and cancel_check():
-                    raise CancelError()
-                i, timer_img, stats_img = fut.result()
-                p = frame_params[i]
-                p["timer_img"] = timer_img
-                p["stats_img"] = stats_img
-                p["timer_arr"] = np.array(timer_img)
-                p["stats_arr"] = np.array(stats_img)
-                overlay_done += 1
-                if overlay_progress_callback:
-                    overlay_progress_callback(overlay_done, overlay_total, _use_gpu=True)
-        log.info(f"  OVERLAY PRE-RENDER DONE: {overlay_done}/{overlay_total}")
-        log_ram("after overlay pre-render")
-        log.info(f"====== STAGE 2 DONE: {time_module.time() - _t_stage2:.1f}s ======")
+        extra_overlay_args = {
+            "panel_w_val": panel_w_val,
+            "static_base": static_base,
+            "static_layout": static_layout,
+        }
 
         # Pre-compute how many video frames each puzzle state spans
         state_to_count = {}
@@ -1532,6 +1553,7 @@ def generate_frames(
                     progress_callback=lambda cur, tot, **kw: progress_callback(cur, tot, _use_gpu=True, **kw) if progress_callback else None,
                     cancel_check=cancel_check,
                     frame_handler=handler,
+                    overlay_render_data=extra_overlay_args,
                 )
             finally:
                 gpu.cleanup()
@@ -1701,10 +1723,11 @@ class TerminalProgress:
         if self._phase0_total is None:
             self._phase0_total = total
         _use_gpu = kwargs.get("_use_gpu", False)
-        adjusted_cur = current + self._phase_offset
         if _use_gpu:
-            adjusted_tot = self._phase0_total * 2
+            adjusted_cur = 1 + current * 99 // total if total > 0 else 0
+            adjusted_tot = 100
         else:
+            adjusted_cur = current + self._phase_offset
             adjusted_tot = self._phase0_total
         self.total = adjusted_tot
         gpu_stats = kwargs.get("gpu_stats")
@@ -1822,10 +1845,10 @@ class ReplayVideoGenerator:
         # Calculate timing
         if isinstance(movetimes, list) and len(movetimes) > 0:
             delays, fake_times = calculate_move_timings(solution, tps_val, width, height, speed_factor)
-            fake_times = [0.0] + list(movetimes)
+            fake_times = [0] + list(movetimes)
         else:
             delays, fake_times = calculate_move_timings(solution, tps_val, width, height, speed_factor)
-        log.info(f"  timing: delays_count={len(delays)}, fake_times_range=[{fake_times[0]:.1f}, {fake_times[-1]:.1f}]ms")
+        log.info(f"  timing: delays_count={len(delays)}, fake_times_range=[{fake_times[0]:g}, {fake_times[-1]:g}]ms")
 
         # Score title
         score_title_text = f"{width}x{height} sliding puzzle"

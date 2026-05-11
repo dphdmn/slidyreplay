@@ -761,8 +761,12 @@ class ReplayGUI(tb.Window):
         if item["phase"] == 0:
             if "phase0_tot" not in item:
                 item["phase0_tot"] = raw_tot
-            item["adjusted_cur"] = raw_cur
-            item["adjusted_tot"] = item["phase0_tot"] * 2 if item.get("is_gpu") else item["phase0_tot"]
+            if item.get("is_gpu"):
+                item["adjusted_cur"] = 1 + raw_cur * 99 // raw_tot
+                item["adjusted_tot"] = 100
+            else:
+                item["adjusted_cur"] = raw_cur
+                item["adjusted_tot"] = item["phase0_tot"]
         else:
             p0_tot = item["phase0_tot"]
             base = item.get("phase1_base", p0_tot)

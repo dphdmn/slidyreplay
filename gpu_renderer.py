@@ -267,6 +267,7 @@ class GPURenderer:
         progress_callback=None,
         cancel_check=None,
         frame_handler=None,
+        overlay_render_data=None,
     ) -> List[Image.Image]:
         if not self.available:
             raise RuntimeError(
@@ -308,11 +309,12 @@ class GPURenderer:
         batch_has_colors = any(p.get("colors") is not None for p in frame_params_list)
 
         # Soft 50% VRAM ceiling – we’ll exceed it if needed, bounded by free memory
-        target_mem_fraction = 0.50
+        target_mem_fraction = 0.70
         target_used_mem = int(total_mem * target_mem_fraction)
 
         per_frame_ema = 0.0
         batch_size = 1
+        prev_batch_n = 0
 
         self._stats["batch_size"] = batch_size
         self._stats["batch_mem_mb"] = 0
@@ -342,7 +344,7 @@ class GPURenderer:
                 free_mem, _ = torch.cuda.mem_get_info(dev)
 
                 # 256 MB safety margin to avoid edge‑cases
-                reserve_margin = 256 * 1024 * 1024
+                reserve_margin = 128 * 1024 * 1024
 
                 # Soft target headroom – if reserved_mem exceeds the target we ignore it
                 # and rely solely on physical headroom.
@@ -358,8 +360,13 @@ class GPURenderer:
                     usable = 0
 
                 if per_frame_ema > 0:
-                    max_by_budget = max(1, int(usable / per_frame_ema * 0.7))
+                    max_by_budget = max(1, int(usable / per_frame_ema * 0.85))
                     batch_size = max(1, min(remaining, max_by_budget))
+                    # EMA dampener: smooth batch size transitions
+                    if prev_batch_n > 0:
+                        damp = 0.5
+                        batch_size = max(1, int(prev_batch_n * (1 - damp) + batch_size * damp))
+                        batch_size = min(remaining, batch_size)
                 else:
                     batch_size = 1
 
@@ -488,19 +495,33 @@ class GPURenderer:
                     del nums_chunk, text_rgb_chunk, text_a_chunk, colored, tile_chunk
 
                 # ── Overlays (in‑place) ──
+                if overlay_render_data is not None:
+                    from replay_video import _apply_stats_dynamic as _apply_sd
                 for i in range(batch_n):
                     fi = batch_start + i
                     fc = canvas[i]
                     params = frame_params_list[fi]
 
-                    timer_arr = params.get("timer_arr")
+                    if overlay_render_data is not None:
+                        timer_img = _render_timer_text(params["timer_text"])
+                        stats_img = _apply_sd(
+                            params["stats_data"],
+                            overlay_render_data["panel_w_val"],
+                            overlay_render_data["static_base"],
+                            overlay_render_data["static_layout"]
+                        )
+                        timer_arr = np.array(timer_img)
+                        stats_arr = np.array(stats_img)
+                    else:
+                        timer_arr = params.get("timer_arr")
+                        stats_arr = params.get("stats_arr")
+
                     if timer_arr is not None:
                         tt = torch.from_numpy(timer_arr).to(dev, non_blocking=True).float() / 255.0
                         dx = max(tx1, tx1 + ((tx2 - tx1) - tt.shape[1]) // 2)
                         dy = max(ty1, ty1 + ((ty2 - ty1) - tt.shape[0]) // 2)
                         self._blend_rgba_inplace(fc, tt, dx, dy)
 
-                    stats_arr = params.get("stats_arr")
                     if stats_arr is not None:
                         stt = torch.from_numpy(stats_arr).to(dev, non_blocking=True).float() / 255.0
                         self._blend_rgba_inplace(fc, stt, px, py)
@@ -534,12 +555,12 @@ class GPURenderer:
                 del canvas, mats
                 if batch_has_colors:
                     del cols, sec, has_sec
-                torch.cuda.empty_cache()
                 log.info(f"  BATCH[{self._batch_counter}] DONE: "
                          f"t={_time_module.time()-_batch_t0:.2f}s, "
                          f"peak={torch.cuda.max_memory_reserved(dev)//(1024*1024)}MB, "
                          f"ram={_ram_delta_mb()}MB")
 
+                prev_batch_n = batch_n
                 batch_start = batch_end
 
         log.info(f"render_frames: DONE. total_batches={self._batch_counter}, frames_rendered={batch_start}")
