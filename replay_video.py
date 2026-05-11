@@ -1656,10 +1656,11 @@ class TerminalProgress:
         self._max_line_width = 0
 
     def _time_str(self, t: float) -> str:
-        if t >= 3600:
-            return f"{t/3600:.0f}h{(t%3600)/60:.0f}m"
-        elif t >= 60:
-            return f"{t/60:.0f}m{t%60:.0f}s"
+        total_sec = int(round(t))
+        if total_sec >= 3600:
+            return f"{total_sec // 3600}h{total_sec % 3600 // 60}m"
+        elif total_sec >= 60:
+            return f"{total_sec // 60}m{total_sec % 60}s"
         else:
             return f"{t:.1f}s"
 
@@ -1681,22 +1682,23 @@ class TerminalProgress:
         line = f"{prefix}{bar}]{suffix}"
         return line
 
-    def update(self, current: int):
+    def update(self, current: int, actual_current: Optional[int] = None):
         now = time_module.time()
         # Throttle: redraw at most every ~100ms to avoid flooding console scrollback
         if current < self.total and now - self._last_print_time < 0.1:
             return
         elapsed = now - self.start_time
         window_elapsed = now - self.last_update_time
-        if window_elapsed > 0.5 and current > self.last_current:
-            instant = (current - self.last_current) / window_elapsed
+        _rate_source = actual_current if actual_current is not None else current
+        if window_elapsed > 0.5 and _rate_source > self.last_current:
+            instant = (_rate_source - self.last_current) / window_elapsed
             if self.window_rate <= 0:
                 self.window_rate = instant
             else:
                 self.window_rate = self.window_rate * 0.5 + instant * 0.5
             self.last_update_time = now
-            self.last_current = current
-        rate = self.window_rate if self.window_rate > 0 else current / elapsed if elapsed > 0 else 0
+            self.last_current = _rate_source
+        rate = self.window_rate if self.window_rate > 0 else _rate_source / elapsed if elapsed > 0 else 0
         eta = (self.total - current) / rate if rate > 0 else 0
         line = self._build_line(current, elapsed, rate, eta)
         if self._is_tty:
@@ -1733,7 +1735,7 @@ class TerminalProgress:
         gpu_stats = kwargs.get("gpu_stats")
         if gpu_stats is not None:
             self._gpu_stats = gpu_stats
-        self.update(adjusted_cur)
+        self.update(adjusted_cur, actual_current=current)
 
 
 # ─── Main API ──────────────────────────────────────────────────────
