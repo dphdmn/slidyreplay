@@ -1366,19 +1366,19 @@ def generate_frames(
         import torch as _torch_snapshot
         log.info(f"  Python={sys.version.split()[0]}, torch={_torch_snapshot.__version__}, CUDA={_torch_snapshot.version.cuda}")
 
-    # ── Build tile color cache per grid stage ──
+    # ── Build tile color cache for every grid state lookup may need ──
     _tile_color_cache = {}
-    for stage_move in sorted(list(set(filtered_stages))):
-        if stage_move == 0:
-            cache_state = grid_states[0]
-        else:
-            cache_state = get_grids_state(grid_states, stage_move - 1)
-        if id(cache_state) not in _tile_color_cache:
+    for key in _sorted_grid_keys:
+        if key == sol_len + 1:
+            continue
+        cache_state = grid_states[key]
+        cache_key = id(cache_state)
+        if cache_key not in _tile_color_cache:
             color_matrix = []
             for num in range(1, h * w + 1):
                 main_bg, sec_bg = get_tile_colors(num, cache_state, all_fringe_schemes, w)
                 color_matrix.append((main_bg or TILE_BG, sec_bg))
-            _tile_color_cache[id(cache_state)] = color_matrix
+            _tile_color_cache[cache_key] = color_matrix
 
     # ── Stage 2: precompute data only for states that will be rendered ──
     frame_params = [None] * (sol_len + 1)

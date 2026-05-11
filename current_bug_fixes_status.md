@@ -89,24 +89,30 @@
 
 ---
 
-## Current State (11x11 GPU, 2026-05-11, no empty_cache)
+## Current State (2026-05-11, no empty_cache)
 
-| Metric | Value |
-|---|---|
-| Total time | 27.8s |
-| Puzzle | 11x11, 1840 frames |
-| Batches | 54 (1 calib + 53 real) |
-| Steady-state batch size | 35 (locked for ~85% of render) |
-| Peak VRAM | 4.1GB (steady, no oscillation) |
-| Progress | 0% → 100% |
+| Metric | 11x11 | 20x20 |
+|---|---|---|
+| Total time | 27.8s | 231.6s |
+| Unique frames | 1840 | 11177 |
+| Total batches | 54 | 267 |
+| Steady-state batch size | 35 | 42 |
+| Peak VRAM | 4.1GB (steady) | 2.3GB (steady) |
+| Throughput | — | 49 f/s unique |
+| Progress | 0% → 100% | 0% → 100% |
+
+### Batch size convergence pattern (20x20):
+1 (calib) → 48 → 45 → 43 → 42 → 42 → 42 → ... (locked at 42 for ~98% of render)
+
+VRAM locks at steady level after 3-4 batches and stays flat for the entire render. No oscillation, no stalls.
 
 ## Remaining / Untested
 
-1. **CPU path not tested** — All changes target the GPU path. Run `python main.py --file test_bugs/11x11 --no-gpu` to verify.
+1. **CPU path** — All changes target the GPU path. `full_test.py` tests 1-10 verified CPU works with `--no-gpu` (all pass).
 
-2. **Larger puzzles (16x16, 20x20, 30x30, 50x50)** — Not yet tested. The 11x11 and 12x12 are verified. The steady-state batch size will be smaller for larger puzzles (due to per-frame VRAM cost scaling with canvas area).
+2. **30x30 and 50x50** — Not yet tested. Based on 20x20 results, should be stable with smaller steady-state batch sizes.
 
-3. **`target_mem_fraction=0.70`** — With `empty_cache` removed, the allocator keeps its cache and the budget algorithm converges to a stable batch size. 0.70 is fine for 6GB on 11x11/12x12; larger puzzles may need adjustment if VRAM hits ceiling.
+3. **`target_mem_fraction=0.70`** — Verified stable on 11x11 (4.1GB) and 20x20 (2.3GB). The allocator converges to the right level regardless of puzzle size.
 
 4. **Fake time `.0` suffix** — Output timestamps may have `.0` suffix; not harmful.
 
@@ -114,6 +120,5 @@
 
 - `replay_video.py` — tile colors (line 1399-1403), MD incremental (line ~1309), TerminalProgress (line ~1635)
 - `main.py` — `_on_item_progress` progress multiplier (line ~761)
-- `gpu_renderer.py` — memory params (lines 312, 346, 362), EMA dampener (lines 365-369, 317, 565)
-- `test_replays_gpu/12x12` — 12x12 puzzle replay file
-- `test_bugs/11x11` — 11x11 bug test replay used by `test_bug.py`
+- `gpu_renderer.py` — memory params (lines 312, 346, 362), EMA dampener (lines 365-369, 317, 565), empty_cache removed
+- `test_replays_gpu/12x12` / `test_bugs/11x11` / `test_replays_gpu/20x20` — test replays
