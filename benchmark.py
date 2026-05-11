@@ -9,24 +9,18 @@ Usage:
 """
 
 import subprocess
-import time
 import sys
 import os
 import json
 import re
-import tempfile
 
 
-def run_bench(label: str, url: str, extra_args: list, output_path: str) -> tuple:
+def run_bench(label: str, filepath: str, extra_args: list, output_path: str) -> tuple:
     script_dir = os.path.dirname(os.path.abspath(__file__))
-
-    tmp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".tmp", delete=False)
-    tmp_file.write(url)
-    tmp_file.close()
 
     cmd = [
         sys.executable, os.path.join(script_dir, "main.py"),
-        "--file", tmp_file.name,
+        "--file", filepath,
         "--quality", "1.0",
         "--output", output_path,
         "--log",
@@ -43,15 +37,8 @@ def run_bench(label: str, url: str, extra_args: list, output_path: str) -> tuple
     }
 
     print(f"  {label}...", end=" ", flush=True)
-    start = time.time()
     result = subprocess.run(cmd, capture_output=True, text=True, cwd=script_dir)
-    elapsed = time.time() - start
-    detail["elapsed"] = round(elapsed, 3)
     detail["returncode"] = result.returncode
-    try:
-        os.unlink(tmp_file.name)
-    except OSError:
-        pass
 
     for line in result.stdout.splitlines():
         if "GPU ON" in line or "GPU OFF" in line:
@@ -60,13 +47,16 @@ def run_bench(label: str, url: str, extra_args: list, output_path: str) -> tuple
             break
 
     if result.returncode != 0:
-        print(f"FAILED ({elapsed:.1f}s)")
         for line in result.stderr.splitlines():
             print(f"    {line}")
             detail["error_lines"].append(line)
+        print(f"FAILED")
         return None, detail
 
-    print(f"done ({elapsed:.1f}s)")
+    m = re.search(r"took\s+([\d.]+)s", result.stdout)
+    elapsed = float(m.group(1)) if m else None
+    detail["elapsed"] = elapsed
+    print(f"done ({elapsed:.1f}s)" if elapsed else "done")
     return elapsed, detail
 
 
@@ -110,8 +100,8 @@ def process_replays(replays_dir, logs_dir, gpu_only):
 
     for replay_file in replay_files:
         filepath = os.path.join(replays_dir, replay_file)
-        url = open(filepath, encoding="utf-8").read().strip()
-        if not url:
+        content = open(filepath, encoding="utf-8").read().strip()
+        if not content:
             print(f"  Skipping {replay_file}: empty")
             continue
 
@@ -123,7 +113,7 @@ def process_replays(replays_dir, logs_dir, gpu_only):
         print()
         print(f"{'=' * 60}")
 
-        puzzle_info = parse_puzzle_info(url)
+        puzzle_info = parse_puzzle_info(content)
         puzzle_info["label"] = puzzle_label
 
         results = []
@@ -131,13 +121,13 @@ def process_replays(replays_dir, logs_dir, gpu_only):
 
         if not gpu_only:
             cpu_out = os.path.join(logs_dir, f"{puzzle_label}_cpu.mp4")
-            t, d = run_bench(f"{puzzle_label} CPU", url, ["--no-gpu"], cpu_out)
+            t, d = run_bench(f"{puzzle_label} CPU", filepath, ["--no-gpu"], cpu_out)
             results.append(("CPU baseline", t))
             if d:
                 details.append(d)
 
         gpu_out = os.path.join(logs_dir, f"{puzzle_label}_gpu.mp4")
-        t, d = run_bench(f"{puzzle_label} GPU", url, [], gpu_out)
+        t, d = run_bench(f"{puzzle_label} GPU", filepath, [], gpu_out)
         results.append(("GPU", t))
         if d:
             details.append(d)
