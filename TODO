@@ -4,9 +4,8 @@
 - --no-numbers option, don't render numbers
 - analyse base size use, rework tile sizing in gpu
 - fix font size on big puzzles
-- Check CPU rendering multi threading
 - Frames section in benchmark should be updated to actually unique frames rendered
-- Only show grids stages if puzzle has more than 1 stage
+- fix gpu render having bigger file size by default
 - concact bulk render results
 
 - hard major optimization ideas draft:

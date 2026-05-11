@@ -691,7 +691,7 @@ def render_frame(
     panel_w_est = canvas_w - (PADDING + puzzle_w + PADDING) - PADDING
     stats_h = _compute_stats_full_height(
         panel_w_est,
-        has_grid_stages=len(stats_data.get("grid_stages", [])) > 0
+        has_grid_stages=len(stats_data.get("grid_stages", [])) > 1
     )
     canvas_h = max(
         (HEADER_H + puzzle_h + PADDING * 3 + 1) // 2 * 2,
@@ -921,7 +921,7 @@ def _render_stats_full(stats_data, is_movetimes_accurate, panel_w):
     # Grid stages
     stages = stats_data.get("grid_stages", [])
     cur_stage = stats_data.get("grid_current", 0)
-    if stages:
+    if len(stages) > 1:
         gb = gs_hf.getbbox("Grid stages")
         add(px, y, "Grid stages", CYAN, gs_hf)
         y += (gb[3] - gb[1]) + 14
@@ -1049,7 +1049,7 @@ def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_sta
 
     # Grid stages (all white in static base)
     stage_y_positions = []
-    if grid_stages_list:
+    if len(grid_stages_list) > 1:
         gb = gs_hf.getbbox("Grid stages")
         add(px, y, "Grid stages", CYAN, gs_hf)
         y += (gb[3] - gb[1]) + 14
