@@ -3,6 +3,7 @@ import math
 import json
 import os
 import time as _time_module
+from functools import lru_cache
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from typing import List, Optional
@@ -103,6 +104,7 @@ def _render_text_rgba(text, font, fill, pad=0):
     return im
 
 
+@lru_cache(maxsize=128)
 def _render_timer_text(timer_text: str) -> Image.Image:
     font = _font(36, bold=True, mono=True)
     return _render_text_rgba(timer_text, font, CYAN)

@@ -20,7 +20,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from typing import List, Tuple, Optional, Union, Dict
 import bisect
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
+from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
 from replay_generator import (
     expand_solution, scramble_to_puzzle, puzzle_to_scramble,
@@ -605,6 +605,25 @@ def get_font(size: int, bold: bool = False, mono: bool = False) -> ImageFont.Fre
     return font
 
 
+_number_texture_cache: dict = {}
+
+def _get_number_texture(num: int, tile_size: int, font_size: int) -> Image.Image:
+    key = (num, tile_size, font_size)
+    cached = _number_texture_cache.get(key)
+    if cached is not None:
+        return cached
+    im = Image.new("RGBA", (tile_size, tile_size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(im)
+    text = str(num)
+    tf = get_font(font_size)
+    tb = draw.textbbox((0, 0), text, font=tf)
+    tx = tile_size // 2 - (tb[0] + tb[2]) // 2
+    ty = tile_size // 2 - (tb[1] + tb[3]) // 2
+    draw.text((tx, ty), text, fill=(0, 0, 0, 255), font=tf)
+    _number_texture_cache[key] = im
+    return im
+
+
 def format_time_str(ms: int) -> str:
     if ms < 1000:
         return f"0.{ms:03d}"
@@ -657,7 +676,9 @@ def render_frame(
     total_moves: int,
     total_time_ms: int,
     total_tps: float,
-    gpu_grid: Optional[Image.Image] = None
+    gpu_grid: Optional[Image.Image] = None,
+    static_stats_base: Optional[Image.Image] = None,
+    static_stats_layout: Optional[dict] = None,
 ) -> Image.Image:
     h = len(matrix)
     w = len(matrix[0])
@@ -681,17 +702,14 @@ def render_frame(
     draw = ImageDraw.Draw(canvas)
 
     # ─── Timer Bar (centered, compact) ──────────────────────────
-    timer_font = get_font(36, bold=True, mono=True)
-
     timer_bg_bbox = (PADDING, PADDING, canvas_w - PADDING, PADDING + HEADER_H)
     draw_filled_rect(draw, timer_bg_bbox, TIMER_BG)
 
-    tb = draw.textbbox((0, 0), timer_text, font=timer_font)
-    tw = tb[2] - tb[0]
-    th = tb[3] - tb[1]
+    timer_img = _render_timer_text(timer_text)
+    tw, th = timer_img.size
     tx = (canvas_w - tw) // 2
     ty = PADDING + (HEADER_H - th) // 2
-    draw.text((tx, ty), timer_text, fill=CYAN, font=timer_font)
+    canvas.paste(timer_img, (tx, ty), timer_img)
 
     # ─── Puzzle Grid ──────────────────────────────────────────────
     grid_x = PADDING
@@ -724,12 +742,8 @@ def render_frame(
                         draw.rectangle(bar_bbox, outline=TILE_BORDER_COLOR, width=1)
 
                 if num != 0:
-                    text = str(num)
-                    tf = get_font(font_size)
-                    tb = draw.textbbox((0, 0), text, font=tf)
-                    tx = sx + tile_size // 2 - (tb[0] + tb[2]) // 2
-                    ty = sy + tile_size // 2 - (tb[1] + tb[3]) // 2
-                    draw.text((tx, ty), text, fill=TILE_TEXT_COLOR, font=tf)
+                    tex = _get_number_texture(num, tile_size, font_size)
+                    canvas.paste(tex, (sx, sy), tex)
 
     # ─── Stats Panel ──────────────────────────────────────────────
     panel_x = grid_x + puzzle_w + PADDING
@@ -748,7 +762,10 @@ def render_frame(
         canvas = Image.alpha_composite(canvas.convert('RGBA'), panel_img)
         canvas = Image.alpha_composite(canvas, panel_overlay)
 
-        stats_img = _render_stats_full(stats_data, is_movetimes_accurate, panel_w)
+        if static_stats_base is not None and static_stats_layout is not None:
+            stats_img = _apply_stats_dynamic(stats_data, panel_w, static_stats_base, static_stats_layout)
+        else:
+            stats_img = _render_stats_full(stats_data, is_movetimes_accurate, panel_w)
         canvas.paste(stats_img, (panel_x, panel_y), stats_img)
 
     return canvas.convert('RGB')
@@ -797,6 +814,14 @@ def _render_one_frame(params: dict) -> Image.Image:
     params.pop("timer_img", None)
     params.pop("stats_img", None)
     return render_frame(**params)
+
+
+def _render_frame_batch(params_list: List[dict]) -> List[Image.Image]:
+    return [_render_one_frame(params) for params in params_list]
+
+
+def _calc_render_batch_size(num_needed: int, workers: int) -> int:
+    return max(1, min(20, num_needed // (workers * 2) + 1))
 
 
 def _make_stats_text(stats_data, is_movetimes_accurate, panel_w):
@@ -1498,6 +1523,21 @@ def generate_frames(
     log.info(f"  frame_params loop: {_t_fp - _t_stage1:.3f}s total, {len(states_needed)} states built, {sol_len + 1} iterations")
 
     log.info(f"  render decision: use_gpu={use_gpu}, total_video_frames={len(frame_state)}, unique_states={len(states_needed)} ({len(states_needed)*100//len(frame_state) if frame_state else 0}%%)")
+
+    # Pre-compute static stats base + layout for static/dynamic split (both paths)
+    first_needed = states_needed[0] if states_needed else 0
+    first_stats = frame_params[first_needed]["stats_data"]
+    first_is_accurate = frame_params[first_needed]["is_movetimes_accurate"]
+    grid_stages_list = first_stats.get("grid_stages", [])
+    puzzle_w_pre = w * tile_size
+    canvas_w_pre = (puzzle_w_pre + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
+    panel_x_pre = PADDING + puzzle_w_pre + PADDING
+    panel_w_pre = canvas_w_pre - panel_x_pre - PADDING
+    static_base, static_layout = _make_stats_static_base(panel_w_pre, first_stats, first_is_accurate, grid_stages_list)
+    for fp_idx in states_needed:
+        frame_params[fp_idx]["static_stats_base"] = static_base
+        frame_params[fp_idx]["static_stats_layout"] = static_layout
+
     log.info(f"====== STAGE 1 DONE: {time_module.time() - _t_stage1:.1f}s ======")
     # ── GPU path: render unique states, pipe via frame mapping ──
     if use_gpu and len(frame_params) > 1:
@@ -1507,13 +1547,6 @@ def generate_frames(
         canvas_h = gpu.canvas_h
         panel_x = PADDING + puzzle_w + PADDING
         panel_w_val = canvas_w - panel_x - PADDING
-        panel_y = PADDING + HEADER_H + PADDING
-
-
-        first_stats = frame_params[0]["stats_data"]
-        first_is_accurate = frame_params[0]["is_movetimes_accurate"]
-        grid_stages_list = first_stats.get("grid_stages", [])
-        static_base, static_layout = _make_stats_static_base(panel_w_val, first_stats, first_is_accurate, grid_stages_list)
 
         extra_overlay_args = {
             "panel_w_val": panel_w_val,
@@ -1589,20 +1622,29 @@ def generate_frames(
     if parallel and num_needed > 1:
         workers = min(os.cpu_count() or 4, num_needed)
         done = 0
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            fut_map = {pool.submit(_render_one_frame, frame_params[i]): i for i in states_needed}
-            remaining = set(fut_map.keys())
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            batch_size = _calc_render_batch_size(num_needed, workers)
+            fut_to_indices = {}
+            for i in range(0, num_needed, batch_size):
+                batch_indices = states_needed[i:i + batch_size]
+                batch_params = [frame_params[idx] for idx in batch_indices]
+                fut = pool.submit(_render_frame_batch, batch_params)
+                fut_to_indices[fut] = batch_indices
+
+            remaining = set(fut_to_indices.keys())
             while remaining:
                 if cancel_check and cancel_check():
                     raise CancelError()
                 done_set, _ = wait(remaining, timeout=0.2, return_when=FIRST_COMPLETED)
                 for fut in done_set:
-                    idx = fut_map[fut]
-                    state_images[idx] = fut.result()
-                    done += 1
+                    batch_indices = fut_to_indices[fut]
+                    batch_results = fut.result()
+                    for idx, img in zip(batch_indices, batch_results):
+                        state_images[idx] = img
+                        done += 1
+                        if progress_callback:
+                            progress_callback(done, num_needed, _use_gpu=False)
                     remaining.remove(fut)
-                    if progress_callback:
-                        progress_callback(done, num_needed, _use_gpu=False)
     else:
         for seq_idx, i in enumerate(states_needed):
             if cancel_check and cancel_check():
