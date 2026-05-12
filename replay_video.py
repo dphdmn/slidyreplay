@@ -1769,7 +1769,7 @@ class TerminalProgress:
         self._last_print_time = -999.0
         self.width = 40
         self._gpu_stats = None
-        self._is_tty = sys.stdout.isatty()
+        self._is_tty = getattr(sys.stdout, 'isatty', lambda: False)()
         self._term_width = shutil.get_terminal_size().columns if self._is_tty else 120
         self._max_line_width = 0
         self._prev_cur = None

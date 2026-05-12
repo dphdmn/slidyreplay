@@ -1084,6 +1084,13 @@ class ReplayGUI(tb.Window):
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
+
+    # Strip multiprocessing internal args before argparse sees them
+    import sys as _sys
+    _sys.argv = [a for a in _sys.argv if not a.startswith('--multiprocessing-')]
+
     import argparse
 
     parser = argparse.ArgumentParser(
@@ -1150,6 +1157,8 @@ Examples:
         log_path = init_logfile()
 
     if not any([args.solution, args.url, args.file, args.batch]):
+        if getattr(sys, 'frozen', False):
+            ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
         gui = ReplayGUI()
         if log_path:
             log.info(f"=== GUI STARTED === log_path={log_path}")
@@ -1162,7 +1171,7 @@ Examples:
     try:
         import torch
         torch_avail = torch.cuda.is_available()
-    except ImportError:
+    except Exception:
         torch_avail = False
     if args.no_gpu:
         use_gpu = False
@@ -1170,7 +1179,10 @@ Examples:
         use_gpu = torch_avail
 
     if use_gpu and torch_avail:
-        gpu_str = f"GPU ON ({torch.cuda.get_device_name(0)})"
+        try:
+            gpu_str = f"GPU ON ({torch.cuda.get_device_name(0)})"
+        except Exception:
+            gpu_str = "GPU ON (unknown)"
     else:
         gpu_str = "GPU OFF (CPU fallback)"
     print(f"[ReplayVideoGenerator] {gpu_str}")
@@ -1183,85 +1195,90 @@ Examples:
                 show_progress=True, use_gpu=use_gpu,
                 fps=kwargs.pop("fps", 60), opts=opts, **kwargs
             )
-        except RuntimeError as e:
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(f"\n[CRITICAL ERROR] {e}", file=sys.stderr)
             sys.exit(1)
 
-    items = []
-    if args.batch:
-        with open(args.batch, "r") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    items.append(("batch", line))
-    elif args.file:
-        with open(args.file, "r") as f:
-            items.append(("url", f.read().strip()))
-    elif args.url:
-        items.append(("url", args.url))
-    elif args.solution:
-        items.append(("manual", args.solution))
-    else:
-        parser.print_help()
-        sys.exit(1)
+    try:
+        items = []
+        if args.batch:
+            with open(args.batch, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        items.append(("batch", line))
+        elif args.file:
+            with open(args.file, "r") as f:
+                items.append(("url", f.read().strip()))
+        elif args.url:
+            items.append(("url", args.url))
+        elif args.solution:
+            items.append(("manual", args.solution))
+        else:
+            parser.print_help()
+            sys.exit(1)
 
-    batch_out = args.output or "replay.mp4"
+        batch_out = args.output or "replay.mp4"
 
-    if len(items) > 1 and args.batch:
-        # Batch mode: collect all items and render via batch_render
-        batch_items = []
-        for idx, item in enumerate(items):
-            mode, val = item if isinstance(item, tuple) else ("manual", item)
-            root, ext = os.path.splitext(batch_out)
-            output_path = f"{root}_{idx+1:03d}{ext}"
-
-            kwargs = dict(quality=args.quality, fps=args.fps, compression=args.compression,
-                          speed_factor=args.speedup, force_fringe=args.force_fringe)
-            try:
-                sol, tps, scramble, movetimes = parse_replay_url(val)
-                kwargs["tps"] = tps or args.tps
-                if scramble:
-                    kwargs["scramble"] = scramble
-                if isinstance(movetimes, list) and movetimes:
-                    kwargs["movetimes"] = movetimes
-            except Exception:
-                sol = val
-                if args.tps is not None:
-                    kwargs["tps"] = args.tps
-                if args.time is not None:
-                    kwargs["time"] = args.time
-                if args.scramble:
-                    kwargs["scramble"] = args.scramble
-                if args.size:
-                    kwargs["size"] = args.size
-                if movetimes:
-                    kwargs["movetimes"] = movetimes
-
-            batch_items.append({"solution": sol, "output_path": output_path, "opts": opts, **kwargs})
-
-        gen = ReplayVideoGenerator()
-        gen.batch_render(batch_items, use_gpu=use_gpu, show_progress=True)
-    else:
-        # Single item: existing sequential path
-        for idx, item in enumerate(items):
-            mode, val = item if isinstance(item, tuple) else ("manual", item)
-
-            if len(items) > 1 and mode == "batch":
+        if len(items) > 1 and args.batch:
+            # Batch mode: collect all items and render via batch_render
+            batch_items = []
+            for idx, item in enumerate(items):
+                mode, val = item if isinstance(item, tuple) else ("manual", item)
                 root, ext = os.path.splitext(batch_out)
                 output_path = f"{root}_{idx+1:03d}{ext}"
-            else:
-                output_path = batch_out
 
-            if mode in ("url", "batch"):
+                kwargs = dict(quality=args.quality, fps=args.fps, compression=args.compression,
+                              speed_factor=args.speedup, force_fringe=args.force_fringe)
                 try:
                     sol, tps, scramble, movetimes = parse_replay_url(val)
+                    kwargs["tps"] = tps or args.tps
+                    if scramble:
+                        kwargs["scramble"] = scramble
+                    if isinstance(movetimes, list) and movetimes:
+                        kwargs["movetimes"] = movetimes
+                except Exception:
+                    sol = val
+                    if args.tps is not None:
+                        kwargs["tps"] = args.tps
+                    if args.time is not None:
+                        kwargs["time"] = args.time
+                    if args.scramble:
+                        kwargs["scramble"] = args.scramble
+                    if args.size:
+                        kwargs["size"] = args.size
+                    if movetimes:
+                        kwargs["movetimes"] = movetimes
+
+                batch_items.append({"solution": sol, "output_path": output_path, "opts": opts, **kwargs})
+
+            gen = ReplayVideoGenerator()
+            gen.batch_render(batch_items, use_gpu=use_gpu, show_progress=True)
+        else:
+            # Single item: existing sequential path
+            for idx, item in enumerate(items):
+                mode, val = item if isinstance(item, tuple) else ("manual", item)
+
+                if len(items) > 1 and mode == "batch":
+                    root, ext = os.path.splitext(batch_out)
+                    output_path = f"{root}_{idx+1:03d}{ext}"
+                else:
+                    output_path = batch_out
+
+                if mode in ("url", "batch"):
+                    try:
+                        sol, tps, scramble, movetimes = parse_replay_url(val)
+                    except Exception:
+                        sol, tps, scramble, movetimes = val, args.tps, args.scramble, None
                     run_single(sol, output_path, opts=opts,
                                tps=tps or args.tps, scramble=scramble,
                                movetimes=movetimes, quality=args.quality,
                                fps=args.fps, compression=args.compression,
                                speed_factor=args.speedup,
                                force_fringe=args.force_fringe)
-                except Exception:
+                else:
                     run_single(val, output_path, opts=opts,
                                tps=None if movetimes else args.tps, time=args.time,
                                scramble=args.scramble, size=args.size,
@@ -1269,11 +1286,8 @@ Examples:
                                fps=args.fps, compression=args.compression,
                                speed_factor=args.speedup,
                                force_fringe=args.force_fringe)
-            else:
-                run_single(val, output_path, opts=opts,
-                           tps=None if movetimes else args.tps, time=args.time,
-                           scramble=args.scramble, size=args.size,
-                           quality=args.quality, movetimes=movetimes,
-                           fps=args.fps, compression=args.compression,
-                           speed_factor=args.speedup,
-                           force_fringe=args.force_fringe)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"\n[CRITICAL ERROR] {e}", file=sys.stderr)
+        sys.exit(1)
