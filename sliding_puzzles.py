@@ -9,6 +9,7 @@ import json
 import base64
 import zlib
 import re
+import numpy as np
 from typing import List, Dict, Optional, Union, Tuple
 from urllib.parse import unquote
 
@@ -89,19 +90,17 @@ def expand_matrix(matrix: List[List[int]], W: int, H: int) -> List[List[int]]:
     num_cols = len(matrix[0])
     num_rows_diff = W - num_rows
     num_cols_diff = H - num_cols
-    expanded_matrix = create_puzzle(W, H)
-    mapping_matrix = create_puzzle(W, H)
+    expanded = create_puzzle(W, H)
+    mapping = np.array(create_puzzle(W, H))
 
-    for i in range(num_rows):
-        for j in range(num_cols):
-            value = matrix[i][j]
-            original_value = 0
-            if value != 0:
-                row_index = (value - 1) // num_cols
-                col_index = (value - 1) % num_cols
-                original_value = mapping_matrix[row_index + num_rows_diff][col_index + num_cols_diff]
-            expanded_matrix[i + num_rows_diff][j + num_cols_diff] = original_value
-    return expanded_matrix
+    arr = np.array(matrix, dtype=np.int32)
+    nonzero = arr != 0
+    vals = arr[nonzero]
+    row_idx = (vals - 1) // num_cols
+    col_idx = (vals - 1) % num_cols
+    expanded_np = np.array(expanded, dtype=np.int32)
+    expanded_np[num_rows_diff:, num_cols_diff:][nonzero] = mapping[row_idx + num_rows_diff, col_idx + num_cols_diff]
+    return expanded_np.tolist()
 
 
 def parse_replay_url(url: str):
@@ -149,11 +148,10 @@ def move_matrix_inplace(mc_flat, move, zp_idx, w):
 
 
 def find_zero(matrix, w, h):
-    for i in range(h):
-        for j in range(w):
-            if matrix[i][j] == 0:
-                return i, j
-    return -1, -1
+    result = np.argwhere(np.asarray(matrix, dtype=np.int32) == 0)
+    if result.shape[0] == 0:
+        return -1, -1
+    return int(result[0, 0]), int(result[0, 1])
 
 
 def update_md_flat(md, mc_flat, move, zp_idx, w, h):

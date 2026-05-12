@@ -7,63 +7,73 @@ from sliding_puzzles import _MOVE_DIRS, move_matrix_inplace, find_zero
 CT_MAP = {'fringe': 1, 'grids1': 2, 'grids2': 3}
 
 
-def number_is_solved(num, row, col, w):
-    if num == 0:
-        return False
-    return (num - 1) // w == row and (num - 1) % w == col
-
-
-def check_top_bottom(matrix, width, height, offset_w, offset_h, width_initial):
+def _check_top_bottom_np(matrix, width, height, offset_w, offset_h, width_initial):
     new_h = math.ceil(height / 2) + offset_h
-    solved_counter = 0
-    for row in range(offset_h, new_h):
-        for col in range(offset_w, width + offset_w):
-            num = matrix[row][col]
-            if num != 0 and (num - 1) // width_initial >= new_h:
-                return False
-            if number_is_solved(num, row, col, width_initial):
-                solved_counter += 1
-    return width * (new_h - offset_h) / 3 > solved_counter
+    sub = matrix[offset_h:new_h, offset_w:offset_w + width]
+    nonzero = sub != 0
+    if not np.any(nonzero):
+        return True
+    targets = (sub[nonzero] - 1) // width_initial
+    if np.any(targets >= new_h):
+        return False
+    actual_rows = (sub - 1) // width_initial
+    actual_cols = (sub - 1) % width_initial
+    exp_rows = np.arange(offset_h, new_h)[:, None]
+    exp_cols = np.arange(offset_w, offset_w + width)[None, :]
+    solved = nonzero & (actual_rows == exp_rows) & (actual_cols == exp_cols)
+    return width * (new_h - offset_h) / 3 > np.sum(solved)
 
 
-def check_left_right(matrix, width, height, offset_w, offset_h, width_initial):
+def _check_left_right_np(matrix, width, height, offset_w, offset_h, width_initial):
     new_w = math.ceil(width / 2) + offset_w
-    solved_counter = 0
-    for row in range(offset_h, height + offset_h):
-        for col in range(offset_w, new_w):
-            num = matrix[row][col]
-            if num != 0 and (num - 1) % width_initial >= new_w:
-                return False
-            if number_is_solved(num, row, col, width_initial):
-                solved_counter += 1
-    return height * (new_w - offset_w) / 3 > solved_counter
+    sub = matrix[offset_h:offset_h + height, offset_w:new_w]
+    nonzero = sub != 0
+    if not np.any(nonzero):
+        return True
+    targets = (sub[nonzero] - 1) % width_initial
+    if np.any(targets >= new_w):
+        return False
+    actual_rows = (sub - 1) // width_initial
+    actual_cols = (sub - 1) % width_initial
+    exp_rows = np.arange(offset_h, offset_h + height)[:, None]
+    exp_cols = np.arange(offset_w, new_w)[None, :]
+    solved = nonzero & (actual_rows == exp_rows) & (actual_cols == exp_cols)
+    return height * (new_w - offset_w) / 3 > np.sum(solved)
 
 
 def guess_grids(matrix, width, height, offset_w, offset_h, width_initial):
     if width < 6 and height < 6:
         return 0
-    if height > 5 and check_top_bottom(matrix, width, height, offset_w, offset_h, width_initial):
+    if height > 5 and _check_top_bottom_np(matrix, width, height, offset_w, offset_h, width_initial):
         return 1
-    if width > 5 and check_left_right(matrix, width, height, offset_w, offset_h, width_initial):
+    if width > 5 and _check_left_right_np(matrix, width, height, offset_w, offset_h, width_initial):
         return 2
     return 0
 
 
-def grids_solved(matrix, width, height, offset_w, offset_h, grids_type, width_initial):
+def _grids_solved_np(matrix, width, height, offset_w, offset_h, grids_type, width_initial):
     if grids_type == 1:
         new_h = math.ceil(height / 2) + offset_h
-        for row in range(offset_h, new_h):
-            for col in range(offset_w, width + offset_w):
-                num = matrix[row][col]
-                if num != 0 and not number_is_solved(num, row, col, width_initial):
-                    return False
+        sub = matrix[offset_h:new_h, offset_w:offset_w + width]
+        nonzero = sub != 0
+        if not np.any(nonzero):
+            return True
+        actual_rows = (sub[nonzero] - 1) // width_initial
+        actual_cols = (sub[nonzero] - 1) % width_initial
+        exp_rows = np.repeat(np.arange(offset_h, new_h), width)[nonzero.ravel()]
+        exp_cols = np.tile(np.arange(offset_w, offset_w + width), new_h - offset_h)[nonzero.ravel()]
+        return np.all((actual_rows == exp_rows) & (actual_cols == exp_cols))
     if grids_type == 2:
         new_w = math.ceil(width / 2) + offset_w
-        for row in range(offset_h, height + offset_h):
-            for col in range(offset_w, new_w):
-                num = matrix[row][col]
-                if num != 0 and not number_is_solved(num, row, col, width_initial):
-                    return False
+        sub = matrix[offset_h:offset_h + height, offset_w:new_w]
+        nonzero = sub != 0
+        if not np.any(nonzero):
+            return True
+        actual_rows = (sub[nonzero] - 1) // width_initial
+        actual_cols = (sub[nonzero] - 1) % width_initial
+        exp_rows = np.repeat(np.arange(offset_h, offset_h + height), new_w - offset_w)[nonzero.ravel()]
+        exp_cols = np.tile(np.arange(offset_w, new_w), height)[nonzero.ravel()]
+        return np.all((actual_rows == exp_rows) & (actual_cols == exp_cols))
     return True
 
 
@@ -78,11 +88,42 @@ def get_grids_parts(matrix_before, solution, width, height):
         move_matrix_inplace(mc_flat, move, zp_idx, width)
         dr, dc = _MOVE_DIRS[move]
         zp_idx += dr * width + dc
-    second = mc_flat.reshape(height, width).tolist()
-    return first, second
+    return first, mc_flat.reshape(height, width).tolist()
 
 
-def analyse_grids(matrix, solution, width_initial, height_initial, width, height, offset_w, offset_h, moves_offset):
+def _to_relative(node, base_offset):
+    """Convert absolute move indices to relative (0-based at base_offset)."""
+    if node is None or node.get("enableGridsStatus") == -1:
+        return node
+    shifted = {
+        "enableGridsStatus": node["enableGridsStatus"],
+        "gridsStarted": node["gridsStarted"] - base_offset,
+        "gridsStopped": node["gridsStopped"] - base_offset,
+        "width": node["width"], "height": node["height"],
+        "offsetW": node["offsetW"], "offsetH": node["offsetH"],
+        "nextLayerFirst": _to_relative(node.get("nextLayerFirst"), base_offset),
+        "nextLayerSecond": _to_relative(node.get("nextLayerSecond"), base_offset),
+    }
+    return shifted
+
+
+def _apply_offset(skeleton, new_offset):
+    """Clone a relative skeleton, shifting indices by new_offset."""
+    if skeleton is None or skeleton.get("enableGridsStatus") == -1:
+        return skeleton
+    shifted = {
+        "enableGridsStatus": skeleton["enableGridsStatus"],
+        "gridsStarted": skeleton["gridsStarted"] + new_offset,
+        "gridsStopped": skeleton["gridsStopped"] + new_offset,
+        "width": skeleton["width"], "height": skeleton["height"],
+        "offsetW": skeleton["offsetW"], "offsetH": skeleton["offsetH"],
+        "nextLayerFirst": _apply_offset(skeleton.get("nextLayerFirst"), new_offset),
+        "nextLayerSecond": _apply_offset(skeleton.get("nextLayerSecond"), new_offset),
+    }
+    return shifted
+
+
+def analyse_grids(matrix, solution, width_initial, height_initial, width, height, offset_w, offset_h, moves_offset, shape_cache=None):
     mc_flat = np.array(matrix, dtype=np.int32).flatten()
     zp = find_zero(matrix, width_initial, height_initial)
     zp_idx = zp[0] * width_initial + zp[1]
@@ -100,7 +141,6 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
             enable_gs = gs
             girds_unsolved_last = None
             before_flat = mc_flat.copy()
-            before_zp = zp_idx
 
             for gst_id in range(grids_started + 1, len(solution)):
                 move2 = solution[gst_id]
@@ -108,7 +148,7 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
                 dr2, dc2 = _MOVE_DIRS[move2]
                 zp_idx += dr2 * width_initial + dc2
                 mc_2d = mc_flat.reshape(height_initial, width_initial)
-                if not grids_solved(mc_2d, width, height, offset_w, offset_h, enable_gs, width_initial):
+                if not _grids_solved_np(mc_2d, width, height, offset_w, offset_h, enable_gs, width_initial):
                     girds_unsolved_last = gst_id
                 else:
                     break
@@ -118,48 +158,61 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
             grids_stopped = girds_unsolved_last + 1
             sol1 = solution[grids_started + 1: grids_stopped + 2]
             sol2 = solution[grids_stopped + 2:]
-            matrix_before = before_flat.reshape(height_initial, width_initial).tolist()
-            parts = get_grids_parts(matrix_before, sol1, width_initial, height_initial)
-            if parts is not None and enable_gs == 1:
+
+            if shape_cache is None:
+                shape_cache = {}
+
+            # Compute half dimensions
+            if enable_gs == 1:
                 w1 = w2 = width
                 ow1 = ow2 = offset_w
                 h1 = math.ceil(height / 2)
                 h2 = height - h1
                 oh1 = offset_h
                 oh2 = h1 + offset_h
-                return {
-                    "enableGridsStatus": enable_gs,
-                    "gridsStarted": grids_started + moves_offset,
-                    "gridsStopped": grids_stopped + moves_offset,
-                    "width": width, "height": height,
-                    "offsetW": offset_w, "offsetH": offset_h,
-                    "nextLayerFirst": analyse_grids(parts[0], sol1, width_initial, height_initial, w1, h1, ow1, oh1, moves_offset + grids_started + 1),
-                    "nextLayerSecond": analyse_grids(parts[1], sol2, width_initial, height_initial, w2, h2, ow2, oh2, moves_offset + grids_stopped + 1)
-                }
-            if parts is not None and enable_gs == 2:
+            else:
                 w1 = math.ceil(width / 2)
                 w2 = width - w1
                 ow1 = offset_w
                 ow2 = w1 + offset_w
                 h1 = h2 = height
                 oh1 = oh2 = offset_h
-                return {
-                    "enableGridsStatus": enable_gs,
-                    "gridsStarted": grids_started + moves_offset,
-                    "gridsStopped": grids_stopped + moves_offset,
-                    "width": width, "height": height,
-                    "offsetW": offset_w, "offsetH": offset_h,
-                    "nextLayerFirst": analyse_grids(parts[0], sol1, width_initial, height_initial, w1, h1, ow1, oh1, moves_offset + grids_started + 1),
-                    "nextLayerSecond": analyse_grids(parts[1], sol2, width_initial, height_initial, w2, h2, ow2, oh2, moves_offset + grids_stopped + 1)
-                }
+
+            key1 = (w1, h1, ow1, oh1)
+            key2 = (w2, h2, ow2, oh2)
+
+            # Only call get_grids_parts if at least one half needs analysis
+            parts = None
+            if key1 not in shape_cache or key2 not in shape_cache:
+                matrix_before = before_flat.reshape(height_initial, width_initial).tolist()
+                parts = get_grids_parts(matrix_before, sol1, width_initial, height_initial)
+
+            # Resolve first half
+            if key1 in shape_cache:
+                next_first = _apply_offset(shape_cache[key1], moves_offset + grids_started + 1)
+            elif parts is not None:
+                next_first = analyse_grids(parts[0], sol1, width_initial, height_initial, w1, h1, ow1, oh1, moves_offset + grids_started + 1, shape_cache)
+                shape_cache[key1] = _to_relative(next_first, moves_offset + grids_started + 1)
+            else:
+                next_first = None
+
+            # Resolve second half
+            if key2 in shape_cache:
+                next_second = _apply_offset(shape_cache[key2], moves_offset + grids_stopped + 1)
+            elif parts is not None:
+                next_second = analyse_grids(parts[1], sol2, width_initial, height_initial, w2, h2, ow2, oh2, moves_offset + grids_stopped + 1, shape_cache)
+                shape_cache[key2] = _to_relative(next_second, moves_offset + grids_stopped + 1)
+            else:
+                next_second = None
+
             return {
                 "enableGridsStatus": enable_gs,
                 "gridsStarted": grids_started + moves_offset,
                 "gridsStopped": grids_stopped + moves_offset,
                 "width": width, "height": height,
                 "offsetW": offset_w, "offsetH": offset_h,
-                "nextLayerFirst": None,
-                "nextLayerSecond": None
+                "nextLayerFirst": next_first,
+                "nextLayerSecond": next_second,
             }
     return {"enableGridsStatus": -1, "width": width, "height": height, "offsetW": offset_w, "offsetH": offset_h}
 
@@ -167,7 +220,7 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
 def analyse_grids_initial(matrix, solution):
     h = len(matrix)
     w = len(matrix[0])
-    return analyse_grids(matrix, solution, w, h, w, h, 0, 0, 0)
+    return analyse_grids(matrix, solution, w, h, w, h, 0, 0, 0, shape_cache={})
 
 
 def get_sizes_for_layer(type_n, layer):
@@ -225,6 +278,17 @@ def generate_grids_stats(grids_data):
             traverse(node.get("nextLayerSecond"), node.get("gridsStopped", 0))
 
     traverse(grids_data, 0)
+
+    # Deduplicate: states with identical (mainColors, secondaryColors)
+    # share the same dict object so tile color cache id() hits.
+    seen = {}
+    for k in list(levels.keys()):
+        sig = (str(levels[k]["mainColors"]), str(levels[k]["secondaryColors"]))
+        if sig in seen:
+            levels[k] = seen[sig]
+        else:
+            seen[sig] = levels[k]
+
     return levels
 
 
@@ -245,7 +309,8 @@ def filter_grid_stages(grid_states, width, height, add_last=None):
 
     Logic shared by splits formatting and frame generation.
     """
-    keys = sorted([k for k in grid_states.keys() if isinstance(k, (int, float))])
+    keys = [k for k in grid_states.keys() if isinstance(k, (int, float))]
+    keys.sort()
     out = [0]
     for k in keys:
         if k == 0:
@@ -258,10 +323,19 @@ def filter_grid_stages(grid_states, width, height, add_last=None):
     return out
 
 
-def get_grid_states(solution: str, scramble: str) -> Dict:
-    """Convenience: puzzle matrix + grids analysis + stats in one call."""
+def get_grid_states(solution: str = None, scramble: str = None, *, matrix=None, expanded_solution=None, grids_data=None) -> Dict:
+    """Convenience: puzzle matrix + grids analysis + stats in one call.
+    
+    Accepts either (solution, scramble) strings to parse from scratch,
+    or pre-computed ``matrix`` + ``expanded_solution``, or a ready-made
+    ``grids_data`` tree (skips all analysis).
+    """
+    if grids_data is not None:
+        return generate_grids_stats(grids_data)
     from replay_generator import scramble_to_puzzle, expand_solution
-    matrix = scramble_to_puzzle(scramble)
-    expanded = expand_solution(solution)
-    grids_data = analyse_grids_initial(matrix, expanded)
+    if matrix is None:
+        matrix = scramble_to_puzzle(scramble)
+    if expanded_solution is None:
+        expanded_solution = expand_solution(solution)
+    grids_data = analyse_grids_initial(matrix, expanded_solution)
     return generate_grids_stats(grids_data)

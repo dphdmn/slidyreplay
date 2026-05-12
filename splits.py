@@ -12,11 +12,11 @@ from replay_generator import (
 )
 
 
-def splits_file(filename: str):
+def splits_file(filename: str, grid_data: Optional[Dict] = None):
     try:
         with open(filename, 'r') as file:
             content = file.read()
-            return splits_formatted(content)
+            return splits_formatted(content, grid_data=grid_data)
     except FileNotFoundError:
         print(f"Error: File '{filename}' not found.")
         return None
@@ -24,9 +24,9 @@ def splits_file(filename: str):
         print(f"An error occurred: {e}")
         return None
 
-def splits_formatted(sol: str):
+def splits_formatted(sol: str, grid_data: Optional[Dict] = None):
     try:
-        data = splits(sol)
+        data = splits(sol, grid_data=grid_data)
     except Exception:
         return "splits are failed"
 
@@ -119,7 +119,7 @@ def splits_formatted(sol: str):
         return f"Error formatting splits: {str(e)}"
 
 
-def splits(sol: str) -> Optional[List[List[Union[float, int]]]]:
+def splits(sol: str, grid_data: Optional[Dict] = None) -> Optional[List[List[Union[float, int]]]]:
     if "?r=" not in sol:
         return None
 
@@ -159,10 +159,13 @@ def splits(sol: str) -> Optional[List[List[Union[float, int]]]]:
     except Exception:
         return None
 
-    try:
-        grids_states = get_grid_states(solution, scramble)
-    except Exception:
-        grids_states = {}
+    if grid_data is not None:
+        grids_states = grid_data
+    else:
+        try:
+            grids_states = get_grid_states(solution, scramble)
+        except Exception:
+            grids_states = {}
 
     try:
         return calculate_splits(grids_states, move_times, solution, scramble, tps_from_url)

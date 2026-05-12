@@ -3,9 +3,16 @@ import logging
 import os
 import sys
 import time
+import psutil as _psutil
 from datetime import datetime
 
 _LOG = None
+_BASELINE_RAM = None
+
+
+class CancelError(Exception):
+    pass
+
 
 def get_logger():
     global _LOG
@@ -14,6 +21,7 @@ def get_logger():
     _LOG = logging.getLogger("replay_debug")
     _LOG.setLevel(logging.DEBUG)
     return _LOG
+
 
 def init_logfile():
     log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
@@ -26,3 +34,18 @@ def init_logfile():
     fh.setFormatter(fmt)
     get_logger().addHandler(fh)
     return path
+
+
+def reset_ram_baseline():
+    global _BASELINE_RAM
+    _BASELINE_RAM = _psutil.Process().memory_info().rss
+
+
+def log_ram(label: str = "") -> int:
+    global _BASELINE_RAM
+    if _BASELINE_RAM is None:
+        reset_ram_baseline()
+    cur = _psutil.Process().memory_info().rss
+    delta = cur - _BASELINE_RAM
+    get_logger().info(f"  RAM [{label}]: {cur // (1024*1024)}MB ({delta // (1024*1024):+d}MB vs baseline)")
+    return delta

@@ -5,19 +5,18 @@ import time as _time_module
 import numpy as np
 from PIL import Image, ImageDraw
 from typing import List, Optional
-from debug_log import get_logger
-import psutil as _psutil
+from debug_log import get_logger, CancelError
 
+log = get_logger()
+
+import psutil as _psutil
 _gpu_proc = _psutil.Process()
 _gpu_baseline_ram = _gpu_proc.memory_info().rss
+
 
 def _ram_delta_mb() -> int:
     return (_gpu_proc.memory_info().rss - _gpu_baseline_ram) // (1024 * 1024)
 
-log = get_logger()
-
-class CancelError(Exception):
-    pass
 
 
 _HAS_TORCH = False

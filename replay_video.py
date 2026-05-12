@@ -35,24 +35,10 @@ from grids_analysis import (
 )
 
 from track_progress import ProgressTracker, CPU_PHASE_WEIGHTS, GPU_PHASE_WEIGHTS, BATCH_PHASE_WEIGHTS
-from debug_log import get_logger
+from debug_log import get_logger, CancelError, log_ram, reset_ram_baseline
 
 log = get_logger()
-
-
-class CancelError(Exception):
-    pass
-
-
-import psutil as _psutil
-_proc = _psutil.Process()
-_baseline_ram = _proc.memory_info().rss
-
-def log_ram(label: str) -> int:
-    cur = _proc.memory_info().rss
-    delta = cur - _baseline_ram
-    log.info(f"  RAM [{label}]: {cur // (1024*1024)}MB ({delta // (1024*1024):+d}MB vs baseline)")
-    return delta
+reset_ram_baseline()
 
 from geometry import (PADDING, HEADER_H, STATS_PANEL_WIDTH, INFO_H, TIMER_HEIGHT,
     BG_COLOR, TILE_BG, TILE_TEXT_COLOR, TILE_BORDER_COLOR, NULL_COLOR,
@@ -99,7 +85,12 @@ def get_colors(num_colors: int) -> List[Tuple[int, int, int]]:
     return colors
 
 
-def generate_color_fringe(colors_list: List[Tuple[int, int, int]], size: int) -> List[List[Tuple[int, int, int]]]:
+def _fringe_to_np(fringe_list):
+    """Convert list-of-lists-of-tuples fringe to (H, W, 3) uint8 numpy array."""
+    return np.array(fringe_list, dtype=np.uint8)
+
+
+def generate_color_fringe(colors_list, size: int):
     matrix = [[None] * size for _ in range(size)]
     for i, color in enumerate(colors_list):
         if i == 0:
@@ -116,10 +107,10 @@ def generate_color_fringe(colors_list: List[Tuple[int, int, int]], size: int) ->
                 if matrix[j][col_idx] is None:
                     matrix[j][col_idx] = color
     matrix[size - 1][size - 1] = NULL_COLOR
-    return matrix
+    return _fringe_to_np(matrix)
 
 
-def split_matrix(matrix: List[List[int]]):
+def split_matrix(matrix):
     height = len(matrix)
     width = len(matrix[0])
     square_size = min(width, height)
@@ -145,22 +136,28 @@ def split_matrix(matrix: List[List[int]]):
     return square_matrix, other_part
 
 
-def get_columns_colors(colors_list: List[Tuple[int, int, int]], width: int, height: int):
-    return [[colors_list[c % len(colors_list)] for c in range(width)] for _ in range(height)]
+def get_columns_colors(colors_list, width: int, height: int):
+    arr = np.empty((height, width, 3), dtype=np.uint8)
+    for c in range(width):
+        arr[:, c] = colors_list[c % len(colors_list)]
+    return arr
 
 
-def get_rows_colors(colors_list: List[Tuple[int, int, int]], width: int, height: int):
-    return [[colors_list[r % len(colors_list)]] * width for r in range(height)]
+def get_rows_colors(colors_list, width: int, height: int):
+    arr = np.empty((height, width, 3), dtype=np.uint8)
+    for r in range(height):
+        arr[r, :] = colors_list[r % len(colors_list)]
+    return arr
 
 
-def merge_matrices_by_dimension(matrix1: List[List], matrix2: List[List], match_by_width: bool):
+def merge_matrices_by_dimension(matrix1, matrix2, match_by_width: bool):
     if match_by_width:
-        return matrix1 + matrix2
+        return np.vstack([matrix1, matrix2])
     else:
-        return [row1 + (matrix2[i] if i < len(matrix2) else []) for i, row1 in enumerate(matrix1)]
+        return np.hstack([matrix1, matrix2])
 
 
-def get_fringe_colors_nxm(width: int, height: int) -> List[List[Tuple[int, int, int]]]:
+def get_fringe_colors_nxm(width: int, height: int):
     puzzle = create_puzzle(width, height)
     sq_matrix, start_matrix = split_matrix(puzzle)
     sq_size = len(sq_matrix)
@@ -190,8 +187,8 @@ def get_fringe_colors_nxm(width: int, height: int) -> List[List[Tuple[int, int, 
     return merge_matrices_by_dimension(extra_colors_matrix, colors_matrix_sq, match_by_width)
 
 
-def get_mono_colors(color: Tuple[int, int, int], width: int, height: int):
-    return [[color] * width for _ in range(height)]
+def get_mono_colors(color, width: int, height: int):
+    return np.full((height, width, 3), color, dtype=np.uint8)
 
 
 def get_all_fringe_schemes(grid_states):
@@ -210,8 +207,8 @@ def get_all_fringe_schemes(grid_states):
     return schemes
 
 
-RED_GRIDS = (200, 103, 103)
-BLUE_GRIDS = (141, 179, 255)
+RED_GRIDS = np.array((200, 103, 103), dtype=np.uint8)
+BLUE_GRIDS = np.array((141, 179, 255), dtype=np.uint8)
 
 
 # ─── Color Application (ported from replayGeneration.js) ────────────
@@ -259,6 +256,10 @@ def get_tile_colors(number, state, all_fringe_schemes, main_w):
                 continue
             if secondary_bg is None:
                 secondary_bg = apply_color_any(scheme, number, sc["width"], sc["height"], sc["offsetW"], sc["offsetH"], main_w, secondary=True)
+    if isinstance(main_bg, np.ndarray):
+        main_bg = tuple(main_bg.ravel())
+    if isinstance(secondary_bg, np.ndarray):
+        secondary_bg = tuple(secondary_bg.ravel())
     return main_bg, secondary_bg
 
 
@@ -363,13 +364,14 @@ def render_frame(
                 sq_bbox = (sx, sy, sx + tile_size, sy + tile_size)
 
                 main_bg, sec_bg = get_tile_colors(num, grid_state, all_fringe_schemes, w)
-                bg_color = main_bg if main_bg else TILE_BG
+                bg_color = main_bg if main_bg is not None else TILE_BG
+                bg_color = tuple(bg_color.ravel()) if isinstance(bg_color, np.ndarray) else bg_color
                 draw_filled_rect(draw, sq_bbox, bg_color)
 
                 if tile_size > 1 and not opts.no_border:
                     draw.rectangle(sq_bbox, outline=TILE_BORDER_COLOR, width=TILE_BORDER_WIDTH)
 
-                if sec_bg:
+                if sec_bg is not None:
                     bx0, by0, bx1, by1 = compute_secondary_bar_rect(tile_size, sx, sy)
                     bar_bbox = (bx0, by0, bx1, by1)
                     draw_filled_rect(draw, bar_bbox, sec_bg)
@@ -933,10 +935,13 @@ def generate_frames(
 
     _sorted_grid_keys = sorted([k for k in grid_states.keys() if isinstance(k, (int, float))])
     _sorted_grid_keys.append(sol_len + 1)
+    _grid_ptr = 0
 
     def _fast_grid_state(grid_states, move_index):
-        idx = bisect.bisect_left(_sorted_grid_keys, move_index + 1) - 1
-        return grid_states[_sorted_grid_keys[idx]] if idx >= 0 else grid_states[0]
+        nonlocal _grid_ptr
+        while _grid_ptr + 1 < len(_sorted_grid_keys) and _sorted_grid_keys[_grid_ptr + 1] <= move_index:
+            _grid_ptr += 1
+        return grid_states[_sorted_grid_keys[_grid_ptr]]
 
     grid_stages_list = []
     last_moves = 0
@@ -1053,24 +1058,52 @@ def generate_frames(
     # ── Build tile color cache for every grid state lookup may need ──
     _tile_color_cache = {}
     _tile_bg_np = np.array(TILE_BG, dtype=np.float32)
+    _all_nums = np.arange(1, h * w + 1, dtype=np.int32)
+    _all_rows = (_all_nums - 1) // w
+    _all_cols = (_all_nums - 1) % w
     for key in _sorted_grid_keys:
         if key == sol_len + 1:
             continue
         cache_state = grid_states[key]
         cache_key = id(cache_state)
         if cache_key not in _tile_color_cache:
-            main_list = []
-            sec_list = []
-            has_sec_list = []
-            for num in range(1, h * w + 1):
-                main_bg, sec_bg = get_tile_colors(num, cache_state, all_fringe_schemes, w)
-                main_list.append(main_bg or TILE_BG)
-                sec_list.append(sec_bg if sec_bg is not None else (0, 0, 0))
-                has_sec_list.append(sec_bg is not None)
+            main = np.full((h * w, 3), _tile_bg_np, dtype=np.float32)
+            sec = np.zeros((h * w, 3), dtype=np.float32)
+            has_sec = np.zeros(h * w, dtype=bool)
+            if len(cache_state["mainColors"]) == 1:
+                mc = cache_state["mainColors"][0]
+                key_ = f"{mc['width']}x{mc['height']}"
+                scheme = all_fringe_schemes[key_]
+                local_r = _all_rows - mc["offsetH"]
+                local_c = _all_cols - mc["offsetW"]
+                mask = (local_r >= 0) & (local_r < mc["height"]) & (local_c >= 0) & (local_c < mc["width"])
+                main[mask] = scheme[local_r[mask], local_c[mask]].astype(np.float32)
+            else:
+                for cs in cache_state["mainColors"]:
+                    local_r = _all_rows - cs["offsetH"]
+                    local_c = _all_cols - cs["offsetW"]
+                    mask = (local_r >= 0) & (local_r < cs["height"]) & (local_c >= 0) & (local_c < cs["width"])
+                    if cs["type"] == CT_MAP["grids1"]:
+                        main[mask] = RED_GRIDS.astype(np.float32)
+                    elif cs["type"] == CT_MAP["grids2"]:
+                        main[mask] = BLUE_GRIDS.astype(np.float32)
+                for sc in cache_state["secondaryColors"]:
+                    local_r = _all_rows - sc["offsetH"]
+                    local_c = _all_cols - sc["offsetW"]
+                    mask = (local_r >= 0) & (local_r < sc["height"]) & (local_c >= 0) & (local_c < sc["width"])
+                    if sc["type"] == CT_MAP["fringe"]:
+                        key_ = f"{sc['width']}x{sc['height']}"
+                        scheme = all_fringe_schemes[key_]
+                        sec[mask] = scheme[local_r[mask], local_c[mask]].astype(np.float32)
+                    elif sc["type"] == CT_MAP["grids1"]:
+                        sec[mask] = RED_GRIDS.astype(np.float32)
+                    elif sc["type"] == CT_MAP["grids2"]:
+                        sec[mask] = BLUE_GRIDS.astype(np.float32)
+                    has_sec[mask] = True
             _tile_color_cache[cache_key] = {
-                "main": np.array(main_list, dtype=np.float32),
-                "sec": np.array(sec_list, dtype=np.float32),
-                "has_sec": np.array(has_sec_list, dtype=np.float32),
+                "main": main,
+                "sec": sec,
+                "has_sec": has_sec,
             }
 
     # ── Stage 2: precompute data only for states that will be rendered ──
