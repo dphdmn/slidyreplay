@@ -105,7 +105,7 @@ def _open(path, status_callback=None):
                 status_callback("Could not open file: xdg-open not found")
 
 
-def _generate_filename(solution, tps, time_v, movetimes, size_arg=None, index=0, speed_factor=1.0):
+def _generate_filename(solution, tps, time_v, movetimes, size_arg=None, index=0, speed_factor=1.0, scramble=None):
     moves = len(expand_solution(solution))
     if tps and tps > 0:
         display_tps = tps
@@ -129,6 +129,10 @@ def _generate_filename(solution, tps, time_v, movetimes, size_arg=None, index=0,
         else:
             parts = str(size_arg).lower().split("x")
             w, h = parts[0], parts[1]
+    elif scramble:
+        rows = scramble.split("/")
+        h = len(rows)
+        w = len(rows[0].split()) if rows else 0
     else:
         try:
             matrix = parse_scramble_guess(solution)
@@ -769,7 +773,8 @@ class ReplayGUI(tb.Window):
             base_name = _generate_filename(
                 solution, filename_tps, filename_time,
                 params.get("movetimes", -1), params.get("size"),
-                index=idx + 1, speed_factor=self._get_speed_factor())
+                index=idx + 1, speed_factor=self._get_speed_factor(),
+                scramble=params.get("scramble"))
             out_path = _pick_output_filename(output_dir, base_name)
             log.info(f"_process_item[{idx}]: output={out_path}")
 
@@ -852,7 +857,8 @@ class ReplayGUI(tb.Window):
             out_path = _pick_output_filename(output_dir, _generate_filename(
                 solution, params.get("tps"), params.get("time"),
                 params.get("movetimes", -1), params.get("size"),
-                index=idx + 1, speed_factor=self._get_speed_factor()))
+                index=idx + 1, speed_factor=self._get_speed_factor(),
+                scramble=params.get("scramble")))
 
             batch_items.append({"solution": solution, "output_path": out_path, **params})
         return batch_items

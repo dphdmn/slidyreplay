@@ -28,11 +28,10 @@ from replay_generator import (
     get_repeated_lengths,
 )
 
-from sliding_puzzles import decompress_string_to_array, read_solve_data, parse_replay_url
+from sliding_puzzles import decompress_string_to_array, read_solve_data, parse_replay_url, _MOVE_DIRS, move_matrix_inplace, update_md_flat, find_zero
 
 from grids_analysis import (
-    CT_MAP, _MOVE_DIRS, move_matrix_inplace, find_zero,
-    analyse_grids_initial, generate_grids_stats, filter_grid_stages,
+    CT_MAP, analyse_grids_initial, generate_grids_stats, filter_grid_stages,
 )
 
 from track_progress import ProgressTracker, CPU_PHASE_WEIGHTS, GPU_PHASE_WEIGHTS, BATCH_PHASE_WEIGHTS
@@ -193,16 +192,6 @@ def get_fringe_colors_nxm(width: int, height: int) -> List[List[Tuple[int, int, 
 
 def get_mono_colors(color: Tuple[int, int, int], width: int, height: int):
     return [[color] * width for _ in range(height)]
-
-
-def _update_md_flat(md, mc_flat, move, zp_idx, w, h):
-    dr, dc = _MOVE_DIRS[move]
-    nr_idx = zp_idx + dr * w + dc
-    moved_val = mc_flat[zp_idx]
-    sr, sc = (moved_val - 1) // w, (moved_val - 1) % w
-    old_md = abs(sr - nr_idx // w) + abs(sc - nr_idx % w)
-    new_md = abs(sr - zp_idx // w) + abs(sc - zp_idx % w)
-    return md - old_md + new_md
 
 
 def get_all_fringe_schemes(grid_states):
@@ -940,7 +929,6 @@ def generate_frames(
     log.info("====== STAGE 1: DATA PREP ======")
     log.info(f"generate_frames: {w}x{h}, sol_len={sol_len}, quality={quality}, fps={fps}, use_gpu={use_gpu}, output_path={output_path}")
 
-    grid_keys = sorted([k for k in grid_states.keys() if isinstance(k, (int, float))])
     filtered_stages = filter_grid_stages(grid_states, w, h, add_last=sol_len)
 
     _sorted_grid_keys = sorted([k for k in grid_states.keys() if isinstance(k, (int, float))])
@@ -997,18 +985,9 @@ def generate_frames(
     font_size = compute_font_size(w, h, tile_size)
     log.info(f"  tile_size={tile_size}, raw_tile={raw_tile}, font_size={font_size}")
 
-    def _update_manhattan_distance(md: int, matrix, move, zero_pos, w: int, h: int) -> int:
-        dr, dc = {'R': (0, -1), 'L': (0, 1), 'U': (1, 0), 'D': (-1, 0)}[move]
-        nr, nc = zero_pos[0] + dr, zero_pos[1] + dc
-        moved_val = matrix[zero_pos[0]][zero_pos[1]]
-        old_md = abs((moved_val - 1) // w - nr) + abs((moved_val - 1) % w - nc)
-        new_md = abs((moved_val - 1) // w - zero_pos[0]) + abs((moved_val - 1) % w - zero_pos[1])
-        return md - old_md + new_md
-
-    mc = [row[:] for row in matrix]
-    all_md = calculate_manhattan_distance(mc)
+    all_md = calculate_manhattan_distance(matrix)
     current_md = all_md
-    zp = find_zero(mc, w, h)
+    zp = find_zero(matrix, w, h)
 
     total_time_ms = (original_fake_times[-1] if original_fake_times
                      else fake_times[-1]) if fake_times else 0
@@ -1095,10 +1074,9 @@ def generate_frames(
             }
 
     # ── Stage 2: precompute data only for states that will be rendered ──
-    TILE_BG_NP = np.array(TILE_BG, dtype=np.float32)
 
     # Convert matrix to flat numpy array for O(1) moves
-    mc_flat = np.array([v for row in mc for v in row], dtype=np.int32)
+    mc_flat = np.array(matrix, dtype=np.int32).flatten()
     zp_idx = zp[0] * w + zp[1]
 
     frame_params = [None] * (sol_len + 1)
@@ -1246,7 +1224,7 @@ def generate_frames(
         if frame_idx < sol_len:
             move = expanded[frame_idx]
             move_matrix_inplace(mc_flat, move, zp_idx, w)
-            current_md = _update_md_flat(current_md, mc_flat, move, zp_idx, w, h)
+            current_md = update_md_flat(current_md, mc_flat, move, zp_idx, w, h)
             zp_idx = zp_idx + _MOVE_DIRS[move][0] * w + _MOVE_DIRS[move][1]
 
     _t_fp = time_module.time()
@@ -1616,10 +1594,7 @@ class ReplayVideoGenerator:
             fake_times = [0] + custom_move_times_sped
         else:
             delays, fake_times = calculate_move_timings(solution, tps_val, width, height, speed_factor, expanded_solution=solution_expanded)
-            if speed_factor != 1.0:
-                _, original_fake_times = calculate_move_timings(solution, tps_val, width, height, 1.0, expanded_solution=solution_expanded)
-            else:
-                original_fake_times = fake_times
+            original_fake_times = [t * speed_factor for t in fake_times] if speed_factor != 1.0 else fake_times
             custom_move_times_sped = None
             original_custom_move_times = None
         _t_timing_end = time_module.time()

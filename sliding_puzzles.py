@@ -9,7 +9,7 @@ import json
 import base64
 import zlib
 import re
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional, Union, Tuple
 from urllib.parse import unquote
 
 from replay_generator import guess_size, parse_scramble, create_puzzle
@@ -132,3 +132,35 @@ def parse_replay_url(url: str):
             tps = None
 
     return solution, tps, scramble, movetimes
+
+
+# ─── Puzzle Move Operations ────────────────────────────────────────
+
+_MOVE_DIRS = {
+    'R': (0, -1), 'L': (0, 1),
+    'U': (1, 0), 'D': (-1, 0),
+}
+
+
+def move_matrix_inplace(mc_flat, move, zp_idx, w):
+    dr, dc = _MOVE_DIRS[move]
+    nr_idx = zp_idx + dr * w + dc
+    mc_flat[zp_idx], mc_flat[nr_idx] = mc_flat[nr_idx], mc_flat[zp_idx]
+
+
+def find_zero(matrix, w, h):
+    for i in range(h):
+        for j in range(w):
+            if matrix[i][j] == 0:
+                return i, j
+    return -1, -1
+
+
+def update_md_flat(md, mc_flat, move, zp_idx, w, h):
+    dr, dc = _MOVE_DIRS[move]
+    nr_idx = zp_idx + dr * w + dc
+    moved_val = mc_flat[zp_idx]
+    sr, sc = (moved_val - 1) // w, (moved_val - 1) % w
+    old_md = abs(sr - nr_idx // w) + abs(sc - nr_idx % w)
+    new_md = abs(sr - zp_idx // w) + abs(sc - zp_idx % w)
+    return md - old_md + new_md

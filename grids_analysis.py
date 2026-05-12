@@ -2,26 +2,9 @@ import math
 import numpy as np
 from typing import List, Dict, Tuple, Optional
 
-_MOVE_DIRS = {
-    'R': (0, -1), 'L': (0, 1),
-    'U': (1, 0), 'D': (-1, 0),
-}
+from sliding_puzzles import _MOVE_DIRS, move_matrix_inplace, find_zero
 
 CT_MAP = {'fringe': 1, 'grids1': 2, 'grids2': 3}
-
-
-def move_matrix_inplace(mc_flat, move, zp_idx, w):
-    dr, dc = _MOVE_DIRS[move]
-    nr_idx = zp_idx + dr * w + dc
-    mc_flat[zp_idx], mc_flat[nr_idx] = mc_flat[nr_idx], mc_flat[zp_idx]
-
-
-def find_zero(matrix, w, h):
-    for i in range(h):
-        for j in range(w):
-            if matrix[i][j] == 0:
-                return i, j
-    return -1, -1
 
 
 def number_is_solved(num, row, col, w):

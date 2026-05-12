@@ -2,6 +2,7 @@ import json
 import base64
 import zlib
 import re
+import functools
 from datetime import datetime
 
 
@@ -20,13 +21,14 @@ def compress_solution(solution):
     return re.sub(r'(.)\1+', lambda m: m.group(1) + str(len(m.group(0))), solution)
 
 
+@functools.lru_cache(maxsize=32)
 def expand_solution(solution):
     return re.sub(r'([RULD])(\d+)', lambda m: m.group(1) * int(m.group(2)), solution)
 
 
+_REV_TRANS = str.maketrans('UDLR', 'DURL')
 def reverse_solution(solution):
-    rev = {'U': 'D', 'D': 'U', 'L': 'R', 'R': 'L'}
-    return ''.join(rev.get(c, c) for c in reversed(solution))
+    return solution.translate(_REV_TRANS)[::-1]
 
 
 def create_puzzle(width, height):
@@ -74,8 +76,10 @@ def apply_moves(matrix, moves):
     return matrix
 
 
-def guess_size(solution):
-    sol = reverse_solution(expand_solution(solution))
+def guess_size(solution, expanded_solution=None):
+    if expanded_solution is None:
+        expanded_solution = expand_solution(solution)
+    sol = reverse_solution(expanded_solution)
     x = y = 1
     width = height = 0
     for move in sol:
@@ -92,15 +96,19 @@ def guess_size(solution):
     return max(2, width), max(2, height)
 
 
-def parse_scramble(width, height, solution):
+def parse_scramble(width, height, solution, expanded_solution=None):
+    if expanded_solution is None:
+        expanded_solution = expand_solution(solution)
     puzzle = create_puzzle(width, height)
-    result = apply_moves(puzzle, reverse_solution(expand_solution(solution)))
+    result = apply_moves(puzzle, reverse_solution(expanded_solution))
     return result
 
 
-def parse_scramble_guess(solution):
-    w, h = guess_size(solution)
-    return parse_scramble(w, h, solution)
+def parse_scramble_guess(solution, expanded_solution=None):
+    if expanded_solution is None:
+        expanded_solution = expand_solution(solution)
+    w, h = guess_size(solution, expanded_solution)
+    return parse_scramble(w, h, solution, expanded_solution)
 
 
 def calculate_manhattan_distance(matrix):
