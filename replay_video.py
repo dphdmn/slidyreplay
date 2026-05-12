@@ -12,7 +12,6 @@ import math
 import json
 import base64
 import zlib
-import shutil
 import subprocess
 import sys
 import time as time_module
@@ -24,12 +23,19 @@ from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_CO
 
 from replay_generator import (
     expand_solution, scramble_to_puzzle, puzzle_to_scramble,
-    create_puzzle, apply_moves, reverse_solution, parse_scramble,
+    create_puzzle, parse_scramble,
     parse_scramble_guess, calculate_manhattan_distance,
-    get_repeated_lengths, compress_solution
+    get_repeated_lengths,
 )
 
-from splits import decompress_string_to_array, read_solve_data
+from sliding_puzzles import decompress_string_to_array, read_solve_data
+
+from grids_analysis import (
+    CT_MAP, _MOVE_DIRS, move_matrix_inplace, find_zero,
+    analyse_grids_initial, generate_grids_stats, filter_grid_stages,
+)
+
+from track_progress import ProgressTracker, CPU_PHASE_WEIGHTS, GPU_PHASE_WEIGHTS, BATCH_PHASE_WEIGHTS
 from debug_log import get_logger
 
 log = get_logger()
@@ -220,44 +226,6 @@ def get_mono_colors(color: Tuple[int, int, int], width: int, height: int):
     return [[color] * width for _ in range(height)]
 
 
-# ─── Grids Analysis (ported from gridsAnalysis.js) ──────────────────
-
-CT_MAP = {'fringe': 1, 'grids1': 2, 'grids2': 3}
-
-
-def find_zero(matrix, w, h):
-    for i in range(h):
-        for j in range(w):
-            if matrix[i][j] == 0:
-                return i, j
-    return -1, -1
-
-
-def move_matrix(matrix, move, zero_pos, w, h):
-    zr, zc = zero_pos
-    updated = [row[:] for row in matrix]
-    moves = {
-        'R': (0, -1), 'L': (0, 1),
-        'U': (1, 0), 'D': (-1, 0),
-    }
-    dr, dc = moves[move]
-    nr, nc = zr + dr, zc + dc
-    updated[zr][zc], updated[nr][nc] = updated[nr][nc], updated[zr][zc]
-    return updated
-
-
-_MOVE_DIRS = {
-    'R': (0, -1), 'L': (0, 1),
-    'U': (1, 0), 'D': (-1, 0),
-}
-
-
-def move_matrix_inplace(mc_flat, move, zp_idx, w):
-    dr, dc = _MOVE_DIRS[move]
-    nr_idx = zp_idx + dr * w + dc
-    mc_flat[zp_idx], mc_flat[nr_idx] = mc_flat[nr_idx], mc_flat[zp_idx]
-
-
 def _update_md_flat(md, mc_flat, move, zp_idx, w, h):
     dr, dc = _MOVE_DIRS[move]
     nr_idx = zp_idx + dr * w + dc
@@ -266,258 +234,6 @@ def _update_md_flat(md, mc_flat, move, zp_idx, w, h):
     old_md = abs(sr - nr_idx // w) + abs(sc - nr_idx % w)
     new_md = abs(sr - zp_idx // w) + abs(sc - zp_idx % w)
     return md - old_md + new_md
-
-
-def number_is_solved(num, row, col, w):
-    if num == 0:
-        return False
-    return (num - 1) // w == row and (num - 1) % w == col
-
-
-def get_solve_elements_amount(matrix, safe_w=0, safe_h=0):
-    h = len(matrix)
-    w = len(matrix[0])
-    unsolved = []
-    for idx, num in enumerate(matrix_flat := [v for row in matrix for v in row]):
-        if num == 0:
-            continue
-        exp_row = idx // w
-        exp_col = idx % w
-        if (num != exp_row * w + exp_col + 1 and
-                not (exp_row >= h - safe_h and exp_col >= w - safe_w)):
-            unsolved.append(num)
-    return len(unsolved), unsolved
-
-
-def get_cycles_numbers(matrix, solution, moves_early=0.96, moves_late=0.98, safe_rect=0.5):
-    w = len(matrix[0])
-    h = len(matrix)
-    sol_len = len(solution)
-    early_count = int(moves_early * sol_len)
-    late_count = int(moves_late * sol_len)
-    safe_w = round(w * safe_rect)
-    safe_h = round(h * safe_rect)
-    unsolved_info = []
-    mc = [row[:] for row in matrix]
-    for mi in range(late_count):
-        move = solution[mi]
-        zp = find_zero(mc, w, h)
-        mc = move_matrix(mc, move, zp, w, h)
-        if mi > early_count:
-            amt, arr = get_solve_elements_amount(mc, safe_w, safe_h)
-            unsolved_info.append((amt, arr))
-    if not unsolved_info:
-        return []
-    return min(unsolved_info, key=lambda x: x[0])[1]
-
-
-def check_top_bottom(matrix, width, height, offset_w, offset_h, width_initial):
-    new_h = math.ceil(height / 2) + offset_h
-    solved_counter = 0
-    for row in range(offset_h, new_h):
-        for col in range(offset_w, width + offset_w):
-            num = matrix[row][col]
-            if num != 0 and (num - 1) // width_initial >= new_h:
-                return False
-            if number_is_solved(num, row, col, width_initial):
-                solved_counter += 1
-    return width * (new_h - offset_h) / 3 > solved_counter
-
-
-def check_left_right(matrix, width, height, offset_w, offset_h, width_initial):
-    new_w = math.ceil(width / 2) + offset_w
-    solved_counter = 0
-    for row in range(offset_h, height + offset_h):
-        for col in range(offset_w, new_w):
-            num = matrix[row][col]
-            if num != 0 and (num - 1) % width_initial >= new_w:
-                return False
-            if number_is_solved(num, row, col, width_initial):
-                solved_counter += 1
-    return height * (new_w - offset_w) / 3 > solved_counter
-
-
-def guess_grids(matrix, width, height, offset_w, offset_h, width_initial):
-    if width < 6 and height < 6:
-        return 0
-    if height > 5 and check_top_bottom(matrix, width, height, offset_w, offset_h, width_initial):
-        return 1
-    if width > 5 and check_left_right(matrix, width, height, offset_w, offset_h, width_initial):
-        return 2
-    return 0
-
-
-def grids_solved(matrix, width, height, offset_w, offset_h, grids_type, width_initial, cycled_numbers):
-    if grids_type == 1:
-        new_h = math.ceil(height / 2) + offset_h
-        for row in range(offset_h, new_h):
-            for col in range(offset_w, width + offset_w):
-                num = matrix[row][col]
-                if num != 0 and not number_is_solved(num, row, col, width_initial):
-                    if num not in cycled_numbers:
-                        return False
-    if grids_type == 2:
-        new_w = math.ceil(width / 2) + offset_w
-        for row in range(offset_h, height + offset_h):
-            for col in range(offset_w, new_w):
-                num = matrix[row][col]
-                if num != 0 and not number_is_solved(num, row, col, width_initial):
-                    if num not in cycled_numbers:
-                        return False
-    return True
-
-
-def get_grids_parts(matrix_before, solution, width, height):
-    if width < 6 and height < 6:
-        return None
-    first = [row[:] for row in matrix_before]
-    mc = [row[:] for row in matrix_before]
-    for move in solution:
-        zp = find_zero(mc, width, height)
-        mc = move_matrix(mc, move, zp, width, height)
-    return first, mc
-
-
-def analyse_grids(matrix, solution, width_initial, height_initial, width, height, offset_w, offset_h, moves_offset, cycled_numbers):
-    mc = [row[:] for row in matrix]
-    for mi in range(len(solution)):
-        move = solution[mi]
-        zp = find_zero(mc, width_initial, height_initial)
-        mc = move_matrix(mc, move, zp, width_initial, height_initial)
-        gs = guess_grids(mc, width, height, offset_w, offset_h, width_initial)
-        if gs != 0:
-            grids_started = mi
-            enable_gs = gs
-            girds_unsolved_last = None
-            matrix_before = [row[:] for row in mc]
-            for gst_id in range(grids_started + 1, len(solution)):
-                move2 = solution[gst_id]
-                zp2 = find_zero(mc, width_initial, height_initial)
-                mc = move_matrix(mc, move2, zp2, width_initial, height_initial)
-                if not grids_solved(mc, width, height, offset_w, offset_h, enable_gs, width_initial, cycled_numbers):
-                    girds_unsolved_last = gst_id
-                else:
-                    break
-            if girds_unsolved_last is None:
-                return {"enableGridsStatus": -1, "width": width, "height": height, "offsetW": offset_w, "offsetH": offset_h}
-            grids_stopped = girds_unsolved_last + 1
-            sol1 = solution[grids_started + 1: grids_stopped + 2]
-            sol2 = solution[grids_stopped + 2:]
-            parts = get_grids_parts(matrix_before, sol1, width_initial, height_initial)
-            if parts is not None and enable_gs == 1:
-                w1 = w2 = width
-                ow1 = ow2 = offset_w
-                h1 = math.ceil(height / 2)
-                h2 = height - h1
-                oh1 = offset_h
-                oh2 = h1 + offset_h
-                return {
-                    "enableGridsStatus": enable_gs,
-                    "gridsStarted": grids_started + moves_offset,
-                    "gridsStopped": grids_stopped + moves_offset,
-                    "width": width, "height": height,
-                    "offsetW": offset_w, "offsetH": offset_h,
-                    "nextLayerFirst": analyse_grids(parts[0], sol1, width_initial, height_initial, w1, h1, ow1, oh1, moves_offset + grids_started + 1, cycled_numbers),
-                    "nextLayerSecond": analyse_grids(parts[1], sol2, width_initial, height_initial, w2, h2, ow2, oh2, moves_offset + grids_stopped + 1, cycled_numbers)
-                }
-            if parts is not None and enable_gs == 2:
-                w1 = math.ceil(width / 2)
-                w2 = width - w1
-                ow1 = offset_w
-                ow2 = w1 + offset_w
-                h1 = h2 = height
-                oh1 = oh2 = offset_h
-                return {
-                    "enableGridsStatus": enable_gs,
-                    "gridsStarted": grids_started + moves_offset,
-                    "gridsStopped": grids_stopped + moves_offset,
-                    "width": width, "height": height,
-                    "offsetW": offset_w, "offsetH": offset_h,
-                    "nextLayerFirst": analyse_grids(parts[0], sol1, width_initial, height_initial, w1, h1, ow1, oh1, moves_offset + grids_started + 1, cycled_numbers),
-                    "nextLayerSecond": analyse_grids(parts[1], sol2, width_initial, height_initial, w2, h2, ow2, oh2, moves_offset + grids_stopped + 1, cycled_numbers)
-                }
-            return {
-                "enableGridsStatus": enable_gs,
-                "gridsStarted": grids_started + moves_offset,
-                "gridsStopped": grids_stopped + moves_offset,
-                "width": width, "height": height,
-                "offsetW": offset_w, "offsetH": offset_h,
-                "nextLayerFirst": None,
-                "nextLayerSecond": None
-            }
-    return {"enableGridsStatus": -1, "width": width, "height": height, "offsetW": offset_w, "offsetH": offset_h}
-
-
-def analyse_grids_initial(matrix, solution, cycled_numbers):
-    h = len(matrix)
-    w = len(matrix[0])
-    return analyse_grids(matrix, solution, w, h, w, h, 0, 0, 0, cycled_numbers)
-
-
-def get_sizes_for_layer(type_n, layer):
-    return {"type": type_n, "width": layer["width"], "height": layer["height"],
-            "offsetW": layer["offsetW"], "offsetH": layer["offsetH"]}
-
-
-def get_main_colors_by_level(cl):
-    if cl["enableGridsStatus"] == -1:
-        return [get_sizes_for_layer(CT_MAP['fringe'], cl)]
-    return [
-        get_sizes_for_layer(CT_MAP['grids1'], cl["nextLayerFirst"]),
-        get_sizes_for_layer(CT_MAP['grids2'], cl["nextLayerSecond"])
-    ]
-
-
-def get_secondary_colors_by_level(cl):
-    sec = []
-    if cl["enableGridsStatus"] == -1:
-        return sec
-    fl = cl["nextLayerFirst"]
-    sl = cl["nextLayerSecond"]
-    if fl and fl.get("nextLayerFirst"):
-        sec.append(get_sizes_for_layer(CT_MAP['grids1'], fl["nextLayerFirst"]))
-        sec.append(get_sizes_for_layer(CT_MAP['grids2'], fl["nextLayerSecond"]))
-    elif fl:
-        sec.append(get_sizes_for_layer(CT_MAP['fringe'], fl))
-    if sl and sl.get("nextLayerSecond"):
-        sec.append(get_sizes_for_layer(CT_MAP['grids1'], sl["nextLayerFirst"]))
-        sec.append(get_sizes_for_layer(CT_MAP['grids2'], sl["nextLayerSecond"]))
-    elif sl:
-        sec.append(get_sizes_for_layer(CT_MAP['fringe'], sl))
-    return sec
-
-
-def get_active_zone_by_level(cl):
-    return get_sizes_for_layer(0, cl)
-
-
-def get_data_by_level(cl):
-    return {
-        "mainColors": get_main_colors_by_level(cl),
-        "secondaryColors": get_secondary_colors_by_level(cl),
-        "activeZone": get_active_zone_by_level(cl)
-    }
-
-
-def generate_grids_stats(grids_data):
-    levels = {}
-
-    def traverse(node, nid):
-        if node:
-            levels[nid] = get_data_by_level(node)
-            traverse(node.get("nextLayerFirst"), node.get("gridsStarted", 0))
-            traverse(node.get("nextLayerSecond"), node.get("gridsStopped", 0))
-
-    traverse(grids_data, 0)
-    return levels
-
-
-def get_grids_state(grids_states, move_index):
-    keys = [k for k in grids_states.keys() if isinstance(k, (int, float))]
-    valid = [k for k in keys if k <= move_index]
-    if not valid:
-        return grids_states[0]
-    return grids_states[max(valid)]
 
 
 def get_all_fringe_schemes(grid_states):
@@ -732,8 +448,8 @@ def render_frame(
 
 # ─── Timing Calculation (ported from replayGeneration.js) ──────────
 
-def calculate_move_timings(solution: str, tps: float, width: int, height: int, speed_factor: float = 1.0):
-    expanded = expand_solution(solution)
+def calculate_move_timings(solution: str, tps: float, width: int, height: int, speed_factor: float = 1.0, expanded_solution: Optional[str] = None):
+    expanded = expanded_solution if expanded_solution is not None else expand_solution(solution)
     sol_len = len(expanded)
     if sol_len <= 1:
         return [0], [0]
@@ -1233,7 +949,6 @@ def generate_frames(
     custom_move_times: Optional[List[float]] = None,
     cumulative_data: Optional[dict] = None,
     progress_callback=None,
-    overlay_progress_callback=None,
     quality: float = 1.0,
     parallel: bool = True,
     use_gpu: bool = True,
@@ -1245,9 +960,10 @@ def generate_frames(
     gpu_renderer: Optional['GPURenderer'] = None,
     speed_factor: float = 1.0,
     opts: RenderOptions = RenderOptions(),
+    expanded_solution: Optional[str] = None,
 ) -> Tuple[List[Image.Image], List[int]]:
     quality = quality + 1.0
-    expanded = expand_solution(solution)
+    expanded = expanded_solution if expanded_solution is not None else expand_solution(solution)
     sol_len = len(expanded)
     h = len(matrix)
     w = len(matrix[0])
@@ -1256,14 +972,7 @@ def generate_frames(
     log.info(f"generate_frames: {w}x{h}, sol_len={sol_len}, quality={quality}, fps={fps}, use_gpu={use_gpu}, output_path={output_path}")
 
     grid_keys = sorted([k for k in grid_states.keys() if isinstance(k, (int, float))])
-    filtered_stages = [0]
-    for k in grid_keys:
-        if k == 0:
-            continue
-        az = grid_states[k]["activeZone"]
-        if az["width"] + 1 >= w / 2 and az["height"] + 1 >= h / 2:
-            filtered_stages.append(k)
-    filtered_stages.append(sol_len)
+    filtered_stages = filter_grid_stages(grid_states, w, h, add_last=sol_len)
 
     _sorted_grid_keys = sorted([k for k in grid_states.keys() if isinstance(k, (int, float))])
     _sorted_grid_keys.append(sol_len + 1)
@@ -1559,7 +1268,7 @@ def generate_frames(
 
             _prog_count += 1
             if progress_callback and (_prog_count % _prog_step == 0 or _prog_count == num_needed):
-                progress_callback(_prog_count, num_needed, _desc="Precompute" if _prog_count == _prog_step else None)
+                progress_callback(_prog_count, num_needed, desc="Precompute" if _prog_count == _prog_step else None)
 
             if _prog_count % 1000 == 0:
                 _now = time_module.time()
@@ -1638,7 +1347,7 @@ def generate_frames(
             nonlocal _gpu_render_count
             _gpu_render_count += 1
             if progress_callback and (_gpu_render_count % _gpu_render_step == 0 or cur == tot):
-                progress_callback(cur, tot, _use_gpu=True, _desc="Render" if _gpu_render_count == _gpu_render_step else None, **kw)
+                progress_callback(cur, tot, use_gpu=True, desc="Render" if _gpu_render_count == _gpu_render_step else None, **kw)
 
         try:
             try:
@@ -1709,7 +1418,7 @@ def generate_frames(
                         done += 1
                         _render_prog_count += 1
                         if progress_callback and (_render_prog_count % _render_prog_step == 0 or done == num_needed):
-                            progress_callback(done, num_needed, _desc="Render" if _render_prog_count == _render_prog_step else None)
+                            progress_callback(done, num_needed, desc="Render" if _render_prog_count == _render_prog_step else None)
                     remaining.remove(fut)
         finally:
             if shared_pool is None:
@@ -1722,7 +1431,7 @@ def generate_frames(
             state_images[i] = _render_one_frame(frame_params[i])
             _render_prog_count += 1
             if progress_callback and (_render_prog_count % _render_prog_step == 0 or _render_prog_count == num_needed):
-                progress_callback(_render_prog_count, num_needed, _desc="Render" if _render_prog_count == _render_prog_step else None)
+                progress_callback(_render_prog_count, num_needed, desc="Render" if _render_prog_count == _render_prog_step else None)
 
     first_rendered = next(img for img in state_images if img is not None)
     canvas_w, canvas_h = first_rendered.size
@@ -1741,7 +1450,7 @@ def generate_frames(
             written += 1
             _encode_prog_count += 1
             if progress_callback and (_encode_prog_count % _encode_prog_step == 0 or written == total_video_frames):
-                progress_callback(written, total_video_frames, _desc="Encode" if _encode_prog_count == _encode_prog_step else None)
+                progress_callback(written, total_video_frames, desc="Encode" if _encode_prog_count == _encode_prog_step else None)
     finally:
         _close_pipe(ffmpeg_proc)
     log.info(f"  CPU FFMPEG DONE: {written} frames written, returncode={ffmpeg_proc.returncode}")
@@ -1751,114 +1460,7 @@ def generate_frames(
 
 
 # ─── Progress Display ──────────────────────────────────────────────
-
-_PHASE_WEIGHTS = [5, 33, 62]
-
-
-class TerminalProgress:
-    def __init__(self, total: int, desc: str = "Generating frames", hide_rate: bool = False, phase_weights=None):
-        self.total = total
-        self.desc = desc
-        self.hide_rate = hide_rate
-        self.phase_weights = phase_weights or _PHASE_WEIGHTS
-        self.start_time = time_module.time()
-        self.last_update_time = self.start_time
-        self.last_current = 0
-        self.window_rate = 0.0
-        self.last_draw = 0
-        self._last_print_time = -999.0
-        self.width = 40
-        self._gpu_stats = None
-        self._is_tty = getattr(sys.stdout, 'isatty', lambda: False)()
-        self._term_width = shutil.get_terminal_size().columns if self._is_tty else 120
-        self._max_line_width = 0
-        self._prev_cur = None
-        self._phase_start = 0
-        self._phase_weight = (phase_weights or _PHASE_WEIGHTS)[0]
-
-    def _time_str(self, t: float) -> str:
-        total_sec = int(round(t))
-        if total_sec >= 3600:
-            return f"{total_sec // 3600}h{total_sec % 3600 // 60}m"
-        elif total_sec >= 60:
-            return f"{total_sec // 60}m{total_sec % 60}s"
-        else:
-            return f"{t:.1f}s"
-
-    def _build_line(self, current: int, elapsed: float, rate: float, eta: float) -> str:
-        frac = current / self.total if self.total > 0 else 0
-        pct = frac * 100
-        total_t = elapsed + eta
-        suffix = f" {pct:.0f}% | {self._time_str(elapsed)}/{self._time_str(total_t)}" if self.hide_rate else f" {pct:.0f}% | {rate:.0f}/s | {self._time_str(elapsed)}/{self._time_str(total_t)}"
-        if self._gpu_stats and self._gpu_stats.get("batch_size"):
-            s = self._gpu_stats
-            mb = s.get('mem_used_mb', 0) / 1024
-            tb = s.get('total_mem_mb', 0) / 1024
-            suffix += f" | {mb:.1f}/{tb:.1f}GB | Batch: {s.get('batch_size', 0)}"
-        prefix = f"{self.desc}: ["
-        fixed_len = len(prefix) + 1 + len(suffix)
-        bar_w = max(2, min(40, self._term_width - fixed_len))
-        filled = int(bar_w * frac)
-        bar = "#" * filled + "-" * (bar_w - filled)
-        line = f"{prefix}{bar}]{suffix}"
-        return line
-
-    def update(self, current: int, _force: bool = False):
-        now = time_module.time()
-        if current < self.total and now - self._last_print_time < 1.0 and not _force:
-            return
-        elapsed = now - self.start_time
-        window_elapsed = now - self.last_update_time
-        if window_elapsed > 0.5 and current > self.last_current:
-            instant = (current - self.last_current) / window_elapsed
-            if self.window_rate <= 0:
-                self.window_rate = instant
-            else:
-                self.window_rate = self.window_rate * 0.5 + instant * 0.5
-            self.last_update_time = now
-            self.last_current = current
-        rate = self.window_rate if self.window_rate > 0 else current / elapsed if elapsed > 0 else 0
-        remaining = self.total - current
-        eta = remaining / rate if rate > 0 else 0
-        line = self._build_line(current, elapsed, rate, eta)
-        if self._is_tty:
-            self._max_line_width = max(self._max_line_width, len(line))
-            print(f"\r{line.ljust(self._max_line_width)}", end="", flush=True)
-        else:
-            print(line, flush=True)
-        self._last_print_time = now
-
-    def set_desc(self, desc: str):
-        self.desc = desc
-
-    def __call__(self, current, total, **kwargs):
-        _desc = kwargs.get("_desc")
-        desc_changed = bool(_desc and _desc != self.desc)
-        phase_transition = self._prev_cur is not None and current < self._prev_cur
-        is_new_phase = phase_transition or desc_changed
-        if desc_changed:
-            self.set_desc(_desc)
-        if is_new_phase:
-            if self._prev_cur is None:
-                self._phase_idx = 0
-            else:
-                self._phase_idx += 1
-            w = self.phase_weights[self._phase_idx] if self._phase_idx < len(self.phase_weights) else 100 - sum(self.phase_weights)
-            self._phase_start = sum(self.phase_weights[:self._phase_idx])
-            self._phase_weight = w
-            self.last_current = self._phase_start
-            self.last_update_time = time_module.time()
-        self._prev_cur = current
-
-        frac = current / total if total > 0 else 0
-        overall_pct = self._phase_start + self._phase_weight * frac
-        out_cur = int(round(overall_pct))
-        self.total = 100
-
-        gpu_stats = kwargs.get("gpu_stats")
-        if gpu_stats is not None:
-            self._gpu_stats = gpu_stats
-        self.update(out_cur, _force=is_new_phase)
+# (handled by track_progress.ProgressTracker)
 
 
 # ─── Batch Helpers ─────────────────────────────────────────────────
@@ -1949,9 +1551,10 @@ class ReplayVideoGenerator:
     ):
         log.info(f"generate_simple_replay: output={output_path}, force_fringe={force_fringe}, fps={fps}, compression={compression}, quality={quality}, use_gpu={use_gpu}")
         log.info(f"  tps={tps}, time={time}, scramble_len={len(scramble) if scramble else 0}, size={size}")
-        log.info(f"  movetimes_type={type(movetimes).__name__}, sol_len_approx={len(expand_solution(solution)) if isinstance(solution, str) else '?'}")
         if tps is not None and time is not None:
             raise ValueError("Provide either tps or time, not both")
+
+        _t_matrix_start = time_module.time()
 
         # Determine puzzle matrix
         if scramble is not None:
@@ -1971,10 +1574,13 @@ class ReplayVideoGenerator:
             height = len(matrix)
             scramble = puzzle_to_scramble(matrix)
 
+        _t_expand_start = time_module.time()
         solution_expanded = expand_solution(solution)
         sol_len = len(solution_expanded)
+        _t_expand_end = time_module.time()
         log.info(f"  matrix source: {'provided scramble' if scramble is not None else 'size' if size is not None else 'guessed from solution'}, {width}x{height}")
         log.info(f"  matrix={width}x{height}, sol_len={sol_len}")
+        log.info(f"  expand_solution took {_t_expand_end - _t_expand_start:.3f}s, matrix resolution took {_t_expand_start - _t_matrix_start:.3f}s")
 
         # Compute TPS and movetimes
         real_tps = None
@@ -1999,10 +1605,11 @@ class ReplayVideoGenerator:
 
         log.info(f"  tps_val={tps_val}, is_movetimes_accurate={is_movetimes_accurate}, custom_move_times={'list' if isinstance(custom_move_times, list) else None}")
 
+        _t_analysis_start = time_module.time()
+
         # Grids analysis
-        cycled_numbers = get_cycles_numbers(matrix, solution_expanded)
         if not force_fringe:
-            grids_data = analyse_grids_initial(matrix, solution_expanded, cycled_numbers)
+            grids_data = analyse_grids_initial(matrix, solution_expanded)
         else:
             grids_data = {
                 "enableGridsStatus": -1,
@@ -2025,25 +1632,29 @@ class ReplayVideoGenerator:
             grid_states = generate_grids_stats(grids_data)
 
         all_fringe_schemes = get_all_fringe_schemes(grid_states)
-        log.info(f"  grids_data: enableGridsStatus={grids_data.get('enableGridsStatus')}, fringe_schemes={len(all_fringe_schemes)}, force_fringe={force_fringe}")
+        _t_analysis_end = time_module.time()
+        log.info(f"  analyse_grids_initial took {_t_analysis_end - _t_analysis_start:.3f}s, enableGridsStatus={grids_data.get('enableGridsStatus')}, fringe_schemes={len(all_fringe_schemes)}, force_fringe={force_fringe}")
+
+        _t_timing_start = time_module.time()
 
         # Calculate timing
         if isinstance(movetimes, list) and len(movetimes) > 0:
-            delays, _fake_unused = calculate_move_timings(solution, tps_val, width, height, speed_factor)
+            delays, _fake_unused = calculate_move_timings(solution, tps_val, width, height, speed_factor, expanded_solution=solution_expanded)
             inv = 1.0 / speed_factor if speed_factor != 1.0 else 1.0
             custom_move_times_sped = [t * inv for t in movetimes]
             original_fake_times = [0] + list(movetimes)
             original_custom_move_times = list(movetimes)
             fake_times = [0] + custom_move_times_sped
         else:
-            delays, fake_times = calculate_move_timings(solution, tps_val, width, height, speed_factor)
+            delays, fake_times = calculate_move_timings(solution, tps_val, width, height, speed_factor, expanded_solution=solution_expanded)
             if speed_factor != 1.0:
-                _, original_fake_times = calculate_move_timings(solution, tps_val, width, height, 1.0)
+                _, original_fake_times = calculate_move_timings(solution, tps_val, width, height, 1.0, expanded_solution=solution_expanded)
             else:
                 original_fake_times = fake_times
             custom_move_times_sped = None
             original_custom_move_times = None
-        log.info(f"  timing: delays_count={len(delays)}, fake_times_range=[{fake_times[0]:g}, {fake_times[-1]:g}]ms")
+        _t_timing_end = time_module.time()
+        log.info(f"  calculate_move_timings took {_t_timing_end - _t_timing_start:.3f}s, delays_count={len(delays)}, fake_times_range=[{fake_times[0]:g}, {fake_times[-1]:g}]ms")
 
         # Score title
         score_title_text = f"{width}x{height} sliding puzzle"
@@ -2051,22 +1662,29 @@ class ReplayVideoGenerator:
         # Progress
         total_frames = sol_len + 1
 
-        pw = [5, 95] if use_gpu else [5, 33, 62]
+        pw = GPU_PHASE_WEIGHTS if use_gpu else CPU_PHASE_WEIGHTS
 
         if show_progress:
             print(f"Puzzle: {width}x{height}, Moves: {sol_len}, TPS: {tps_val:.3f}")
             print(f"Tile size: {pick_tile_size(width, height)}px x quality={quality}, Frames: {total_frames}")
             print(f"Output: {output_path}")
-            prog = TerminalProgress(total_frames, "Render", phase_weights=pw)
-        else:
-            prog = None
 
-        def progress_cb(cur, tot, **kwargs):
-            if prog:
-                prog(cur, tot, **kwargs)
-            if external_progress_cb:
-                external_progress_cb(cur, tot, **kwargs, _phase_weights=pw)
+        prog = None
+        if show_progress or external_progress_cb:
+            prog = ProgressTracker(
+                total=total_frames,
+                desc="Render",
+                phase_weights=pw,
+                external_cb=external_progress_cb,
+                show_terminal=show_progress,
+            )
 
+        # Fire analysis progress BEFORE framing (phase 0 of pw)
+        if prog:
+            prog(1, 1, desc="Analysis")
+
+        _t_prerender_end = time_module.time()
+        log.info(f"  pre-render stages total took {_t_prerender_end - _t_analysis_start:.3f}s (analysis={_t_analysis_end - _t_analysis_start:.3f}s, timing={_t_timing_end - _t_timing_start:.3f}s)")
         log.info(f"  calling generate_frames: fringe_schemes={len(all_fringe_schemes)}, grid_states_keys={len(grid_states)}, delays={len(delays)}, fake_times={len(fake_times)}")
         _orig_cmt = original_custom_move_times
         frames, frame_state_map = generate_frames(
@@ -2083,8 +1701,7 @@ class ReplayVideoGenerator:
             score_title_text=score_title_text,
             custom_move_times=custom_move_times_sped,
             cumulative_data=None,
-            progress_callback=progress_cb if (show_progress or external_progress_cb) else None,
-            overlay_progress_callback=progress_cb if (show_progress or external_progress_cb) else None,
+            progress_callback=prog,
             quality=quality,
             parallel=parallel,
             use_gpu=use_gpu,
@@ -2095,15 +1712,14 @@ class ReplayVideoGenerator:
             gpu_renderer=gpu_renderer,
             speed_factor=speed_factor,
             opts=opts,
+            expanded_solution=solution_expanded,
         )
 
         log.info(f"  generate_frames returned: frames_count={len(frames)}, frame_state_map_len={len(frame_state_map)}")
 
-        if show_progress:
-            prog.total = 100
-            prog.update(100, _force=True)
-            print()
-            elapsed = time_module.time() - (prog.start_time if prog else time_module.time())
+        if prog:
+            prog.finish()
+            elapsed = time_module.time() - prog.start_time
             unique_frames = len(set(frame_state_map))
             total_frames = len(frame_state_map)
             print(f"Done! Video saved to: {output_path} ({unique_frames} unique / {total_frames} total frames, took {elapsed:.1f}s)")
@@ -2153,7 +1769,12 @@ class ReplayVideoGenerator:
                 kval = (sz[0], sz[1], item.get("quality", 1.0), item.get("opts", RenderOptions()))
                 groups.setdefault(kval, []).append(item)
 
-            _batch_prog = TerminalProgress(n, "Batch", hide_rate=True, phase_weights=[100]) if show_progress else None
+            _batch_prog = ProgressTracker(
+                n, "Batch",
+                phase_weights=BATCH_PHASE_WEIGHTS,
+                hide_rate=True,
+                show_terminal=show_progress,
+            ) if show_progress else None
             renderer = None
             prev_key = None
             try:
@@ -2219,7 +1840,12 @@ class ReplayVideoGenerator:
                     fut_to_idx[fut] = idx
 
                 from concurrent.futures import as_completed
-                _batch_prog = TerminalProgress(n, "Batch", hide_rate=True, phase_weights=[100]) if show_progress else None
+                _batch_prog = ProgressTracker(
+                    n, "Batch",
+                    phase_weights=BATCH_PHASE_WEIGHTS,
+                    hide_rate=True,
+                    show_terminal=show_progress,
+                ) if show_progress else None
                 done_set = set()
                 while len(done_set) < len(cpu_items):
                     if cancel_check and cancel_check():

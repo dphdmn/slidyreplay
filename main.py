@@ -662,11 +662,9 @@ class ReplayGUI(tb.Window):
         total = len(items)
         self._item_progress = {}
         for idx in range(total):
-            self._item_progress[idx] = {"phase": 0, "prev_cur": 0,
-                                        "adjusted_cur": 0, "adjusted_tot": 1,
+            self._item_progress[idx] = {"adjusted_cur": 0, "adjusted_tot": 1,
                                         "done": False, "path": None, "error": None,
-                                        "cancelled": False,
-                                        "_last_update_time": 0}
+                                        "cancelled": False}
 
         self._batch_futures = []
         self._executor = ThreadPoolExecutor(max_workers=1)
@@ -774,12 +772,12 @@ class ReplayGUI(tb.Window):
             out_path = _pick_output_filename(output_dir, base_name)
             log.info(f"_process_item[{idx}]: output={out_path}")
 
-            def on_progress(cur, tot, **kwargs):
-                log.info(f"progress[{idx}]: cur={cur} tot={tot} kwargs_keys={list(kwargs.keys())}")
-                if kwargs.get("gpu_stats"):
-                    gs = kwargs["gpu_stats"]
+            def on_progress(adjusted_cur, adjusted_tot, gpu_stats=None, use_gpu=False):
+                log.info(f"progress[{idx}]: adjusted_cur={adjusted_cur} adjusted_tot={adjusted_tot}")
+                if gpu_stats:
+                    gs = gpu_stats
                     log.info(f"progress[{idx}]: gpu_stats: name={gs.get('gpu_name','?')}, mem={gs.get('mem_used_mb',0)}/{gs.get('total_mem_mb',0)}MB, batch={gs.get('batch_size',0)}, batch_idx={gs.get('batch_idx',0)}/{gs.get('num_batches',0)}")
-                self._on_item_progress(idx, cur, tot, **kwargs)
+                self._on_item_progress(idx, adjusted_cur, adjusted_tot, gpu_stats=gpu_stats, use_gpu=use_gpu)
 
             log.info(f"_process_item[{idx}]: calling generate_simple_replay with params={ {k: v if not isinstance(v, list) or len(repr(v)) < 200 else f'<list len={len(v)}>' for k, v in params.items()} }")
             gen = ReplayVideoGenerator(cleanup_frames=False)
@@ -909,35 +907,14 @@ class ReplayGUI(tb.Window):
             log.error(f"_process_batch: FAILED: {e}", exc_info=True)
             raise
 
-    def _on_item_progress(self, idx, raw_cur, raw_tot, **kwargs):
+    def _on_item_progress(self, idx, adjusted_cur, adjusted_tot, gpu_stats=None, use_gpu=False):
         item = self._item_progress[idx]
-        now = time.time()
-        # Phase transition must be detected even when display is throttled
-        phase_transition = raw_cur < item["prev_cur"]
-        if phase_transition:
-            item["phase"] += 1
-            log.info(f"_on_item_progress[{idx}]: phase transition -> {item['phase']} (raw_cur={raw_cur} < prev_cur={item['prev_cur']})")
-        item["prev_cur"] = raw_cur
-        # Throttle display updates to ~1s (skip on phase transitions)
-        if not phase_transition and raw_cur < raw_tot and now - item["_last_update_time"] < 1.0:
-            return
-        item["_last_update_time"] = now
-        _use_gpu = kwargs.pop("_use_gpu", False)
-        if _use_gpu:
+        item["adjusted_cur"] = adjusted_cur
+        item["adjusted_tot"] = adjusted_tot
+        if gpu_stats:
+            item["gpu_stats"] = gpu_stats
+        if use_gpu:
             item["is_gpu"] = True
-        if kwargs.get("gpu_stats"):
-            item["gpu_stats"] = kwargs["gpu_stats"]
-
-        pw = kwargs.pop("_phase_weights", None)
-        if pw is None:
-            from replay_video import _PHASE_WEIGHTS
-            pw = _PHASE_WEIGHTS
-        w = pw[item["phase"]] if item["phase"] < len(pw) else 100 - sum(pw)
-        start_pct = sum(pw[:item["phase"]])
-        frac = raw_cur / raw_tot if raw_tot > 0 else 0
-        overall_pct = start_pct + w * frac
-        item["adjusted_cur"] = int(round(overall_pct))
-        item["adjusted_tot"] = 100
 
     def _cancel(self):
         self.cancel_flag = True

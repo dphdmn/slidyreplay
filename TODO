@@ -4,6 +4,7 @@
 - prerender all tiles possible states
 - do something about layout (make it render faster? on same stage? idk)
 - fix pre render stages computations including grids and replay generator / splits, only loop through puzzle states once
+- fix parse error label in gui when 100x100
 
 - hard major optimization ideas draft:
  changes between frames are small (like one tile changes every frame), but its kinda hard to use?) Decent idea is precomputing the ids of the tiles affected by the moves, and reuse previous frames data for unaffected frames (that's what video codecs do pretty much but at pixel level), no idea how would that interfere with gpu doing it's parallel rendering tho, I have no clue what cuda is doing
