@@ -74,7 +74,7 @@ def run_bench(label: str, filepath: str, extra_args: list, output_path: str, no_
 def parse_puzzle_info(content: str):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, script_dir)
-    from replay_video import parse_replay_url
+    from sliding_puzzles import parse_replay_url
     from replay_generator import parse_scramble_guess, expand_solution, guess_size
     try:
         sol, tps, scramble, movetimes = parse_replay_url(content)

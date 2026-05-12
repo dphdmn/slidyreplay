@@ -28,7 +28,7 @@ from replay_generator import (
     get_repeated_lengths,
 )
 
-from sliding_puzzles import decompress_string_to_array, read_solve_data
+from sliding_puzzles import decompress_string_to_array, read_solve_data, parse_replay_url
 
 from grids_analysis import (
     CT_MAP, _MOVE_DIRS, move_matrix_inplace, find_zero,
@@ -54,37 +54,6 @@ def log_ram(label: str) -> int:
     delta = cur - _baseline_ram
     log.info(f"  RAM [{label}]: {cur // (1024*1024)}MB ({delta // (1024*1024):+d}MB vs baseline)")
     return delta
-
-# ─── Replay URL Parsing ────────────────────────────────────────────
-
-def parse_replay_url(url: str):
-    parsed = decompress_string_to_array(url)
-    if len(parsed) < 10:
-        solution = parsed[0]
-        tps = parsed[1] / 1000.0 if len(parsed) > 1 else None
-        scramble = parsed[2] if len(parsed) > 2 else None
-        movetimes = parsed[3] if len(parsed) > 3 else -1
-    else:
-        solve_data = read_solve_data(parsed[1])
-        solution = solve_data['solutions']
-        tps = solve_data.get('tps', None)
-        if tps == -1 or tps is None:
-            tps = None
-        scramble = None
-        movetimes = solve_data.get('move_times', -1)
-        if isinstance(movetimes, list) and len(movetimes) > 0:
-            movetimes = movetimes[0]
-
-    if isinstance(movetimes, str):
-        movetimes = -1
-
-    if tps is not None:
-        try:
-            tps = float(tps)
-        except (ValueError, TypeError):
-            tps = None
-
-    return solution, tps, scramble, movetimes
 
 from geometry import (PADDING, HEADER_H, STATS_PANEL_WIDTH, INFO_H, TIMER_HEIGHT,
     BG_COLOR, TILE_BG, TILE_TEXT_COLOR, TILE_BORDER_COLOR, NULL_COLOR,

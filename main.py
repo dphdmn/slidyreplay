@@ -11,7 +11,8 @@ from concurrent.futures import ThreadPoolExecutor
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 
-from replay_video import ReplayVideoGenerator, parse_replay_url, CancelError
+from replay_video import ReplayVideoGenerator, CancelError
+from sliding_puzzles import parse_replay_url
 from replay_generator import expand_solution, parse_scramble_guess
 from geometry import RenderOptions
 from debug_log import get_logger, init_logfile

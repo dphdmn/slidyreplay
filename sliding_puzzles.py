@@ -102,3 +102,33 @@ def expand_matrix(matrix: List[List[int]], W: int, H: int) -> List[List[int]]:
                 original_value = mapping_matrix[row_index + num_rows_diff][col_index + num_cols_diff]
             expanded_matrix[i + num_rows_diff][j + num_cols_diff] = original_value
     return expanded_matrix
+
+
+def parse_replay_url(url: str):
+    parsed = decompress_string_to_array(url)
+    if len(parsed) < 10:
+        solution = parsed[0]
+        tps = parsed[1] / 1000.0 if len(parsed) > 1 else None
+        scramble = parsed[2] if len(parsed) > 2 else None
+        movetimes = parsed[3] if len(parsed) > 3 else -1
+    else:
+        solve_data = read_solve_data(parsed[1])
+        solution = solve_data['solutions']
+        tps = solve_data.get('tps', None)
+        if tps == -1 or tps is None:
+            tps = None
+        scramble = None
+        movetimes = solve_data.get('move_times', -1)
+        if isinstance(movetimes, list) and len(movetimes) > 0:
+            movetimes = movetimes[0]
+
+    if isinstance(movetimes, str):
+        movetimes = -1
+
+    if tps is not None:
+        try:
+            tps = float(tps)
+        except (ValueError, TypeError):
+            tps = None
+
+    return solution, tps, scramble, movetimes
