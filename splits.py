@@ -275,8 +275,3 @@ def format_time(milliseconds: float, cut: bool = False) -> str:
             return f"{minutes}:{remaining_seconds:02d}.{milliseconds_part:03d}"
         else:
             return f"{remaining_seconds}.{milliseconds_part:03d}"
-
-
-
-
-
