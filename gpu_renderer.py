@@ -342,16 +342,16 @@ class GPURenderer:
                 remaining = n - batch_start
 
                 # ── Memory‑aware batching ──
-                reserved_mem = torch.cuda.memory_reserved(dev)
+                allocated_mem = torch.cuda.memory_allocated(dev)
                 free_mem, _ = torch.cuda.mem_get_info(dev)
 
                 # 256 MB safety margin to avoid edge‑cases
                 reserve_margin = 128 * 1024 * 1024
 
-                # Soft target headroom – if reserved_mem exceeds the target we ignore it
+                # Soft target headroom – if allocated_mem exceeds the target we ignore it
                 # and rely solely on physical headroom.
-                target_headroom = target_used_mem - reserved_mem - reserve_margin
-                physical_headroom = int(free_mem * 0.90)
+                target_headroom = target_used_mem - allocated_mem - reserve_margin
+                physical_headroom = int((total_mem - allocated_mem) * 0.90)
 
                 if target_headroom > 0:
                     usable = min(target_headroom, physical_headroom)
@@ -379,7 +379,7 @@ class GPURenderer:
                 self._stats["batch_mem_mb"] = (ch * cw * 3 * 4 * batch_size) // (1024 * 1024)
 
                 log.info(f"  BATCH[{self._batch_counter}]: start={batch_start}, sz={batch_size}, "
-                         f"free={free_mem//(1024*1024)}MB, reserved={reserved_mem//(1024*1024)}MB, "
+                         f"free={free_mem//(1024*1024)}MB, allocated={allocated_mem//(1024*1024)}MB, "
                          f"usable={usable//(1024*1024)}MB, ema={per_frame_ema//(1024*1024)}MB, "
                          f"batch_mem={self._stats['batch_mem_mb']}MB, t={_time_module.time()-_batch_t0:.2f}s, ram={_ram_delta_mb()}MB")
 
@@ -464,6 +464,7 @@ class GPURenderer:
                     sec = torch.zeros(batch_n, h, w, 3, device=dev, dtype=torch.float32)
                     has_sec = torch.zeros(batch_n, h, w, 1, 1, 1, device=dev, dtype=torch.float32)
 
+                reserved_before_render = torch.cuda.memory_reserved(dev)
                 torch.cuda.reset_peak_memory_stats(dev)
 
                 # ── Canvas ──
@@ -591,6 +592,19 @@ class GPURenderer:
                 del canvas, mats
                 if batch_has_colors:
                     del cols, sec, has_sec
+                if batch_n > 1:
+                    peak_reserved = torch.cuda.max_memory_reserved(dev)
+                    marginal = peak_reserved - reserved_before_render
+                    if marginal > 0:
+                        actual_ppf = marginal / batch_n
+                        old_ema = per_frame_ema
+                        per_frame_ema = max(per_frame_ema, actual_ppf * 1.15)
+                        self._stats["per_frame_ema_mb"] = per_frame_ema / (1024 * 1024)
+                        log.info(f"  POST-BATCH EMA: old={old_ema/(1024*1024):.0f}MB, "
+                                 f"peak={peak_reserved//(1024*1024)}MB, "
+                                 f"marginal={marginal//(1024*1024)}MB, "
+                                 f"actual_ppf={actual_ppf/(1024*1024):.0f}MB, "
+                                 f"new_ema={per_frame_ema/(1024*1024):.0f}MB")
                 log.info(f"  BATCH[{self._batch_counter}] DONE: "
                          f"t={_time_module.time()-_batch_t0:.2f}s, "
                          f"peak={torch.cuda.max_memory_reserved(dev)//(1024*1024)}MB, "
