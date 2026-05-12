@@ -1,4 +1,6 @@
 - concact bulk render results
+- update bot api to use latest version features
+- fix tps normalization issues on bot side
 
 - hard major optimization ideas draft:
  changes between frames are small (like one tile changes every frame), but its kinda hard to use?) Decent idea is precomputing the ids of the tiles affected by the moves, and reuse previous frames data for unaffected frames (that's what video codecs do pretty much but at pixel level), no idea how would that interfere with gpu doing it's parallel rendering tho, I have no clue what cuda is doing
