@@ -1189,7 +1189,7 @@ def _close_pipe(proc: subprocess.Popen) -> None:
 
 
 def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18):
-    """Spawn ffmpeg with libx264 reading rawvideo from stdin."""
+    """Spawn ffmpeg with libx264 reading rawvideo from stdin (CPU path)."""
     cmd = [
         'ffmpeg', '-y',
         '-f', 'rawvideo',
@@ -1208,6 +1208,30 @@ def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60
         output_path,
     ]
     log.info(f"_create_ffmpeg_pipe (libx264): cmd={' '.join(cmd)}")
+    return subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+
+def _create_ffmpeg_pipe_gpu(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18):
+    """Spawn ffmpeg with hevc_nvenc reading rawvideo from stdin (GPU path)."""
+    cq = compression + 11
+    cmd = [
+        'ffmpeg', '-y',
+        '-hide_banner',
+        '-f', 'rawvideo',
+        '-pix_fmt', 'rgb24',
+        '-s', f'{width}x{height}',
+        '-r', str(fps),
+        '-i', '-',
+        '-c:v', 'hevc_nvenc',
+        '-preset', 'p7',
+        '-cq', str(cq),
+        '-profile:v', 'main',
+        '-pix_fmt', 'yuv420p',
+        '-fps_mode', 'cfr',
+        '-movflags', '+faststart',
+        output_path,
+    ]
+    log.info(f"_create_ffmpeg_pipe_gpu (hevc_nvenc): cmd={' '.join(cmd)}")
     return subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 
@@ -1567,9 +1591,9 @@ def generate_frames(
             state_to_count[state_idx] = state_to_count.get(state_idx, 0) + 1
         log.info(f"  state_to_count: {len(state_to_count)} unique states, counts={list(state_to_count.values())[:20]}...")
 
-        # Open ffmpeg pipe — always use libx264 for consistent CRF encoding
-        log.info(f"  OPENING FFMPEG PIPE: output={output_path}, canvas={canvas_w}x{canvas_h}, fps={fps}, compression={compression}, encoder=libx264")
-        enc_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h, fps=fps, compression=compression)
+        # Open ffmpeg pipe with selected encoder
+        log.info(f"  OPENING FFMPEG PIPE: output={output_path}, canvas={canvas_w}x{canvas_h}, fps={fps}, compression={compression}, encoder=hevc_nvenc")
+        enc_proc = _create_ffmpeg_pipe_gpu(output_path, canvas_w, canvas_h, fps=fps, compression=compression)
         unique_params = [frame_params[i] for i in states_needed]
         _t_stage3 = time_module.time()
         log.info("====== STAGE 3: GPU RENDER ======")
