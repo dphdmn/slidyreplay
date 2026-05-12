@@ -1251,6 +1251,18 @@ def generate_frames(
         static_layout = None
 
     log.info(f"====== STAGE 1 DONE: {time_module.time() - _t_stage1:.1f}s ======")
+
+    # Pre-compute canvas dimensions for CPU path (need before rendering to open pipe)
+    canvas_w_cpu, canvas_h_cpu = compute_canvas_dimensions(w, h, tile_size, grid_only=opts.grid_only)
+    if not opts.grid_only:
+        puzzle_w_tmp = w * tile_size
+        panel_w_tmp = canvas_w_cpu - (PADDING + puzzle_w_tmp + PADDING) - PADDING
+        first_stats = frame_params[states_needed[0]]["stats_data"]
+        grid_stages_tmp = first_stats.get("grid_stages", [])
+        stats_h_tmp = _compute_stats_full_height(panel_w_tmp, has_grid_stages=len(grid_stages_tmp) > 1)
+        canvas_h_cpu = max(canvas_h_cpu, HEADER_H + PADDING + stats_h_tmp + PADDING)
+        canvas_h_cpu = round_canvas_height(canvas_h_cpu)
+
     # ── GPU path: render unique states, pipe via frame mapping ──
     if use_gpu and len(frame_params) > 1:
         puzzle_w = w * tile_size
@@ -1318,8 +1330,8 @@ def generate_frames(
 
         return [], frame_state
 
-    # ── CPU path: render only states_needed, pipe via frame mapping ──
-    log.info(f"  CPU PATH: {len(states_needed)} unique states to render")
+    # ── CPU path: render unique states, pipe via frame mapping ──
+    log.info(f"  CPU PATH: {len(states_needed)} unique states to render, canvas={canvas_w_cpu}x{canvas_h_cpu}")
     log_ram("CPU: before font load")
     _font_start = time_module.time()
     get_font(font_size)
@@ -1380,14 +1392,12 @@ def generate_frames(
             if progress_callback and (_render_prog_count % _render_prog_step == 0 or _render_prog_count == num_needed):
                 progress_callback(_render_prog_count, num_needed, desc="Render" if _render_prog_count == _render_prog_step else None)
 
-    first_rendered = next(img for img in state_images if img is not None)
-    canvas_w, canvas_h = first_rendered.size
-    log.info(f"  CPU RENDER DONE: canvas={canvas_w}x{canvas_h}")
+    log.info(f"  CPU RENDER DONE: canvas={canvas_w_cpu}x{canvas_h_cpu}")
     log_ram("CPU: after render (all frames in mem)")
 
     total_video_frames = len(frame_state)
     log.info(f"  CPU FFMPEG PIPE: output={output_path}, total_frames={total_video_frames}, compression={compression}")
-    ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h, fps=fps, compression=compression)
+    ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w_cpu, canvas_h_cpu, fps=fps, compression=compression)
     written = 0
     _encode_prog_step = max(1, total_video_frames // 100)
     _encode_prog_count = 0
