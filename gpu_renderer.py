@@ -393,17 +393,31 @@ class GPURenderer:
                     log.critical(msg)
                     raise RuntimeError(msg)
 
-                # GPU out of memory — raise critical error
+                # GPU out of memory guard — retry with cache flush before giving up
                 if batch_n == 1 and per_frame_ema > 0 and usable < per_frame_ema:
-                    msg = (
-                        f"GPU out of memory: cannot fit a single frame in available VRAM "
-                        f"(needs ~{per_frame_ema // (1024*1024)}MB, "
-                        f"only ~{usable // (1024*1024)}MB available). "
-                        f"Try disabling GPU acceleration, reducing quality, "
-                        f"or using a smaller puzzle."
-                    )
-                    log.critical(msg)
-                    raise RuntimeError(msg)
+                    log.warning(f"  VRAM low: free={free_mem//(1024*1024)}MB, "
+                                f"usable={usable//(1024*1024)}MB < "
+                                f"ema={per_frame_ema//(1024*1024)}MB, "
+                                f"flushing cache and retrying...")
+                    torch.cuda.empty_cache()
+                    r2 = torch.cuda.memory_reserved(dev)
+                    f2, _ = torch.cuda.mem_get_info(dev)
+                    th2 = target_used_mem - r2 - reserve_margin
+                    ph2 = int(f2 * 0.90)
+                    usable = min(th2, ph2) if th2 > 0 else ph2
+                    if usable < 0:
+                        usable = 0
+                    if usable < per_frame_ema:
+                        msg = (
+                            f"GPU out of memory: cannot fit a single frame in available VRAM "
+                            f"(needs ~{per_frame_ema // (1024*1024)}MB, "
+                            f"only ~{usable // (1024*1024)}MB available). "
+                            f"Try disabling GPU acceleration, reducing quality, "
+                            f"or using a smaller puzzle."
+                        )
+                        log.critical(msg)
+                        raise RuntimeError(msg)
+                    log.info(f"  Cache flush recovered {usable//(1024*1024)}MB usable, continuing")
 
                 self._stats["free_mem_mb"] = free_mem // (1024 * 1024)
                 self._stats["mem_used_mb"] = self._stats["total_mem_mb"] - self._stats["free_mem_mb"]

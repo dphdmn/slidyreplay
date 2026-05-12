@@ -69,20 +69,22 @@ The GUI shows the GPU name when available, or "Not available — install CUDA" w
 
 ### Benchmarks (NVIDIA GeForce GTX 1660 SUPER)
 
-**Settings:** quality=1.0, 60 FPS.
+**Settings:** quality=1.0, 60 FPS. "Unique" = number of distinct puzzle states rendered (video may duplicate frames via frame mapping).
 
-| Puzzle | Moves | Unique | CPU    | GPU    | Speedup |
-| ------ | ----- | ------ | ------ | ------ | ------- |
-| 4×4    | 26    |        | 1.1s   | 0.6s   | 1.8×    |
-| 5×5    | 98    |        | 2.0s   | 1.6s   | 1.3×    |
-| 6×6    | 213   |        | 3.8s   | 2.9s   | 1.3×    |
-| 7×7    | 425   |        | 7.7s   | 6.0s   | 1.3×    |
-| 8×8    | 707   |        | 14.0s  | 11.1s  | 1.3×    |
-| 9×9    | 1251  |        | 26.7s  | 18.1s  | 1.5×    |
-| 10×10  | 1569  |        | 27.4s  | 22.3s  | 1.2×    |
-| 12×12  | 2883  |        | —      | 36.4s  | —       |
-| 16×16  | 7132  |        | —      | 112.6s | —       |
-| 20×20  | 14203 |        | —      | 217.0s | —       |
+| Puzzle | Moves | Unique | Lay CPU | Lay GPU | NoL CPU | NoL GPU |
+| ------ | ----- | ------ | ------- | ------- | ------- | ------- |
+| 4×4    | 26    | 25     | 1.2s    | 0.7s    | 0.8s    | 0.3s    |
+| 5×5    | 98    | 95     | 2.3s    | 1.4s    | 1.1s    | 0.6s    |
+| 6×6    | 213   | 208    | 6.0s    | 3.1s    | 2.1s    | 1.2s    |
+| 7×7    | 425   | 401    | 9.5s    | 6.6s    | 4.2s    | 2.6s    |
+| 8×8    | 707   | 652    | 16.5s   | 11.2s   | 8.8s    | 5.7s    |
+| 9×9    | 1251  | 1079   | 30.4s   | 20.2s   | 15.8s   | 8.7s    |
+| 10×10  | 1569  | 1362   | 31.3s   | 22.8s   | 15.6s   | 11.7s   |
+| 12×12  | 2883  | 2470   | —       | 52.7s   | —       | 20.8s   |
+| 16×16  | 7132  | 5692   | —       | 158.8s  | —       | 80.5s   |
+| 20×20  | 14203 | 11177  | —       | 330.1s  | —       | 175.4s  |
+
+Run your own benchmarks with `python benchmark.py`.
 
 
 ### Installing GPU support
