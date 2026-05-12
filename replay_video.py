@@ -1137,6 +1137,9 @@ def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info):
     return result
 
 
+import functools
+
+
 def _close_pipe(proc: subprocess.Popen) -> None:
     try:
         proc.stdin.close()
@@ -1150,6 +1153,18 @@ def _close_pipe(proc: subprocess.Popen) -> None:
         except Exception:
             pass
         proc.wait()
+
+
+@functools.lru_cache(maxsize=1)
+def _get_best_encoder() -> str:
+    """Return 'hevc_nvenc' if available, else 'libx264'."""
+    try:
+        r = subprocess.run(['ffmpeg', '-encoders'], capture_output=True, text=True, timeout=5)
+        if 'hevc_nvenc' in r.stdout:
+            return 'hevc_nvenc'
+    except Exception:
+        pass
+    return 'libx264'
 
 
 def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18):
@@ -1176,7 +1191,11 @@ def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60
 
 
 def _create_ffmpeg_pipe_gpu(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18):
-    """Spawn ffmpeg with hevc_nvenc reading rawvideo from stdin (GPU path)."""
+    """Spawn ffmpeg with hevc_nvenc reading rawvideo from stdin (GPU path).
+    Falls back to libx264 if hevc_nvenc is not available."""
+    if _get_best_encoder() == 'libx264':
+        log.warning("hevc_nvenc not available, falling back to libx264 software encoder")
+        return _create_ffmpeg_pipe(output_path, width, height, fps, compression)
     cq = compression + 11
     cmd = [
         'ffmpeg', '-y',
