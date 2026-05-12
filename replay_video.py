@@ -248,6 +248,28 @@ def move_matrix(matrix, move, zero_pos, w, h):
     return updated
 
 
+_MOVE_DIRS = {
+    'R': (0, -1), 'L': (0, 1),
+    'U': (1, 0), 'D': (-1, 0),
+}
+
+
+def move_matrix_inplace(mc_flat, move, zp_idx, w):
+    dr, dc = _MOVE_DIRS[move]
+    nr_idx = zp_idx + dr * w + dc
+    mc_flat[zp_idx], mc_flat[nr_idx] = mc_flat[nr_idx], mc_flat[zp_idx]
+
+
+def _update_md_flat(md, mc_flat, move, zp_idx, w, h):
+    dr, dc = _MOVE_DIRS[move]
+    nr_idx = zp_idx + dr * w + dc
+    moved_val = mc_flat[zp_idx]
+    sr, sc = (moved_val - 1) // w, (moved_val - 1) % w
+    old_md = abs(sr - nr_idx // w) + abs(sc - nr_idx % w)
+    new_md = abs(sr - zp_idx // w) + abs(sc - zp_idx % w)
+    return md - old_md + new_md
+
+
 def number_is_solved(num, row, col, w):
     if num == 0:
         return False
@@ -816,6 +838,9 @@ def calculate_move_timings(solution: str, tps: float, width: int, height: int, s
 
 def _render_one_frame(params: dict) -> Image.Image:
     params.pop("colors", None)
+    params.pop("colors_main", None)
+    params.pop("colors_sec", None)
+    params.pop("colors_sec_mask", None)
     params.pop("timer_img", None)
     params.pop("stats_img", None)
     return render_frame(**params)
@@ -1412,142 +1437,184 @@ def generate_frames(
 
     # ── Build tile color cache for every grid state lookup may need ──
     _tile_color_cache = {}
+    _tile_bg_np = np.array(TILE_BG, dtype=np.float32)
     for key in _sorted_grid_keys:
         if key == sol_len + 1:
             continue
         cache_state = grid_states[key]
         cache_key = id(cache_state)
         if cache_key not in _tile_color_cache:
-            color_matrix = []
+            main_list = []
+            sec_list = []
+            has_sec_list = []
             for num in range(1, h * w + 1):
                 main_bg, sec_bg = get_tile_colors(num, cache_state, all_fringe_schemes, w)
-                color_matrix.append((main_bg or TILE_BG, sec_bg))
-            _tile_color_cache[cache_key] = color_matrix
+                main_list.append(main_bg or TILE_BG)
+                sec_list.append(sec_bg if sec_bg is not None else (0, 0, 0))
+                has_sec_list.append(sec_bg is not None)
+            _tile_color_cache[cache_key] = {
+                "main": np.array(main_list, dtype=np.float32),
+                "sec": np.array(sec_list, dtype=np.float32),
+                "has_sec": np.array(has_sec_list, dtype=np.float32),
+            }
 
     # ── Stage 2: precompute data only for states that will be rendered ──
+    TILE_BG_NP = np.array(TILE_BG, dtype=np.float32)
+
+    # Convert matrix to flat numpy array for O(1) moves
+    mc_flat = np.array([v for row in mc for v in row], dtype=np.int32)
+    zp_idx = zp[0] * w + zp[1]
+
     frame_params = [None] * (sol_len + 1)
+    num_needed = len(states_needed)
+    _t_last = _t_stage1
+
+    # Helper to tile colors for a needed state via vectorized numpy
+    def _build_tile_colors_np(mc_flat, state):
+        cached = _tile_color_cache.get(id(state))
+        if cached is None:
+            cached = _tile_color_cache.get(id(grid_states[0]))
+        nonzero = mc_flat != 0
+        idx = mc_flat[nonzero] - 1
+        main_arr = np.full((h * w, 3), _tile_bg_np, dtype=np.float32)
+        sec_arr = np.zeros((h * w, 3), dtype=np.float32)
+        has_sec_arr = np.zeros(h * w, dtype=bool)
+        if np.any(nonzero):
+            main_arr[nonzero] = cached["main"][idx]
+            sec_arr[nonzero] = cached["sec"][idx]
+            has_sec_arr[nonzero] = cached["has_sec"][idx]
+        return main_arr, sec_arr, has_sec_arr
+
+    # Helper to build stats_data for a needed state
+    def _build_stats_data(frame_idx, cur_time_ms, current_md, current_moves):
+        moved_md = all_md - current_md
+        cur_tps_val = current_moves * 1000 / cur_time_ms if cur_time_ms > 0 else 0
+        cur_mmd = "High" if moved_md <= 0 else (current_moves / moved_md)
+        all_mmd = sol_len / all_md if all_md > 0 else 0
+        mmd_display = cur_mmd if isinstance(cur_mmd, str) else f"{cur_mmd:.3f}"
+        if opts.grid_only:
+            return None, ""
+        if cumulative_data:
+            base_time = cur_time_ms
+            base_moves = current_moves
+            if cumulative_data["time"] > 0:
+                cur_time_display = format_time_str(round(base_time + cumulative_data["time"]))
+                tps_display = ((cumulative_data["moves"] + base_moves) * 1000 / (base_time + cumulative_data["time"]))
+                cur_tps_display = f"{tps_display:.3f}"
+            else:
+                cur_time_display = format_time_str(round(base_time))
+                cur_tps_display = f"{cur_tps_val:.3f}"
+            moves_display = str(base_moves + cumulative_data["moves"])
+        else:
+            cur_time_display = format_time_str(round(cur_time_ms))
+            cur_tps_display = f"{cur_tps_val:.3f}".replace("inf", "Inf.")
+            moves_display = str(current_moves)
+        timer_text = f"{cur_time_display} ({moves_display} / {cur_tps_display})"
+        if isinstance(cur_mmd, str):
+            predicted_moves = cur_mmd
+        else:
+            predicted_moves = f"{round(cur_mmd * all_md)}"
+        sd = {
+            "time_all": format_time_str(round(total_time_ms)),
+            "moves_all": str(sol_len),
+            "md_all": str(all_md),
+            "md_cur": str(moved_md),
+            "mmd_all": f"{all_mmd:.3f}",
+            "mmd_cur": mmd_display,
+            "tps_all": f"{total_tps:.3f}",
+            "predicted_moves": predicted_moves,
+            "cubic_estimate": None,
+            "speed_playback": f"{speed_factor:.2f}×" if speed_factor != 1.0 else "1.00×",
+        }
+        move_idx = frame_idx - 1 if frame_idx > 0 else 0
+        cur_stage_idx = max(0, sum(1 for s in filtered_stages if s <= move_idx) - 1)
+        sd["grid_stages"] = grid_stages_list
+        sd["grid_current"] = cur_stage_idx
+        if w * h > 99:
+            from replay_generator import get_cubic_estimate
+            ce = get_cubic_estimate(round(total_time_ms), w, h)
+            sd["cubic_estimate"] = format_time_str(ce)
+        return sd, timer_text
+
+    # Process state 0
+    state0 = grid_states[0]
+    main0, sec0, has_sec0 = _build_tile_colors_np(mc_flat, state0)
+    sd0, tt0 = _build_stats_data(0, 0, all_md, 0)
+    frame_params[0] = dict(
+        matrix=mc_flat.reshape(h, w).copy(),
+        grid_state=state0,
+        all_fringe_schemes=all_fringe_schemes,
+        tile_size=tile_size,
+        font_size=font_size,
+        stats_data=sd0,
+        score_title_text=score_title_text,
+        timer_text=tt0,
+        is_movetimes_accurate=is_movetimes_accurate,
+        total_moves=sol_len,
+        total_time_ms=round(total_time_ms),
+        total_tps=total_tps,
+        colors_main=main0,
+        colors_sec=sec0,
+        colors_sec_mask=has_sec0,
+        opts=opts,
+    )
+
+    # Walk all states sequentially with O(1) in-place moves, build frame_params only for needed states
+    _prog_step = max(1, num_needed // 100)
+    _prog_count = 0 if states_needed[0] == 0 else 1  # state 0 already processed separately
     for frame_idx in range(sol_len + 1):
         if frame_idx in states_needed_set:
-            mc_snapshot = [row[:] for row in mc]
-            state = _fast_grid_state(grid_states, frame_idx - 1) if frame_idx > 0 else grid_states[0]
-            current_moves = frame_idx
-
-            _t_tc_start = time_module.time()
-            cached_colors = _tile_color_cache.get(id(state))
-            if cached_colors is None:
-                cached_colors = _tile_color_cache.get(id(grid_states[0]))
-            tile_colors = []
-            for row_idx in range(h):
-                row_colors = []
-                for col_idx in range(w):
-                    num = mc[row_idx][col_idx]
-                    if num == 0:
-                        row_colors.append((TILE_BG, None))
-                    else:
-                        row_colors.append(cached_colors[num - 1])
-                tile_colors.append(row_colors)
-            if frame_idx % 500 == 0 and frame_idx > 0:
-                log.info(f"    state {frame_idx}: tile_colors took {time_module.time() - _t_tc_start:.3f}s")
-
             if frame_idx == 0:
+                state = state0
                 cur_time_ms = 0
-                cur_md = all_md
-                moved_md = 0
-                cur_tps_val = 0.0
+                main_c, sec_c, has_sec_c = main0, sec0, has_sec0
+                sd, tt = sd0, tt0
             else:
+                state = _fast_grid_state(grid_states, frame_idx - 1)
                 _use_orig_ct = original_custom_move_times if original_custom_move_times else custom_move_times
                 if _use_orig_ct and len(_use_orig_ct) > frame_idx - 1:
                     cur_time_ms = _use_orig_ct[frame_idx - 1]
                 else:
                     _ft = original_fake_times if original_fake_times else fake_times
                     cur_time_ms = _ft[frame_idx - 1] if frame_idx - 1 < len(_ft) else 0
-                cur_md = current_md
-                moved_md = all_md - cur_md
-                cur_tps_val = current_moves * 1000 / cur_time_ms if cur_time_ms > 0 else 0
-
-            cur_mmd = "High" if moved_md <= 0 else (current_moves / moved_md)
-            all_mmd = sol_len / all_md if all_md > 0 else 0
-            mmd_display = cur_mmd if isinstance(cur_mmd, str) else f"{cur_mmd:.3f}"
-
-            if opts.grid_only:
-                timer_text = ""
-                stats_data = None
-            else:
-                if cumulative_data:
-                    base_time = cur_time_ms
-                    base_moves = current_moves
-                    if cumulative_data["time"] > 0:
-                        cur_time_display = format_time_str(round(base_time + cumulative_data["time"]))
-                        tps_display = ((cumulative_data["moves"] + base_moves) * 1000 / (base_time + cumulative_data["time"]))
-                        cur_tps_display = f"{tps_display:.3f}"
-                    else:
-                        cur_time_display = format_time_str(round(base_time))
-                        cur_tps_display = f"{cur_tps_val:.3f}"
-                    moves_display = str(base_moves + cumulative_data["moves"])
-                else:
-                    cur_time_display = format_time_str(round(cur_time_ms))
-                    cur_tps_display = f"{cur_tps_val:.3f}".replace("inf", "Inf.")
-                    moves_display = str(current_moves)
-
-                timer_text = f"{cur_time_display} ({moves_display} / {cur_tps_display})"
-
-                if isinstance(cur_mmd, str):
-                    predicted_moves = cur_mmd
-                else:
-                    predicted_moves = f"{round(cur_mmd * all_md)}"
-
-                stats_data = {
-                    "time_all": format_time_str(round(total_time_ms)),
-                    "moves_all": str(sol_len),
-                    "md_all": str(all_md),
-                    "md_cur": str(moved_md),
-                    "mmd_all": f"{all_mmd:.3f}",
-                    "mmd_cur": mmd_display,
-                    "tps_all": f"{total_tps:.3f}",
-                    "predicted_moves": predicted_moves,
-                    "cubic_estimate": None,
-                    "speed_playback": f"{speed_factor:.2f}×" if speed_factor != 1.0 else "1.00×",
-                }
-
-                move_idx = frame_idx - 1 if frame_idx > 0 else 0
-                cur_stage_idx = max(0, sum(1 for s in filtered_stages if s <= move_idx) - 1)
-                stats_data["grid_stages"] = grid_stages_list
-                stats_data["grid_current"] = cur_stage_idx
-
-                if w * h > 99:
-                    from replay_generator import get_cubic_estimate
-                    ce = get_cubic_estimate(round(total_time_ms), w, h)
-                    stats_data["cubic_estimate"] = format_time_str(ce)
+                main_c, sec_c, has_sec_c = _build_tile_colors_np(mc_flat, state)
+                sd, tt = _build_stats_data(frame_idx, cur_time_ms, current_md, frame_idx)
 
             frame_params[frame_idx] = dict(
-                matrix=mc_snapshot,
+                matrix=mc_flat.reshape(h, w).copy(),
                 grid_state=state,
                 all_fringe_schemes=all_fringe_schemes,
                 tile_size=tile_size,
                 font_size=font_size,
-                stats_data=stats_data,
+                stats_data=sd,
                 score_title_text=score_title_text,
-                timer_text=timer_text,
+                timer_text=tt,
                 is_movetimes_accurate=is_movetimes_accurate,
                 total_moves=sol_len,
                 total_time_ms=round(total_time_ms),
                 total_tps=total_tps,
-                colors=tile_colors,
+                colors_main=main_c,
+                colors_sec=sec_c,
+                colors_sec_mask=has_sec_c,
                 opts=opts,
             )
 
+            _prog_count += 1
+            if progress_callback and (_prog_count % _prog_step == 0 or _prog_count == num_needed):
+                progress_callback(_prog_count, num_needed, _desc="Precompute" if _prog_count == _prog_step else None)
+
+            if _prog_count % 1000 == 0:
+                _now = time_module.time()
+                log.info(f"  precompute state {_prog_count}/{num_needed}: {_now - _t_stage1:.1f}s total")
+
         if frame_idx < sol_len:
             move = expanded[frame_idx]
-            dr, dc = {'R': (0, -1), 'L': (0, 1), 'U': (1, 0), 'D': (-1, 0)}[move]
-            new_zp = (zp[0] + dr, zp[1] + dc)
-            mc = move_matrix(mc, move, zp, w, h)
-            current_md = _update_manhattan_distance(current_md, mc, move, zp, w, h)
-            zp = new_zp
-            if frame_idx % 1000 == 0 and frame_idx > 0:
-                log.info(f"  mutation for move {frame_idx // 1000}k: {time_module.time() - _t_stage1:.3f}s total so far")
+            move_matrix_inplace(mc_flat, move, zp_idx, w)
+            current_md = _update_md_flat(current_md, mc_flat, move, zp_idx, w, h)
+            zp_idx = zp_idx + _MOVE_DIRS[move][0] * w + _MOVE_DIRS[move][1]
 
     _t_fp = time_module.time()
-    log.info(f"  frame_params loop: {_t_fp - _t_stage1:.3f}s total, {len(states_needed)} states built, {sol_len + 1} iterations")
+    log.info(f"  frame_params loop: {_t_fp - _t_stage1:.3f}s total, {num_needed} states built")
 
     log.info(f"  render decision: use_gpu={use_gpu}, total_video_frames={len(frame_state)}, unique_states={len(states_needed)} ({len(states_needed)*100//len(frame_state) if frame_state else 0}%%)")
 
@@ -1606,11 +1673,20 @@ def generate_frames(
             for _ in range(count):
                 enc_proc.stdin.write(data)
 
+        _gpu_render_step = max(1, len(unique_params) // 100)
+        _gpu_render_count = 0
+
+        def _gpu_progress_cb(cur, tot, **kw):
+            nonlocal _gpu_render_count
+            _gpu_render_count += 1
+            if progress_callback and (_gpu_render_count % _gpu_render_step == 0 or cur == tot):
+                progress_callback(cur, tot, _use_gpu=True, _desc="Render" if _gpu_render_count == _gpu_render_step else None, **kw)
+
         try:
             try:
                 gpu.render_frames(
                     unique_params,
-                    progress_callback=lambda cur, tot, **kw: progress_callback(cur, tot, _use_gpu=True, **kw) if progress_callback else None,
+                    progress_callback=_gpu_progress_cb,
                     cancel_check=cancel_check,
                     frame_handler=handler,
                     overlay_render_data=extra_overlay_args,
@@ -1647,11 +1723,11 @@ def generate_frames(
     num_needed = len(states_needed)
     log_ram("CPU: before render")
 
-    RENDER_W = 50
-
+    _render_prog_step = max(1, num_needed // 100)
     if parallel and num_needed > 1:
         workers = min(os.cpu_count() or 4, num_needed)
         done = 0
+        _render_prog_count = 0
         pool = shared_pool if shared_pool is not None else ProcessPoolExecutor(max_workers=workers)
         try:
             batch_size = _calc_render_batch_size(num_needed, workers)
@@ -1673,21 +1749,22 @@ def generate_frames(
                     for idx, img in zip(batch_indices, batch_results):
                         state_images[idx] = img
                         done += 1
-                        if progress_callback:
-                            cur = done * RENDER_W // num_needed
-                            progress_callback(cur, 100, _desc="Render" if done == 1 else None)
+                        _render_prog_count += 1
+                        if progress_callback and (_render_prog_count % _render_prog_step == 0 or done == num_needed):
+                            progress_callback(done, num_needed, _desc="Render" if _render_prog_count == _render_prog_step else None)
                     remaining.remove(fut)
         finally:
             if shared_pool is None:
                 pool.shutdown()
     else:
+        _render_prog_count = 0
         for seq_idx, i in enumerate(states_needed):
             if cancel_check and cancel_check():
                 raise CancelError()
             state_images[i] = _render_one_frame(frame_params[i])
-            if progress_callback:
-                cur = (seq_idx + 1) * RENDER_W // num_needed
-                progress_callback(cur, 100, _desc="Render" if seq_idx == 0 else None)
+            _render_prog_count += 1
+            if progress_callback and (_render_prog_count % _render_prog_step == 0 or _render_prog_count == num_needed):
+                progress_callback(_render_prog_count, num_needed, _desc="Render" if _render_prog_count == _render_prog_step else None)
 
     first_rendered = next(img for img in state_images if img is not None)
     canvas_w, canvas_h = first_rendered.size
@@ -1698,13 +1775,15 @@ def generate_frames(
     log.info(f"  CPU FFMPEG PIPE: output={output_path}, total_frames={total_video_frames}, compression={compression}")
     ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w, canvas_h, fps=fps, compression=compression)
     written = 0
+    _encode_prog_step = max(1, total_video_frames // 100)
+    _encode_prog_count = 0
     try:
         for idx, state_idx in enumerate(frame_state):
             ffmpeg_proc.stdin.write(np.array(state_images[state_idx]).tobytes())
             written += 1
-            if progress_callback:
-                cur = RENDER_W + written * (100 - RENDER_W) // total_video_frames
-                progress_callback(cur, 100, _desc="Encode" if written == 1 else None)
+            _encode_prog_count += 1
+            if progress_callback and (_encode_prog_count % _encode_prog_step == 0 or written == total_video_frames):
+                progress_callback(written, total_video_frames, _desc="Encode" if _encode_prog_count == _encode_prog_step else None)
     finally:
         _close_pipe(ffmpeg_proc)
     log.info(f"  CPU FFMPEG DONE: {written} frames written, returncode={ffmpeg_proc.returncode}")
@@ -1715,11 +1794,15 @@ def generate_frames(
 
 # ─── Progress Display ──────────────────────────────────────────────
 
+_PHASE_WEIGHTS = [5, 33, 62]
+
+
 class TerminalProgress:
-    def __init__(self, total: int, desc: str = "Generating frames", hide_rate: bool = False):
+    def __init__(self, total: int, desc: str = "Generating frames", hide_rate: bool = False, phase_weights=None):
         self.total = total
         self.desc = desc
         self.hide_rate = hide_rate
+        self.phase_weights = phase_weights or _PHASE_WEIGHTS
         self.start_time = time_module.time()
         self.last_update_time = self.start_time
         self.last_current = 0
@@ -1730,11 +1813,10 @@ class TerminalProgress:
         self._gpu_stats = None
         self._is_tty = sys.stdout.isatty()
         self._term_width = shutil.get_terminal_size().columns if self._is_tty else 120
-        # Phase-combining state (overlay pre-render + gpu render → single bar)
-        self._phase_offset = 0
-        self._phase0_total = None
-        self._phase_prev_cur = None
         self._max_line_width = 0
+        self._prev_cur = None
+        self._phase_start = 0
+        self._phase_weight = (phase_weights or _PHASE_WEIGHTS)[0]
 
     def _time_str(self, t: float) -> str:
         total_sec = int(round(t))
@@ -1756,71 +1838,69 @@ class TerminalProgress:
             tb = s.get('total_mem_mb', 0) / 1024
             suffix += f" | {mb:.1f}/{tb:.1f}GB | Batch: {s.get('batch_size', 0)}"
         prefix = f"{self.desc}: ["
-        fixed_len = len(prefix) + 1 + len(suffix)  # +1 for "]"
+        fixed_len = len(prefix) + 1 + len(suffix)
         bar_w = max(2, min(40, self._term_width - fixed_len))
         filled = int(bar_w * frac)
         bar = "#" * filled + "-" * (bar_w - filled)
         line = f"{prefix}{bar}]{suffix}"
         return line
 
-    def update(self, current: int, actual_current: Optional[int] = None, actual_total: Optional[int] = None):
+    def update(self, current: int, _force: bool = False):
         now = time_module.time()
-        # Throttle: redraw at most every ~100ms to avoid flooding console scrollback
-        if current < self.total and now - self._last_print_time < 1.0:
+        if current < self.total and now - self._last_print_time < 1.0 and not _force:
             return
         elapsed = now - self.start_time
         window_elapsed = now - self.last_update_time
-        _rate_source = actual_current if actual_current is not None else current
-        if window_elapsed > 0.5 and _rate_source > self.last_current:
-            instant = (_rate_source - self.last_current) / window_elapsed
+        if window_elapsed > 0.5 and current > self.last_current:
+            instant = (current - self.last_current) / window_elapsed
             if self.window_rate <= 0:
                 self.window_rate = instant
             else:
                 self.window_rate = self.window_rate * 0.5 + instant * 0.5
             self.last_update_time = now
-            self.last_current = _rate_source
-        rate = self.window_rate if self.window_rate > 0 else _rate_source / elapsed if elapsed > 0 else 0
-        _remaining_source = (actual_total - _rate_source) if (actual_total is not None and actual_current is not None) else (self.total - current)
-        eta = _remaining_source / rate if rate > 0 else 0
+            self.last_current = current
+        rate = self.window_rate if self.window_rate > 0 else current / elapsed if elapsed > 0 else 0
+        remaining = self.total - current
+        eta = remaining / rate if rate > 0 else 0
         line = self._build_line(current, elapsed, rate, eta)
         if self._is_tty:
-            # Track max width so shorter updates fully overwrite longer ones
             self._max_line_width = max(self._max_line_width, len(line))
             print(f"\r{line.ljust(self._max_line_width)}", end="", flush=True)
         else:
-            # Pipe/file: each update on its own line
             print(line, flush=True)
         self._last_print_time = now
-        if current >= self.total:
-            print()
 
     def set_desc(self, desc: str):
         self.desc = desc
 
     def __call__(self, current, total, **kwargs):
-        # Phase transition: when cur goes backwards, a new phase started
-        if (self._phase_prev_cur is not None and
-            current < self._phase_prev_cur and
-            self._phase0_total is not None):
-            self._phase_offset += self._phase0_total
-        self._phase_prev_cur = current
-        if self._phase0_total is None:
-            self._phase0_total = total
-        _use_gpu = kwargs.get("_use_gpu", False)
-        if _use_gpu:
-            adjusted_cur = 1 + current * 99 // total if total > 0 else 0
-            adjusted_tot = 100
-        else:
-            adjusted_cur = current + self._phase_offset
-            adjusted_tot = self._phase0_total
-        self.total = adjusted_tot
+        _desc = kwargs.get("_desc")
+        desc_changed = bool(_desc and _desc != self.desc)
+        phase_transition = self._prev_cur is not None and current < self._prev_cur
+        is_new_phase = phase_transition or desc_changed
+        if desc_changed:
+            self.set_desc(_desc)
+        if is_new_phase:
+            if self._prev_cur is None:
+                self._phase_idx = 0
+            else:
+                self._phase_idx += 1
+            w = self.phase_weights[self._phase_idx] if self._phase_idx < len(self.phase_weights) else 100 - sum(self.phase_weights)
+            self._phase_start = sum(self.phase_weights[:self._phase_idx])
+            self._phase_weight = w
+            self.last_current = self._phase_start
+            self.last_update_time = time_module.time()
+        self._prev_cur = current
+
+        frac = current / total if total > 0 else 0
+        overall_pct = self._phase_start + self._phase_weight * frac
+        out_cur = int(round(overall_pct))
+        self.total = 100
+
         gpu_stats = kwargs.get("gpu_stats")
         if gpu_stats is not None:
             self._gpu_stats = gpu_stats
-        _desc = kwargs.get("_desc")
-        if _desc:
-            self.set_desc(_desc)
-        self.update(adjusted_cur, actual_current=current, actual_total=total)
+        self.update(out_cur, _force=is_new_phase)
 
 
 # ─── Batch Helpers ─────────────────────────────────────────────────
@@ -2013,11 +2093,13 @@ class ReplayVideoGenerator:
         # Progress
         total_frames = sol_len + 1
 
+        pw = [5, 95] if use_gpu else [5, 33, 62]
+
         if show_progress:
             print(f"Puzzle: {width}x{height}, Moves: {sol_len}, TPS: {tps_val:.3f}")
             print(f"Tile size: {pick_tile_size(width, height)}px x quality={quality}, Frames: {total_frames}")
             print(f"Output: {output_path}")
-            prog = TerminalProgress(total_frames, "Render")
+            prog = TerminalProgress(total_frames, "Render", phase_weights=pw)
         else:
             prog = None
 
@@ -2025,7 +2107,7 @@ class ReplayVideoGenerator:
             if prog:
                 prog(cur, tot, **kwargs)
             if external_progress_cb:
-                external_progress_cb(cur, tot, **kwargs)
+                external_progress_cb(cur, tot, **kwargs, _phase_weights=pw)
 
         log.info(f"  calling generate_frames: fringe_schemes={len(all_fringe_schemes)}, grid_states_keys={len(grid_states)}, delays={len(delays)}, fake_times={len(fake_times)}")
         _orig_cmt = original_custom_move_times
@@ -2060,9 +2142,9 @@ class ReplayVideoGenerator:
         log.info(f"  generate_frames returned: frames_count={len(frames)}, frame_state_map_len={len(frame_state_map)}")
 
         if show_progress:
+            prog.total = 100
+            prog.update(100, _force=True)
             print()
-
-        if show_progress:
             elapsed = time_module.time() - (prog.start_time if prog else time_module.time())
             unique_frames = len(set(frame_state_map))
             total_frames = len(frame_state_map)
@@ -2113,6 +2195,7 @@ class ReplayVideoGenerator:
                 kval = (sz[0], sz[1], item.get("quality", 1.0), item.get("opts", RenderOptions()))
                 groups.setdefault(kval, []).append(item)
 
+            _batch_prog = TerminalProgress(n, "Batch", hide_rate=True, phase_weights=[100]) if show_progress else None
             renderer = None
             prev_key = None
             try:
@@ -2143,7 +2226,7 @@ class ReplayVideoGenerator:
                             solution=item["solution"],
                             output_path=item["output_path"],
                             use_gpu=True,
-                            show_progress=show_progress,
+                            show_progress=False,
                             cancel_check=cancel_check,
                             gpu_renderer=renderer,
                             **kwargs,
@@ -2151,6 +2234,8 @@ class ReplayVideoGenerator:
                         output_paths.append(item["output_path"])
                         if external_progress_cb:
                             external_progress_cb(len(output_paths), n)
+                        if _batch_prog:
+                            _batch_prog(len(output_paths), n)
 
                     prev_key = key
             finally:
@@ -2176,7 +2261,7 @@ class ReplayVideoGenerator:
                     fut_to_idx[fut] = idx
 
                 from concurrent.futures import as_completed
-                _batch_prog = TerminalProgress(n, "Batch", hide_rate=True) if show_progress else None
+                _batch_prog = TerminalProgress(n, "Batch", hide_rate=True, phase_weights=[100]) if show_progress else None
                 done_set = set()
                 while len(done_set) < len(cpu_items):
                     if cancel_check and cancel_check():

@@ -912,8 +912,14 @@ class ReplayGUI(tb.Window):
     def _on_item_progress(self, idx, raw_cur, raw_tot, **kwargs):
         item = self._item_progress[idx]
         now = time.time()
-        if raw_cur < raw_tot and now - item["_last_update_time"] < 1.0:
-            item["prev_cur"] = raw_cur
+        # Phase transition must be detected even when display is throttled
+        phase_transition = raw_cur < item["prev_cur"]
+        if phase_transition:
+            item["phase"] += 1
+            log.info(f"_on_item_progress[{idx}]: phase transition -> {item['phase']} (raw_cur={raw_cur} < prev_cur={item['prev_cur']})")
+        item["prev_cur"] = raw_cur
+        # Throttle display updates to ~1s (skip on phase transitions)
+        if not phase_transition and raw_cur < raw_tot and now - item["_last_update_time"] < 1.0:
             return
         item["_last_update_time"] = now
         _use_gpu = kwargs.pop("_use_gpu", False)
@@ -921,26 +927,17 @@ class ReplayGUI(tb.Window):
             item["is_gpu"] = True
         if kwargs.get("gpu_stats"):
             item["gpu_stats"] = kwargs["gpu_stats"]
-        if raw_cur < item["prev_cur"]:
-            item["phase"] += 1
-            log.info(f"_on_item_progress[{idx}]: phase transition -> {item['phase']} (raw_cur={raw_cur} < prev_cur={item['prev_cur']})")
-            if item["phase"] == 1:
-                item["phase1_base"] = item["adjusted_cur"]
-        item["prev_cur"] = raw_cur
-        if item["phase"] == 0:
-            if "phase0_tot" not in item:
-                item["phase0_tot"] = raw_tot
-            if item.get("is_gpu"):
-                item["adjusted_cur"] = 1 + raw_cur * 99 // raw_tot
-                item["adjusted_tot"] = 100
-            else:
-                item["adjusted_cur"] = raw_cur
-                item["adjusted_tot"] = item["phase0_tot"]
-        else:
-            p0_tot = item["phase0_tot"]
-            base = item.get("phase1_base", p0_tot)
-            item["adjusted_cur"] = base + (raw_cur - 1)
-            item["adjusted_tot"] = p0_tot * 2
+
+        pw = kwargs.pop("_phase_weights", None)
+        if pw is None:
+            from replay_video import _PHASE_WEIGHTS
+            pw = _PHASE_WEIGHTS
+        w = pw[item["phase"]] if item["phase"] < len(pw) else 100 - sum(pw)
+        start_pct = sum(pw[:item["phase"]])
+        frac = raw_cur / raw_tot if raw_tot > 0 else 0
+        overall_pct = start_pct + w * frac
+        item["adjusted_cur"] = int(round(overall_pct))
+        item["adjusted_tot"] = 100
 
     def _cancel(self):
         self.cancel_flag = True

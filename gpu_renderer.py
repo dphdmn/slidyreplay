@@ -308,7 +308,7 @@ class GPURenderer:
         tile_bg_t = torch.tensor(TILE_BG, device=dev, dtype=torch.float32) / 255.0
 
         total_mem = torch.cuda.get_device_properties(dev).total_memory
-        batch_has_colors = any(p.get("colors") is not None for p in frame_params_list)
+        batch_has_colors = any(p.get("colors_main") is not None for p in frame_params_list)
 
         # Soft 50% VRAM ceiling – we’ll exceed it if needed, bounded by free memory
         target_mem_fraction = 0.70
@@ -443,19 +443,15 @@ class GPURenderer:
                     sec_np = np.zeros((batch_n, h, w, 3), dtype=np.float32)
                     has_sec_np = np.zeros((batch_n, h, w), dtype=np.float32)
                     for i, p in enumerate(batch_params):
-                        cd = p.get("colors")
-                        if cd:
-                            flat = [(mc, sc) for row_c in cd for mc, sc in row_c]
-                            mc_flat = np.array([c for c, _ in flat], dtype=np.float32)
-                            main_np[i] = mc_flat.reshape(h, w, 3)
-                            sc_idx = [idx for idx, (_, sc) in enumerate(flat) if sc is not None]
-                            sc_colors = [flat[idx][1] for idx in sc_idx]
-                            if sc_idx:
-                                sc_arr = np.array(sc_colors, dtype=np.float32)
-                                rs = np.array([idx // w for idx in sc_idx])
-                                cs = np.array([idx % w for idx in sc_idx])
-                                sec_np[i, rs, cs] = sc_arr
-                                has_sec_np[i, rs, cs] = 1.0
+                        cm = p.get("colors_main")
+                        if cm is not None:
+                            main_np[i] = cm.reshape(h, w, 3)
+                            cs = p.get("colors_sec")
+                            if cs is not None:
+                                sec_np[i] = cs.reshape(h, w, 3)
+                            csm = p.get("colors_sec_mask")
+                            if csm is not None:
+                                has_sec_np[i] = csm.reshape(h, w).astype(np.float32)
                     cols = torch.from_numpy(main_np).to(dev, non_blocking=True) / 255.0
                     sec = torch.from_numpy(sec_np).to(dev, non_blocking=True) / 255.0
                     has_sec = torch.from_numpy(has_sec_np).to(dev, non_blocking=True).view(batch_n, h, w, 1, 1, 1)
