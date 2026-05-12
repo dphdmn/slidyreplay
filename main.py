@@ -147,7 +147,7 @@ def _generate_filename(solution, tps, time_v, movetimes, size_arg=None, index=0,
     name = "_".join(parts)
     name = name.translate(str.maketrans("", "", '\\/:*?\"<>|'))
     if index:
-        name = f"{name}_{index}"
+        name = f"{index:03d}_{name}"
     return f"{name}.mp4"
 
 
@@ -770,7 +770,7 @@ class ReplayGUI(tb.Window):
             base_name = _generate_filename(
                 solution, filename_tps, filename_time,
                 params.get("movetimes", -1), params.get("size"),
-                speed_factor=self._get_speed_factor())
+                index=idx + 1, speed_factor=self._get_speed_factor())
             out_path = _pick_output_filename(output_dir, base_name)
             log.info(f"_process_item[{idx}]: output={out_path}")
 
@@ -853,7 +853,7 @@ class ReplayGUI(tb.Window):
             out_path = _pick_output_filename(output_dir, _generate_filename(
                 solution, params.get("tps"), params.get("time"),
                 params.get("movetimes", -1), params.get("size"),
-                speed_factor=self._get_speed_factor()))
+                index=idx + 1, speed_factor=self._get_speed_factor()))
 
             batch_items.append({"solution": solution, "output_path": out_path, **params})
         return batch_items
