@@ -1,4 +1,7 @@
+import os
 from dataclasses import dataclass
+from functools import lru_cache
+from PIL import Image, ImageDraw, ImageFont
 
 PADDING = 20
 HEADER_H = 56
@@ -25,6 +28,105 @@ LIGHT_GRAY = (200, 200, 200)
 TILE_BORDER_WIDTH = 1
 TILE_BORDER_RADIUS_RATIO = 0.4
 BASE_SIZE = 15
+
+# ─── Font Loading ──────────────────────────────────────────────────
+
+_font_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+FONT_FAMILY = os.path.join(_font_dir, "Roboto-Regular.ttf")
+FONT_FAMILY_BOLD = os.path.join(_font_dir, "Roboto-Bold.ttf")
+FONT_FAMILY_MONO = os.path.join(_font_dir, "JetBrainsMono-Regular.ttf")
+FONT_FAMILY_MONO_BOLD = os.path.join(_font_dir, "JetBrainsMono-Bold.ttf")
+
+_font_cache = {}
+
+def get_font(size: int, bold: bool = False, mono: bool = False) -> ImageFont.FreeTypeFont:
+    key = (size, bold, mono)
+    if key in _font_cache:
+        return _font_cache[key]
+    try:
+        if mono:
+            name = FONT_FAMILY_MONO_BOLD if bold else FONT_FAMILY_MONO
+        else:
+            name = FONT_FAMILY_BOLD if bold else FONT_FAMILY
+        font = ImageFont.truetype(name, size)
+    except Exception:
+        try:
+            font = ImageFont.truetype(FONT_FAMILY_MONO if mono else FONT_FAMILY, size)
+        except Exception:
+            font = ImageFont.load_default()
+    _font_cache[key] = font
+    return font
+
+
+_number_texture_cache: dict = {}
+
+def render_number_texture(num: int, tile_size: int, font_size: int) -> Image.Image:
+    """Render a single number tile. Returns RGBA Image."""
+    key = (num, tile_size, font_size)
+    cached = _number_texture_cache.get(key)
+    if cached is not None:
+        return cached
+    im = Image.new("RGBA", (tile_size, tile_size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(im)
+    if num != 0:
+        text = str(num)
+        tf = get_font(font_size)
+        tb = draw.textbbox((0, 0), text, font=tf)
+        tx = tile_size // 2 - (tb[0] + tb[2]) // 2
+        ty = tile_size // 2 - (tb[1] + tb[3]) // 2
+        draw.text((tx, ty), text, fill=(0, 0, 0, 255), font=tf)
+    _number_texture_cache[key] = im
+    return im
+
+
+@lru_cache(maxsize=128)
+def render_timer_text(timer_text: str) -> Image.Image:
+    font = get_font(36, bold=True, mono=True)
+    b = font.getbbox(timer_text)
+    w = b[2] - b[0]
+    h = b[3] - b[1]
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(im)
+    draw.text((-b[0], -b[1]), timer_text, fill=(*CYAN, 255), font=font)
+    return im
+
+
+def compute_tile_size(raw_tile: int, quality: float) -> int:
+    return max(raw_tile, int(raw_tile * quality))
+
+
+def compute_font_size(width: int, height: int, tile_size: int) -> int:
+    max_num = width * height - 1
+    num_digits = len(str(max_num))
+    divisor = 25 if num_digits <= 3 else 30
+    return max(8, tile_size * 11 // divisor)
+
+
+def compute_grid_position(grid_only: bool) -> tuple[int, int]:
+    return PADDING, PADDING if grid_only else PADDING + HEADER_H + PADDING
+
+
+def compute_panel_rect(grid_x: int, puzzle_w: int, canvas_w: int, grid_y: int, canvas_h: int) -> tuple[int, int, int, int]:
+    panel_x = grid_x + puzzle_w + PADDING
+    panel_y = grid_y
+    panel_w = canvas_w - panel_x - PADDING
+    panel_h = canvas_h - panel_y - PADDING
+    return panel_x, panel_y, panel_w, panel_h
+
+
+def compute_secondary_bar_rect(tile_size: int, tile_x: int = 0, tile_y: int = 0) -> tuple[int, int, int, int]:
+    bar_h = max(2, int(tile_size * 0.1))
+    bar_off = max(2, int(tile_size * 0.06))
+    bar_inset = max(2, int(tile_size * 0.1))
+    y0 = tile_y + tile_size - bar_h - bar_off
+    y1 = tile_y + tile_size - bar_off
+    x0 = tile_x + bar_inset
+    x1 = tile_x + tile_size - bar_inset
+    return x0, y0, x1, y1
+
+
+def round_canvas_height(h: int) -> int:
+    return (h + 1) // 2 * 2
 
 
 def compute_canvas_dimensions(puzzle_w: int, puzzle_h: int, tile_size: int,

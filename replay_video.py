@@ -85,13 +85,11 @@ from geometry import (PADDING, HEADER_H, STATS_PANEL_WIDTH, INFO_H, TIMER_HEIGHT
     PANEL_BG, PANEL_ALPHA, TIMER_BG, ACCURATE_COLOR, INACCURATE_COLOR,
     WHITE, CYAN, GREEN, GRAY, LIGHT_GRAY,
     TILE_BORDER_WIDTH, TILE_BORDER_RADIUS_RATIO, BASE_SIZE,
-    compute_canvas_dimensions, RenderOptions)
-
-_font_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
-FONT_FAMILY = os.path.join(_font_dir, "Roboto-Regular.ttf")
-FONT_FAMILY_BOLD = os.path.join(_font_dir, "Roboto-Bold.ttf")
-FONT_FAMILY_MONO = os.path.join(_font_dir, "JetBrainsMono-Regular.ttf")
-FONT_FAMILY_MONO_BOLD = os.path.join(_font_dir, "JetBrainsMono-Bold.ttf")
+    compute_canvas_dimensions, RenderOptions,
+    get_font, render_number_texture, render_timer_text,
+    compute_tile_size, compute_font_size,
+    compute_grid_position, compute_panel_rect, compute_secondary_bar_rect,
+    round_canvas_height)
 
 # ─── Color Utilities (ported from fringeColors.js) ──────────────────
 
@@ -590,48 +588,6 @@ def get_tile_colors(number, state, all_fringe_schemes, main_w):
     return main_bg, secondary_bg
 
 
-# ─── Font Loading ──────────────────────────────────────────────────
-
-_font_cache = {}
-
-def get_font(size: int, bold: bool = False, mono: bool = False) -> ImageFont.FreeTypeFont:
-    key = (size, bold, mono)
-    if key in _font_cache:
-        return _font_cache[key]
-    try:
-        if mono:
-            name = FONT_FAMILY_MONO_BOLD if bold else FONT_FAMILY_MONO
-        else:
-            name = FONT_FAMILY_BOLD if bold else FONT_FAMILY
-        font = ImageFont.truetype(name, size)
-    except Exception:
-        try:
-            font = ImageFont.truetype(FONT_FAMILY_MONO if mono else FONT_FAMILY, size)
-        except Exception:
-            font = ImageFont.load_default()
-    _font_cache[key] = font
-    return font
-
-
-_number_texture_cache: dict = {}
-
-def _get_number_texture(num: int, tile_size: int, font_size: int) -> Image.Image:
-    key = (num, tile_size, font_size)
-    cached = _number_texture_cache.get(key)
-    if cached is not None:
-        return cached
-    im = Image.new("RGBA", (tile_size, tile_size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(im)
-    text = str(num)
-    tf = get_font(font_size)
-    tb = draw.textbbox((0, 0), text, font=tf)
-    tx = tile_size // 2 - (tb[0] + tb[2]) // 2
-    ty = tile_size // 2 - (tb[1] + tb[3]) // 2
-    draw.text((tx, ty), text, fill=(0, 0, 0, 255), font=tf)
-    _number_texture_cache[key] = im
-    return im
-
-
 def format_time_str(ms: int) -> str:
     if ms < 1000:
         return f"0.{ms:03d}"
@@ -671,17 +627,6 @@ def draw_multiline_text(draw, xy, text, fill, font, line_spacing=4):
         y += (bbox[3] - bbox[1]) + line_spacing
 
 
-def _render_timer_text(timer_text: str) -> Image.Image:
-    font = get_font(36, bold=True, mono=True)
-    b = font.getbbox(timer_text)
-    w = b[2] - b[0]
-    h = b[3] - b[1]
-    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(im)
-    draw.text((-b[0], -b[1]), timer_text, fill=(*CYAN, 255), font=font)
-    return im
-
-
 def render_frame(
     matrix: List[List[int]],
     grid_state: dict,
@@ -714,7 +659,7 @@ def render_frame(
             has_grid_stages=len(stats_data.get("grid_stages", [])) > 1
         )
         canvas_h = max(canvas_h, HEADER_H + PADDING + stats_h + PADDING)
-        canvas_h = (canvas_h + 1) // 2 * 2
+        canvas_h = round_canvas_height(canvas_h)
 
     canvas = Image.new('RGB', (canvas_w, canvas_h), BG_COLOR)
     draw = ImageDraw.Draw(canvas)
@@ -724,15 +669,14 @@ def render_frame(
         timer_bg_bbox = (PADDING, PADDING, canvas_w - PADDING, PADDING + HEADER_H)
         draw_filled_rect(draw, timer_bg_bbox, TIMER_BG)
 
-        timer_img = _render_timer_text(timer_text)
+        timer_img = render_timer_text(timer_text)
         tw, th = timer_img.size
         tx = (canvas_w - tw) // 2
         ty = PADDING + (HEADER_H - th) // 2
         canvas.paste(timer_img, (tx, ty), timer_img)
 
     # ─── Puzzle Grid ──────────────────────────────────────────────
-    grid_x = PADDING
-    grid_y = PADDING if opts.grid_only else PADDING + HEADER_H + PADDING
+    grid_x, grid_y = compute_grid_position(opts.grid_only)
 
     if gpu_grid is not None:
         canvas.paste(gpu_grid, (grid_x, grid_y))
@@ -752,24 +696,19 @@ def render_frame(
                     draw.rectangle(sq_bbox, outline=TILE_BORDER_COLOR, width=TILE_BORDER_WIDTH)
 
                 if sec_bg:
-                    bar_h = max(2, int(tile_size * 0.1))
-                    bar_y = sy + tile_size - bar_h - max(2, int(tile_size * 0.06))
-                    bar_bbox = (sx + max(2, int(tile_size * 0.1)), bar_y,
-                                sx + tile_size - max(2, int(tile_size * 0.1)), bar_y + bar_h)
+                    bx0, by0, bx1, by1 = compute_secondary_bar_rect(tile_size, sx, sy)
+                    bar_bbox = (bx0, by0, bx1, by1)
                     draw_filled_rect(draw, bar_bbox, sec_bg)
                     if tile_size > 1 and not opts.no_secondary_border:
                         draw.rectangle(bar_bbox, outline=TILE_BORDER_COLOR, width=1)
 
                 if not opts.no_numbers and num != 0:
-                    tex = _get_number_texture(num, tile_size, font_size)
+                    tex = render_number_texture(num, tile_size, font_size)
                     canvas.paste(tex, (sx, sy), tex)
 
     # ─── Stats Panel ──────────────────────────────────────────────
     if not opts.grid_only:
-        panel_x = grid_x + puzzle_w + PADDING
-        panel_y = grid_y
-        panel_w = canvas_w - panel_x - PADDING
-        panel_h = canvas_h - panel_y - PADDING
+        panel_x, panel_y, panel_w, panel_h = compute_panel_rect(grid_x, puzzle_w, canvas_w, grid_y, canvas_h)
 
         if panel_w > 0 and panel_h > 0:
             panel_bbox = (panel_x, panel_y, panel_x + panel_w, panel_y + panel_h)
@@ -1357,11 +1296,8 @@ def generate_frames(
 
     log.info(f"  grid_stages: n_stages={n_stages}, filtered_stages={filtered_stages}")
     raw_tile = pick_tile_size(w, h)
-    tile_size = max(raw_tile, int(raw_tile * quality))
-    max_num = w * h - 1
-    num_digits = len(str(max_num))
-    divisor = 25 if num_digits <= 3 else 30
-    font_size = max(8, tile_size * 11 // divisor)
+    tile_size = compute_tile_size(raw_tile, quality)
+    font_size = compute_font_size(w, h, tile_size)
     log.info(f"  tile_size={tile_size}, raw_tile={raw_tile}, font_size={font_size}")
 
     def _update_manhattan_distance(md: int, matrix, move, zero_pos, w: int, h: int) -> int:

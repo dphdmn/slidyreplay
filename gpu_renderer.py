@@ -1,11 +1,9 @@
 from __future__ import annotations
 import math
 import json
-import os
 import time as _time_module
-from functools import lru_cache
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from typing import List, Optional
 from debug_log import get_logger
 import psutil as _psutil
@@ -29,72 +27,16 @@ try:
 except ImportError:
     pass
 
-_font_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
-FONT = os.path.join(_font_dir, "Roboto-Regular.ttf")
-FONT_BOLD = os.path.join(_font_dir, "Roboto-Bold.ttf")
-FONT_MONO = os.path.join(_font_dir, "JetBrainsMono-Regular.ttf")
-FONT_MONO_BOLD = os.path.join(_font_dir, "JetBrainsMono-Bold.ttf")
 from geometry import (PADDING, HEADER_H, STATS_PANEL_WIDTH, INFO_H, TIMER_HEIGHT,
     BG_COLOR, TILE_BG, TILE_TEXT_COLOR, TILE_BORDER_COLOR, NULL_COLOR,
     PANEL_BG, PANEL_ALPHA, TIMER_BG, ACCURATE_COLOR, INACCURATE_COLOR,
     WHITE, CYAN, GREEN, GRAY, LIGHT_GRAY,
     TILE_BORDER_WIDTH, TILE_BORDER_RADIUS_RATIO, BASE_SIZE,
-    compute_canvas_dimensions, RenderOptions)
-
-
-_font_cache = {}
-
-def _font(size, bold=False, mono=False):
-    key = (size, bold, mono)
-    cached = _font_cache.get(key)
-    if cached is not None:
-        return cached
-    try:
-        if mono:
-            name = FONT_MONO_BOLD if bold else FONT_MONO
-        else:
-            name = FONT_BOLD if bold else FONT
-        f = ImageFont.truetype(name, size)
-    except Exception:
-        try:
-            f = ImageFont.truetype(FONT_MONO if mono else FONT, size)
-        except Exception:
-            f = ImageFont.load_default()
-    _font_cache[key] = f
-    return f
-
-
-def _render_number_textures(max_num: int, ts: int, font_size: int) -> dict:
-    textures = {}
-    for num in range(max_num + 1):
-        im = Image.new("RGBA", (ts, ts), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(im)
-        if num != 0:
-            text = str(num)
-            f = _font(font_size)
-            b = draw.textbbox((0, 0), text, font=f)
-            tx = ts // 2 - (b[0] + b[2]) // 2
-            ty = ts // 2 - (b[1] + b[3]) // 2
-            draw.text((tx, ty), text, fill=(0, 0, 0, 255), font=f)
-        textures[num] = im
-    return textures
-
-
-def _render_text_rgba(text, font, fill, pad=0):
-    b = font.getbbox(text)
-    w = b[2] - b[0] + pad * 2
-    h = b[3] - b[1] + pad * 2
-    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(im)
-    draw.text((pad - b[0], pad - b[1]), text, fill=(*fill, 255), font=font)
-    return im
-
-
-@lru_cache(maxsize=128)
-def _render_timer_text(timer_text: str) -> Image.Image:
-    font = _font(36, bold=True, mono=True)
-    return _render_text_rgba(timer_text, font, CYAN)
-
+    compute_canvas_dimensions, RenderOptions,
+    get_font, render_number_texture, render_timer_text,
+    compute_tile_size, compute_font_size,
+    compute_grid_position, compute_panel_rect, compute_secondary_bar_rect,
+    round_canvas_height)
 
 
 class GPURenderer:
@@ -110,12 +52,9 @@ class GPURenderer:
         self.opts = opts or RenderOptions()
         self.w = width
         self.h = height
-        ts = max(tile_size, int(tile_size * quality))
+        ts = compute_tile_size(tile_size, quality)
         self.tile_size = ts
-        max_num = width * height - 1
-        num_digits = len(str(max_num))
-        divisor = 25 if num_digits <= 3 else 30
-        self.font_size = max(8, ts * 11 // divisor)
+        self.font_size = compute_font_size(width, height, ts)
         self.pw = width * ts
         self.ph = height * ts
 
@@ -126,13 +65,11 @@ class GPURenderer:
         )
         if not self.opts.grid_only and min_canvas_h is not None:
             self.canvas_h = max(self.canvas_h, min_canvas_h)
-            self.canvas_h = (self.canvas_h + 1) // 2 * 2
-        self.grid_x = PADDING
-        self.grid_y = PADDING if self.opts.grid_only else PADDING + HEADER_H + PADDING
-        self.panel_x = self.grid_x + puzzle_w + PADDING
-        self.panel_y = self.grid_y
-        self.panel_w = self.canvas_w - self.panel_x - PADDING
-        self.panel_h = self.canvas_h - self.panel_y - PADDING
+            self.canvas_h = round_canvas_height(self.canvas_h)
+        self.grid_x, self.grid_y = compute_grid_position(self.opts.grid_only)
+        self.panel_x, self.panel_y, self.panel_w, self.panel_h = compute_panel_rect(
+            self.grid_x, puzzle_w, self.canvas_w, self.grid_y, self.canvas_h
+        )
         self.timer_bbox = (0, 0, 0, 0) if self.opts.grid_only else (PADDING, PADDING, self.canvas_w - PADDING, PADDING + HEADER_H)
 
         self._init_success = False
@@ -173,10 +110,10 @@ class GPURenderer:
             if self.opts.no_numbers:
                 self._num_batch = None
             else:
-                tex_map = _render_number_textures(width * height, ts, self.font_size)
-                n = len(tex_map)
+                n = width * height
                 num_batch = torch.zeros(n, ts, ts, 4, device=cuda_dev, dtype=torch.float32)
-                for num, pil in tex_map.items():
+                for num in range(n):
+                    pil = render_number_texture(num, ts, self.font_size)
                     arr = torch.from_numpy(np.array(pil)).to(cuda_dev).float() / 255.0
                     num_batch[num] = arr
                 self._num_batch = num_batch
@@ -196,15 +133,9 @@ class GPURenderer:
             self._border_mask_inv = 1.0 - border
 
             # Secondary colour bar masks
-            bar_h = max(2, int(ts * 0.1))
-            bar_off = max(2, int(ts * 0.06))
-            bar_inset = max(2, int(ts * 0.1))
+            bx0, by0, bx1, by1 = compute_secondary_bar_rect(ts)
             bar_fill = torch.zeros(ts, ts, 1, device=cuda_dev, dtype=torch.float32)
             bar_border = torch.zeros(ts, ts, 1, device=cuda_dev, dtype=torch.float32)
-            by0 = ts - bar_h - bar_off
-            by1 = ts - bar_off
-            bx0 = bar_inset
-            bx1 = ts - bar_inset
             bar_fill[by0:by1, bx0:bx1] = 1.0
             bar_border[by0:by1, bx0:bx1] = 1.0
             if by0 > 0:
@@ -539,7 +470,7 @@ class GPURenderer:
                     params = frame_params_list[fi]
 
                     if overlay_render_data is not None:
-                        timer_img = _render_timer_text(params["timer_text"])
+                        timer_img = render_timer_text(params["timer_text"])
                         stats_img = _apply_sd(
                             params["stats_data"],
                             overlay_render_data["panel_w_val"],
