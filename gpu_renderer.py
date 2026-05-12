@@ -112,7 +112,10 @@ class GPURenderer:
         self.h = height
         ts = max(tile_size, int(tile_size * quality))
         self.tile_size = ts
-        self.font_size = max(11, ts // 2)
+        max_num = width * height - 1
+        num_digits = len(str(max_num))
+        divisor = 25 if num_digits <= 3 else 30
+        self.font_size = max(8, ts * 11 // divisor)
         self.pw = width * ts
         self.ph = height * ts
 

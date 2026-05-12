@@ -1358,7 +1358,10 @@ def generate_frames(
     log.info(f"  grid_stages: n_stages={n_stages}, filtered_stages={filtered_stages}")
     raw_tile = pick_tile_size(w, h)
     tile_size = max(raw_tile, int(raw_tile * quality))
-    font_size = max(11, tile_size // 2)
+    max_num = w * h - 1
+    num_digits = len(str(max_num))
+    divisor = 25 if num_digits <= 3 else 30
+    font_size = max(8, tile_size * 11 // divisor)
     log.info(f"  tile_size={tile_size}, raw_tile={raw_tile}, font_size={font_size}")
 
     def _update_manhattan_distance(md: int, matrix, move, zero_pos, w: int, h: int) -> int:
