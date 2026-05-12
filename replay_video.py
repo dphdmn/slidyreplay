@@ -80,36 +80,18 @@ def parse_replay_url(url: str):
 
     return solution, tps, scramble, movetimes
 
-BASE_SIZE = 15
-BG_COLOR = (18, 18, 18)
-TILE_BG = (51, 51, 51)
-TILE_TEXT_COLOR = (0, 0, 0)
-TILE_BORDER_COLOR = (0, 0, 0)
-NULL_COLOR = (248, 24, 148)
-PANEL_BG = (17, 17, 17)
-PANEL_ALPHA = 0.69
-TIMER_BG = (22, 22, 22)
-ACCURATE_COLOR = (0, 255, 0)
-INACCURATE_COLOR = (255, 255, 255)
-WHITE = (255, 255, 255)
-CYAN = (0, 255, 255)
-GREEN = (0, 255, 0)
-GRAY = (128, 128, 128)
-LIGHT_GRAY = (200, 200, 200)
+from geometry import (PADDING, HEADER_H, STATS_PANEL_WIDTH, INFO_H, TIMER_HEIGHT,
+    BG_COLOR, TILE_BG, TILE_TEXT_COLOR, TILE_BORDER_COLOR, NULL_COLOR,
+    PANEL_BG, PANEL_ALPHA, TIMER_BG, ACCURATE_COLOR, INACCURATE_COLOR,
+    WHITE, CYAN, GREEN, GRAY, LIGHT_GRAY,
+    TILE_BORDER_WIDTH, TILE_BORDER_RADIUS_RATIO, BASE_SIZE,
+    compute_canvas_dimensions, RenderOptions)
 
 _font_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 FONT_FAMILY = os.path.join(_font_dir, "Roboto-Regular.ttf")
 FONT_FAMILY_BOLD = os.path.join(_font_dir, "Roboto-Bold.ttf")
 FONT_FAMILY_MONO = os.path.join(_font_dir, "JetBrainsMono-Regular.ttf")
 FONT_FAMILY_MONO_BOLD = os.path.join(_font_dir, "JetBrainsMono-Bold.ttf")
-TILE_BORDER_RADIUS_RATIO = 0.4
-TILE_BORDER_WIDTH = 1
-
-PADDING = 20
-STATS_PANEL_WIDTH = 320
-TIMER_HEIGHT = 30
-HEADER_H = 56
-INFO_H = 40
 
 # ─── Color Utilities (ported from fringeColors.js) ──────────────────
 
@@ -694,41 +676,41 @@ def render_frame(
     gpu_grid: Optional[Image.Image] = None,
     static_stats_base: Optional[Image.Image] = None,
     static_stats_layout: Optional[dict] = None,
+    opts: RenderOptions = RenderOptions(),
 ) -> Image.Image:
     h = len(matrix)
     w = len(matrix[0])
     puzzle_w = w * tile_size
     puzzle_h = h * tile_size
-    HEADER_H = 56
 
-    canvas_w = (puzzle_w + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
+    canvas_w, canvas_h = compute_canvas_dimensions(w, h, tile_size, grid_only=opts.grid_only)
 
-    panel_w_est = canvas_w - (PADDING + puzzle_w + PADDING) - PADDING
-    stats_h = _compute_stats_full_height(
-        panel_w_est,
-        has_grid_stages=len(stats_data.get("grid_stages", [])) > 1
-    )
-    canvas_h = max(
-        (HEADER_H + puzzle_h + PADDING * 3 + 1) // 2 * 2,
-        HEADER_H + PADDING + stats_h + PADDING
-    )
-    canvas_h = (canvas_h + 1) // 2 * 2
+    if not opts.grid_only:
+        panel_w_est = canvas_w - (PADDING + puzzle_w + PADDING) - PADDING
+        stats_h = _compute_stats_full_height(
+            panel_w_est,
+            has_grid_stages=len(stats_data.get("grid_stages", [])) > 1
+        )
+        canvas_h = max(canvas_h, HEADER_H + PADDING + stats_h + PADDING)
+        canvas_h = (canvas_h + 1) // 2 * 2
+
     canvas = Image.new('RGB', (canvas_w, canvas_h), BG_COLOR)
     draw = ImageDraw.Draw(canvas)
 
     # ─── Timer Bar (centered, compact) ──────────────────────────
-    timer_bg_bbox = (PADDING, PADDING, canvas_w - PADDING, PADDING + HEADER_H)
-    draw_filled_rect(draw, timer_bg_bbox, TIMER_BG)
+    if not opts.grid_only:
+        timer_bg_bbox = (PADDING, PADDING, canvas_w - PADDING, PADDING + HEADER_H)
+        draw_filled_rect(draw, timer_bg_bbox, TIMER_BG)
 
-    timer_img = _render_timer_text(timer_text)
-    tw, th = timer_img.size
-    tx = (canvas_w - tw) // 2
-    ty = PADDING + (HEADER_H - th) // 2
-    canvas.paste(timer_img, (tx, ty), timer_img)
+        timer_img = _render_timer_text(timer_text)
+        tw, th = timer_img.size
+        tx = (canvas_w - tw) // 2
+        ty = PADDING + (HEADER_H - th) // 2
+        canvas.paste(timer_img, (tx, ty), timer_img)
 
     # ─── Puzzle Grid ──────────────────────────────────────────────
     grid_x = PADDING
-    grid_y = PADDING + HEADER_H + PADDING
+    grid_y = PADDING if opts.grid_only else PADDING + HEADER_H + PADDING
 
     if gpu_grid is not None:
         canvas.paste(gpu_grid, (grid_x, grid_y))
@@ -744,7 +726,7 @@ def render_frame(
                 bg_color = main_bg if main_bg else TILE_BG
                 draw_filled_rect(draw, sq_bbox, bg_color)
 
-                if tile_size > 1:
+                if tile_size > 1 and not opts.no_border:
                     draw.rectangle(sq_bbox, outline=TILE_BORDER_COLOR, width=TILE_BORDER_WIDTH)
 
                 if sec_bg:
@@ -753,35 +735,36 @@ def render_frame(
                     bar_bbox = (sx + max(2, int(tile_size * 0.1)), bar_y,
                                 sx + tile_size - max(2, int(tile_size * 0.1)), bar_y + bar_h)
                     draw_filled_rect(draw, bar_bbox, sec_bg)
-                    if tile_size > 1:
+                    if tile_size > 1 and not opts.no_secondary_border:
                         draw.rectangle(bar_bbox, outline=TILE_BORDER_COLOR, width=1)
 
-                if num != 0:
+                if not opts.no_numbers and num != 0:
                     tex = _get_number_texture(num, tile_size, font_size)
                     canvas.paste(tex, (sx, sy), tex)
 
     # ─── Stats Panel ──────────────────────────────────────────────
-    panel_x = grid_x + puzzle_w + PADDING
-    panel_y = grid_y
-    panel_w = canvas_w - panel_x - PADDING
-    panel_h = canvas_h - panel_y - PADDING
+    if not opts.grid_only:
+        panel_x = grid_x + puzzle_w + PADDING
+        panel_y = grid_y
+        panel_w = canvas_w - panel_x - PADDING
+        panel_h = canvas_h - panel_y - PADDING
 
-    if panel_w > 0 and panel_h > 0:
-        panel_bbox = (panel_x, panel_y, panel_x + panel_w, panel_y + panel_h)
-        panel_img = Image.new('RGBA', (canvas_w, canvas_h), (0, 0, 0, 0))
-        pdraw = ImageDraw.Draw(panel_img)
-        pdraw.rectangle(panel_bbox, fill=(*PANEL_BG, int(255 * PANEL_ALPHA)))
-        panel_overlay = Image.new('RGBA', (canvas_w, canvas_h), (0, 0, 0, 0))
-        pdraw2 = ImageDraw.Draw(panel_overlay)
-        pdraw2.rectangle(panel_bbox, outline=CYAN, width=1)
-        canvas = Image.alpha_composite(canvas.convert('RGBA'), panel_img)
-        canvas = Image.alpha_composite(canvas, panel_overlay)
+        if panel_w > 0 and panel_h > 0:
+            panel_bbox = (panel_x, panel_y, panel_x + panel_w, panel_y + panel_h)
+            panel_img = Image.new('RGBA', (canvas_w, canvas_h), (0, 0, 0, 0))
+            pdraw = ImageDraw.Draw(panel_img)
+            pdraw.rectangle(panel_bbox, fill=(*PANEL_BG, int(255 * PANEL_ALPHA)))
+            panel_overlay = Image.new('RGBA', (canvas_w, canvas_h), (0, 0, 0, 0))
+            pdraw2 = ImageDraw.Draw(panel_overlay)
+            pdraw2.rectangle(panel_bbox, outline=CYAN, width=1)
+            canvas = Image.alpha_composite(canvas.convert('RGBA'), panel_img)
+            canvas = Image.alpha_composite(canvas, panel_overlay)
 
-        if static_stats_base is not None and static_stats_layout is not None:
-            stats_img = _apply_stats_dynamic(stats_data, panel_w, static_stats_base, static_stats_layout)
-        else:
-            stats_img = _render_stats_full(stats_data, is_movetimes_accurate, panel_w)
-        canvas.paste(stats_img, (panel_x, panel_y), stats_img)
+            if static_stats_base is not None and static_stats_layout is not None:
+                stats_img = _apply_stats_dynamic(stats_data, panel_w, static_stats_base, static_stats_layout)
+            else:
+                stats_img = _render_stats_full(stats_data, is_movetimes_accurate, panel_w)
+            canvas.paste(stats_img, (panel_x, panel_y), stats_img)
 
     return canvas.convert('RGB')
 
@@ -878,6 +861,8 @@ def _stats_layout_info(panel_w):
 
 def _render_stats_full(stats_data, is_movetimes_accurate, panel_w):
     """Render full stats panel - left-aligned labels, right-aligned values."""
+    if stats_data is None:
+        return Image.new("RGBA", (panel_w, 1), (0, 0, 0, 0))
     li = _stats_layout_info(panel_w)
     inner_w = li["inner_w"]; px = li["px"]
     data_font = li["data_font"]; hf = li["header_font"]
@@ -1005,6 +990,8 @@ def _compute_stats_full_height(panel_w, has_grid_stages=True):
 
 def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_stages_list):
     """Render static parts of stats panel (left-aligned labels, right-aligned values). Returns (image, layout_info)."""
+    if stats_data is None:
+        return Image.new("RGBA", (panel_w, 1), (0, 0, 0, 0)), {}
     li = _stats_layout_info(panel_w)
     inner_w = li["inner_w"]; px = li["px"]
     data_font = li["data_font"]; hf = li["header_font"]
@@ -1128,6 +1115,8 @@ def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_sta
 
 def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info):
     """Overlay dynamic values and stage highlight onto a static base (labels already drawn in base)."""
+    if stats_data is None:
+        return static_base.copy()
     overlay = Image.new("RGBA", static_base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
@@ -1248,6 +1237,7 @@ def generate_frames(
     shared_pool: Optional[ProcessPoolExecutor] = None,
     gpu_renderer: Optional['GPURenderer'] = None,
     speed_factor: float = 1.0,
+    opts: RenderOptions = RenderOptions(),
 ) -> Tuple[List[Image.Image], List[int]]:
     quality = quality + 1.0
     expanded = expand_solution(solution)
@@ -1375,18 +1365,21 @@ def generate_frames(
 
     # Optional GPU acceleration for tile grid rendering
     puzzle_w_est = w * tile_size
-    canvas_w_est = (puzzle_w_est + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
     if use_gpu:
-        panel_w_est = canvas_w_est - (PADDING + puzzle_w_est + PADDING) - PADDING
-        stats_h_est = _compute_stats_full_height(panel_w_est, has_grid_stages=len(grid_stages_list) > 1)
-        min_canvas_h = HEADER_H + PADDING + stats_h_est + PADDING
+        if opts.grid_only:
+            min_canvas_h = None
+        else:
+            canvas_w_est = (puzzle_w_est + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
+            panel_w_est = canvas_w_est - (PADDING + puzzle_w_est + PADDING) - PADDING
+            stats_h_est = _compute_stats_full_height(panel_w_est, has_grid_stages=len(grid_stages_list) > 1)
+            min_canvas_h = HEADER_H + PADDING + stats_h_est + PADDING
         if gpu_renderer is not None:
             gpu = gpu_renderer
         else:
             from gpu_renderer import GPURenderer
-            gpu = GPURenderer(w, h, raw_tile, quality, min_canvas_h=min_canvas_h)
+            gpu = GPURenderer(w, h, raw_tile, quality, min_canvas_h=min_canvas_h, opts=opts)
         use_gpu = use_gpu and gpu.available
-        log.info(f"  canvas={gpu.canvas_w}x{gpu.canvas_h}, GPU available={gpu.available}, use_gpu={use_gpu}, max_batch_pixels={getattr(gpu, '_max_pixels_per_batch', '?')}")
+        log.info(f"  canvas={gpu.canvas_w}x{gpu.canvas_h}, GPU available={gpu.available}, use_gpu={use_gpu}")
     else:
         log.info(f"  GPU disabled, use_gpu=False")
     if use_gpu:
@@ -1452,51 +1445,55 @@ def generate_frames(
             all_mmd = sol_len / all_md if all_md > 0 else 0
             mmd_display = cur_mmd if isinstance(cur_mmd, str) else f"{cur_mmd:.3f}"
 
-            if cumulative_data:
-                base_time = cur_time_ms
-                base_moves = current_moves
-                if cumulative_data["time"] > 0:
-                    cur_time_display = format_time_str(round(base_time + cumulative_data["time"]))
-                    tps_display = ((cumulative_data["moves"] + base_moves) * 1000 / (base_time + cumulative_data["time"]))
-                    cur_tps_display = f"{tps_display:.3f}"
+            if opts.grid_only:
+                timer_text = ""
+                stats_data = None
+            else:
+                if cumulative_data:
+                    base_time = cur_time_ms
+                    base_moves = current_moves
+                    if cumulative_data["time"] > 0:
+                        cur_time_display = format_time_str(round(base_time + cumulative_data["time"]))
+                        tps_display = ((cumulative_data["moves"] + base_moves) * 1000 / (base_time + cumulative_data["time"]))
+                        cur_tps_display = f"{tps_display:.3f}"
+                    else:
+                        cur_time_display = format_time_str(round(base_time))
+                        cur_tps_display = f"{cur_tps_val:.3f}"
+                    moves_display = str(base_moves + cumulative_data["moves"])
                 else:
-                    cur_time_display = format_time_str(round(base_time))
-                    cur_tps_display = f"{cur_tps_val:.3f}"
-                moves_display = str(base_moves + cumulative_data["moves"])
-            else:
-                cur_time_display = format_time_str(round(cur_time_ms))
-                cur_tps_display = f"{cur_tps_val:.3f}".replace("inf", "Inf.")
-                moves_display = str(current_moves)
+                    cur_time_display = format_time_str(round(cur_time_ms))
+                    cur_tps_display = f"{cur_tps_val:.3f}".replace("inf", "Inf.")
+                    moves_display = str(current_moves)
 
-            timer_text = f"{cur_time_display} ({moves_display} / {cur_tps_display})"
+                timer_text = f"{cur_time_display} ({moves_display} / {cur_tps_display})"
 
-            if isinstance(cur_mmd, str):
-                predicted_moves = cur_mmd
-            else:
-                predicted_moves = f"{round(cur_mmd * all_md)}"
+                if isinstance(cur_mmd, str):
+                    predicted_moves = cur_mmd
+                else:
+                    predicted_moves = f"{round(cur_mmd * all_md)}"
 
-            stats_data = {
-                "time_all": format_time_str(round(total_time_ms)),
-                "moves_all": str(sol_len),
-                "md_all": str(all_md),
-                "md_cur": str(moved_md),
-                "mmd_all": f"{all_mmd:.3f}",
-                "mmd_cur": mmd_display,
-                "tps_all": f"{total_tps:.3f}",
-                "predicted_moves": predicted_moves,
-                "cubic_estimate": None,
-                "speed_playback": f"{speed_factor:.2f}×" if speed_factor != 1.0 else "1.00×",
-            }
+                stats_data = {
+                    "time_all": format_time_str(round(total_time_ms)),
+                    "moves_all": str(sol_len),
+                    "md_all": str(all_md),
+                    "md_cur": str(moved_md),
+                    "mmd_all": f"{all_mmd:.3f}",
+                    "mmd_cur": mmd_display,
+                    "tps_all": f"{total_tps:.3f}",
+                    "predicted_moves": predicted_moves,
+                    "cubic_estimate": None,
+                    "speed_playback": f"{speed_factor:.2f}×" if speed_factor != 1.0 else "1.00×",
+                }
 
-            move_idx = frame_idx - 1 if frame_idx > 0 else 0
-            cur_stage_idx = max(0, sum(1 for s in filtered_stages if s <= move_idx) - 1)
-            stats_data["grid_stages"] = grid_stages_list
-            stats_data["grid_current"] = cur_stage_idx
+                move_idx = frame_idx - 1 if frame_idx > 0 else 0
+                cur_stage_idx = max(0, sum(1 for s in filtered_stages if s <= move_idx) - 1)
+                stats_data["grid_stages"] = grid_stages_list
+                stats_data["grid_current"] = cur_stage_idx
 
-            if w * h > 99:
-                from replay_generator import get_cubic_estimate
-                ce = get_cubic_estimate(round(total_time_ms), w, h)
-                stats_data["cubic_estimate"] = format_time_str(ce)
+                if w * h > 99:
+                    from replay_generator import get_cubic_estimate
+                    ce = get_cubic_estimate(round(total_time_ms), w, h)
+                    stats_data["cubic_estimate"] = format_time_str(ce)
 
             frame_params[frame_idx] = dict(
                 matrix=mc_snapshot,
@@ -1512,6 +1509,7 @@ def generate_frames(
                 total_time_ms=round(total_time_ms),
                 total_tps=total_tps,
                 colors=tile_colors,
+                opts=opts,
             )
 
         if frame_idx < sol_len:
@@ -1530,18 +1528,22 @@ def generate_frames(
     log.info(f"  render decision: use_gpu={use_gpu}, total_video_frames={len(frame_state)}, unique_states={len(states_needed)} ({len(states_needed)*100//len(frame_state) if frame_state else 0}%%)")
 
     # Pre-compute static stats base + layout for static/dynamic split (both paths)
-    first_needed = states_needed[0] if states_needed else 0
-    first_stats = frame_params[first_needed]["stats_data"]
-    first_is_accurate = frame_params[first_needed]["is_movetimes_accurate"]
-    grid_stages_list = first_stats.get("grid_stages", [])
-    puzzle_w_pre = w * tile_size
-    canvas_w_pre = (puzzle_w_pre + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
-    panel_x_pre = PADDING + puzzle_w_pre + PADDING
-    panel_w_pre = canvas_w_pre - panel_x_pre - PADDING
-    static_base, static_layout = _make_stats_static_base(panel_w_pre, first_stats, first_is_accurate, grid_stages_list)
-    for fp_idx in states_needed:
-        frame_params[fp_idx]["static_stats_base"] = static_base
-        frame_params[fp_idx]["static_stats_layout"] = static_layout
+    if not opts.grid_only:
+        first_needed = states_needed[0] if states_needed else 0
+        first_stats = frame_params[first_needed]["stats_data"]
+        first_is_accurate = frame_params[first_needed]["is_movetimes_accurate"]
+        grid_stages_list = first_stats.get("grid_stages", [])
+        puzzle_w_pre = w * tile_size
+        canvas_w_pre = (puzzle_w_pre + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
+        panel_x_pre = PADDING + puzzle_w_pre + PADDING
+        panel_w_pre = canvas_w_pre - panel_x_pre - PADDING
+        static_base, static_layout = _make_stats_static_base(panel_w_pre, first_stats, first_is_accurate, grid_stages_list)
+        for fp_idx in states_needed:
+            frame_params[fp_idx]["static_stats_base"] = static_base
+            frame_params[fp_idx]["static_stats_layout"] = static_layout
+    else:
+        static_base = None
+        static_layout = None
 
     log.info(f"====== STAGE 1 DONE: {time_module.time() - _t_stage1:.1f}s ======")
     # ── GPU path: render unique states, pipe via frame mapping ──
@@ -1553,7 +1555,7 @@ def generate_frames(
         panel_x = PADDING + puzzle_w + PADDING
         panel_w_val = canvas_w - panel_x - PADDING
 
-        extra_overlay_args = {
+        extra_overlay_args = None if opts.grid_only else {
             "panel_w_val": panel_w_val,
             "static_base": static_base,
             "static_layout": static_layout,
@@ -1837,7 +1839,9 @@ def _batch_cpu_worker(item: dict) -> dict:
     """ProcessPoolExecutor worker — renders one solution with inner parallelism disabled.
     Returns metadata dict for clean progress display."""
     gen = ReplayVideoGenerator()
-    kwargs = {k: v for k, v in item.items() if k != "solution" and k != "output_path"}
+    opts = item.get("opts", RenderOptions())
+    kwargs = {k: v for k, v in item.items()
+              if k not in ("solution", "output_path", "_inferred_size", "opts")}
     t0 = time_module.time()
     gen.generate_simple_replay(
         solution=item["solution"],
@@ -1845,6 +1849,7 @@ def _batch_cpu_worker(item: dict) -> dict:
         use_gpu=False,
         parallel=False,
         show_progress=False,
+        opts=opts,
         **kwargs,
     )
     elapsed = time_module.time() - t0
@@ -1878,6 +1883,7 @@ class ReplayVideoGenerator:
         compression: int = 18,
         parallel: bool = True,
         gpu_renderer=None,
+        opts: RenderOptions = RenderOptions(),
     ):
         log.info(f"generate_simple_replay: output={output_path}, force_fringe={force_fringe}, fps={fps}, compression={compression}, quality={quality}, use_gpu={use_gpu}")
         log.info(f"  tps={tps}, time={time}, scramble_len={len(scramble) if scramble else 0}, size={size}")
@@ -2024,6 +2030,7 @@ class ReplayVideoGenerator:
             compression=compression,
             gpu_renderer=gpu_renderer,
             speed_factor=speed_factor,
+            opts=opts,
         )
 
         log.info(f"  generate_frames returned: frames_count={len(frames)}, frame_state_map_len={len(frame_state_map)}")
@@ -2033,7 +2040,9 @@ class ReplayVideoGenerator:
 
         if show_progress:
             elapsed = time_module.time() - (prog.start_time if prog else time_module.time())
-            print(f"Done! Video saved to: {output_path} (took {elapsed:.1f}s)")
+            unique_frames = len(set(frame_state_map))
+            total_frames = len(frame_state_map)
+            print(f"Done! Video saved to: {output_path} ({unique_frames} unique / {total_frames} total frames, took {elapsed:.1f}s)")
 
         return output_path
 
@@ -2077,7 +2086,7 @@ class ReplayVideoGenerator:
             groups: Dict[tuple, List[dict]] = {}
             for item in items:
                 sz = item.get("_inferred_size") or (0, 0)
-                kval = (sz[0], sz[1], item.get("quality", 1.0))
+                kval = (sz[0], sz[1], item.get("quality", 1.0), item.get("opts", RenderOptions()))
                 groups.setdefault(kval, []).append(item)
 
             renderer = None
@@ -2088,15 +2097,18 @@ class ReplayVideoGenerator:
                     if renderer is None or key != prev_key:
                         if renderer is not None:
                             renderer.cleanup()
-                        w, h, quality = key
+                        w, h, quality, batch_opts = key
                         eff_q = quality + 1.0
                         raw_ts = pick_tile_size(w, h)
-                        eff_ts = max(raw_ts, int(raw_ts * eff_q))
-                        pw_est = w * eff_ts
-                        cw_est = (pw_est + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
-                        pnl_w = cw_est - (PADDING + pw_est + PADDING) - PADDING
-                        min_ch = HEADER_H + PADDING + _compute_stats_full_height(pnl_w, has_grid_stages=True) + PADDING
-                        renderer = GPURenderer(w, h, raw_ts, quality=eff_q, min_canvas_h=min_ch)
+                        if batch_opts.grid_only:
+                            min_ch = None
+                        else:
+                            eff_ts = max(raw_ts, int(raw_ts * eff_q))
+                            pw_est = w * eff_ts
+                            cw_est = (pw_est + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
+                            pnl_w = cw_est - (PADDING + pw_est + PADDING) - PADDING
+                            min_ch = HEADER_H + PADDING + _compute_stats_full_height(pnl_w, has_grid_stages=True) + PADDING
+                        renderer = GPURenderer(w, h, raw_ts, quality=eff_q, min_canvas_h=min_ch, opts=batch_opts)
 
                     for item in group:
                         if cancel_check and cancel_check():

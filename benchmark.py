@@ -3,9 +3,10 @@ Benchmark GPU renderer with stats logging.
 All outputs saved to logs/ folder.
 
 Usage:
-    python benchmark.py         # all puzzles: small (CPU+GPU) + big (GPU only)
-    python benchmark.py --small # small puzzles only (CPU+GPU)
-    python benchmark.py --big   # big puzzles only (GPU only)
+    python benchmark.py                  # all puzzles: small (CPU+GPU) + big (GPU only)
+    python benchmark.py --small          # small puzzles only (CPU+GPU)
+    python benchmark.py --big            # big puzzles only (GPU only)
+    python benchmark.py --no-layout      # all renders without timer/stats panel
 """
 
 import subprocess
@@ -15,7 +16,7 @@ import json
 import re
 
 
-def run_bench(label: str, filepath: str, extra_args: list, output_path: str) -> tuple:
+def run_bench(label: str, filepath: str, extra_args: list, output_path: str, no_layout=False) -> tuple:
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
     cmd = [
@@ -24,7 +25,10 @@ def run_bench(label: str, filepath: str, extra_args: list, output_path: str) -> 
         "--quality", "1.0",
         "--output", output_path,
         "--log",
-    ] + extra_args
+    ]
+    if no_layout:
+        cmd.append("--no-layout")
+    cmd += extra_args
 
     detail = {
         "label": label,
@@ -56,6 +60,13 @@ def run_bench(label: str, filepath: str, extra_args: list, output_path: str) -> 
     m = re.search(r"took\s+([\d.]+)s", result.stdout)
     elapsed = float(m.group(1)) if m else None
     detail["elapsed"] = elapsed
+
+    m2 = re.search(r"(\d+)\s+unique\s*/\s*(\d+)\s+total\s+frames", result.stdout)
+    unique_frames = int(m2.group(1)) if m2 else None
+    total_frames = int(m2.group(2)) if m2 else None
+    detail["unique_frames"] = unique_frames
+    detail["total_frames"] = total_frames
+
     print(f"done ({elapsed:.1f}s)" if elapsed else "done")
     return elapsed, detail
 
@@ -78,14 +89,13 @@ def parse_puzzle_info(content: str):
     return {
         "puzzle_size": f"{len(matrix)}x{len(matrix[0])}",
         "moves": len(expanded),
-        "frames": len(expanded) + 1,
         "movetimes_count": len(movetimes) if has_mt else 0,
         "movetimes_accurate": has_mt,
         "tps_from_url": tps,
     }
 
 
-def process_replays(replays_dir, logs_dir, gpu_only):
+def process_replays(replays_dir, logs_dir, gpu_only, no_layout=False):
     """Scan a replay directory, run benchmarks, return list of result dicts."""
     if not os.path.isdir(replays_dir):
         return []
@@ -121,13 +131,14 @@ def process_replays(replays_dir, logs_dir, gpu_only):
 
         if not gpu_only:
             cpu_out = os.path.join(logs_dir, f"{puzzle_label}_cpu.mp4")
-            t, d = run_bench(f"{puzzle_label} CPU", filepath, ["--no-gpu"], cpu_out)
+            t, d = run_bench(f"{puzzle_label} CPU", filepath, ["--no-gpu"], cpu_out, no_layout=no_layout)
             results.append(("CPU baseline", t))
             if d:
                 details.append(d)
 
+        mode_label = "GPU no-layout" if no_layout else "GPU"
         gpu_out = os.path.join(logs_dir, f"{puzzle_label}_gpu.mp4")
-        t, d = run_bench(f"{puzzle_label} GPU", filepath, [], gpu_out)
+        t, d = run_bench(f"{puzzle_label} {mode_label}", filepath, [], gpu_out, no_layout=no_layout)
         results.append(("GPU", t))
         if d:
             details.append(d)
@@ -156,14 +167,19 @@ def process_replays(replays_dir, logs_dir, gpu_only):
             else:
                 print(f"  {name:<25} {'FAILED':>8s}")
 
-        # Extract times for summary
+        # Extract times and unique frames for summary
         gpu_time = None
         gpu_info = ""
+        unique_frames = None
+        total_frames = None
         for (name, t), d in zip(results, details):
             if name.startswith("GPU") and t is not None:
                 gpu_time = t
             if d and d.get("gpu_info"):
                 gpu_info = d["gpu_info"]
+            if d and d.get("unique_frames") is not None:
+                unique_frames = d["unique_frames"]
+                total_frames = d["total_frames"]
 
         speedup = cpu_time / gpu_time if cpu_time and gpu_time and gpu_time > 0 else 0
 
@@ -171,12 +187,14 @@ def process_replays(replays_dir, logs_dir, gpu_only):
             "puzzle": puzzle_label,
             "size": puzzle_info["puzzle_size"],
             "moves": puzzle_info["moves"],
-            "frames": puzzle_info["frames"],
+            "unique_frames": unique_frames,
+            "total_frames": total_frames,
             "cpu_time_seconds": cpu_time,
             "gpu_time_seconds": gpu_time,
             "speedup_vs_cpu": round(speedup, 2) if speedup else None,
             "gpu_info": gpu_info,
             "gpu_only": gpu_only,
+            "no_layout": no_layout,
         })
 
     return results_list
@@ -189,6 +207,8 @@ def main():
                         help="Run small puzzles (test_replays/, CPU+GPU)")
     parser.add_argument("--big", action="store_true",
                         help="Run big puzzles (test_replays_gpu/, GPU only)")
+    parser.add_argument("--no-layout", action="store_true",
+                        help="Render with --no-layout (no timer bar or stats panel)")
     args = parser.parse_args()
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -206,13 +226,13 @@ def main():
     if do_small:
         summary_data += process_replays(
             os.path.join(script_dir, "test_replays"),
-            logs_dir, gpu_only=False,
+            logs_dir, gpu_only=False, no_layout=args.no_layout,
         )
 
     if do_big:
         summary_data += process_replays(
             os.path.join(script_dir, "test_replays_gpu"),
-            logs_dir, gpu_only=True,
+            logs_dir, gpu_only=True, no_layout=args.no_layout,
         )
 
     if not summary_data:
@@ -220,20 +240,21 @@ def main():
         sys.exit(1)
 
     print(f"\n\n{'=' * 60}")
-    print(f"  OVERALL BENCHMARK SUMMARY")
+    title = "OVERALL BENCHMARK SUMMARY (no-layout)" if args.no_layout else "OVERALL BENCHMARK SUMMARY"
+    print(f"  {title}")
     print(f"{'=' * 60}")
-    print(f"  {'Puzzle':<10} {'Moves':<7} {'Frames':<7} {'CPU':>8s} {'GPU':>8s} {'Speedup':>8s} {'GPU Info'}")
+    print(f"  {'Puzzle':<10} {'Moves':<7} {'Unique':<7} {'CPU':>8s} {'GPU':>8s} {'Speedup':>8s} {'GPU Info'}")
     print(f"  {'-' * 10} {'-' * 7} {'-' * 7} {'-' * 8} {'-' * 8} {'-' * 8} {'-' * 30}")
 
     for d in summary_data:
         label = d["puzzle"]
         moves = d["moves"]
-        frames = d["frames"]
+        unique = d["unique_frames"] if d["unique_frames"] else "?"
         cpu_str = f"{d['cpu_time_seconds']:.1f}s" if d["cpu_time_seconds"] else "—"
         gpu_str = f"{d['gpu_time_seconds']:.1f}s" if d["gpu_time_seconds"] else "—"
         speedup_str = f"{d['speedup_vs_cpu']:.1f}x" if d["speedup_vs_cpu"] else "—"
         gpu_info = d.get("gpu_info", "")
-        print(f"  {label:<10} {moves:<7} {frames:<7} {cpu_str:>8s} {gpu_str:>8s} {speedup_str:>8s} {gpu_info}")
+        print(f"  {label:<10} {moves:<7} {str(unique):<7} {cpu_str:>8s} {gpu_str:>8s} {speedup_str:>8s} {gpu_info}")
 
     print("=" * 60)
 

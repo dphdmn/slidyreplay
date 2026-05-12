@@ -13,6 +13,7 @@ from ttkbootstrap.constants import *
 
 from replay_video import ReplayVideoGenerator, parse_replay_url, CancelError
 from replay_generator import expand_solution, parse_scramble_guess
+from geometry import RenderOptions
 from debug_log import get_logger, init_logfile
 
 log = get_logger()
@@ -194,6 +195,10 @@ class ReplayGUI(tb.Window):
         self.file_path_var = tk.StringVar()
         self.progress_text = tk.StringVar(value="Ready")
         self._gpu_info_var = tk.StringVar(value="")
+        self.no_layout_var = tk.BooleanVar(value=False)
+        self.no_border_var = tk.BooleanVar(value=False)
+        self.no_secondary_border_var = tk.BooleanVar(value=False)
+        self.no_numbers_var = tk.BooleanVar(value=False)
 
         _register_fonts()
         os.makedirs(self.out_folder_var.get(), exist_ok=True)
@@ -312,6 +317,20 @@ class ReplayGUI(tb.Window):
                                          font=(FONT_FAMILY, 8), foreground="#ffa500", anchor="w")
         self.quality_warning.grid(row=r, column=0, sticky="ew", pady=(0, 8), padx=12)
         self.quality_warning.grid_remove()
+        r += 1
+
+        # ── Render Options checkboxes ──
+        r += 1
+        render_opts_row = tb.Frame(settings)
+        render_opts_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
+        tb.Checkbutton(render_opts_row, text="No layout", variable=self.no_layout_var,
+                       bootstyle="round-toggle").pack(side="left", padx=(0, 12))
+        tb.Checkbutton(render_opts_row, text="No border", variable=self.no_border_var,
+                       bootstyle="round-toggle").pack(side="left", padx=(0, 12))
+        tb.Checkbutton(render_opts_row, text="No sec border", variable=self.no_secondary_border_var,
+                       bootstyle="round-toggle").pack(side="left", padx=(0, 12))
+        tb.Checkbutton(render_opts_row, text="No numbers", variable=self.no_numbers_var,
+                       bootstyle="round-toggle").pack(side="left")
         r += 1
 
         compression_row = tb.Frame(settings)
@@ -683,12 +702,19 @@ class ReplayGUI(tb.Window):
     def _process_item(self, idx, mode, input_str, output_dir, total):
         log.info(f"_process_item[{idx}]: mode={mode}, input_str_len={len(input_str)}")
         try:
+            opts = RenderOptions(
+                grid_only=self.no_layout_var.get(),
+                no_border=self.no_border_var.get(),
+                no_secondary_border=self.no_secondary_border_var.get(),
+                no_numbers=self.no_numbers_var.get(),
+            )
             params = {
                 "force_fringe": self.force_fringe_var.get(),
                 "quality": self.quality_var.get(),
                 "fps": self.fps_var.get(),
                 "compression": self.compression_var.get(),
                 "speed_factor": self._get_speed_factor(),
+                "opts": opts,
             }
             log.info(f"_process_item[{idx}]: base_params={params}")
 
@@ -786,6 +812,12 @@ class ReplayGUI(tb.Window):
                 "fps": self.fps_var.get(),
                 "compression": self.compression_var.get(),
                 "speed_factor": self._get_speed_factor(),
+                "opts": RenderOptions(
+                    grid_only=self.no_layout_var.get(),
+                    no_border=self.no_border_var.get(),
+                    no_secondary_border=self.no_secondary_border_var.get(),
+                    no_numbers=self.no_numbers_var.get(),
+                ),
             }
 
             if mode == "url":
@@ -1089,8 +1121,25 @@ Examples:
                         help="Force fringe colors (disable grids detection)")
     parser.add_argument("--log", action="store_true", default=False,
                         help="Enable debug logging to file (logs/debug_<timestamp>.log)")
+    parser.add_argument("--no-layout", action="store_true",
+                        help="Only render the puzzle grid on dark background — no timer bar, no stats panel")
+    parser.add_argument("--grid-only", action="store_true", dest="no_layout",
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--no-border", action="store_true",
+                        help="Suppress tile border outlines")
+    parser.add_argument("--no-secondary-border", action="store_true",
+                        help="Suppress secondary color bar borders")
+    parser.add_argument("--no-numbers", action="store_true",
+                        help="Suppress tile number text")
 
     args = parser.parse_args()
+
+    opts = RenderOptions(
+        grid_only=args.no_layout,
+        no_border=args.no_border,
+        no_secondary_border=args.no_secondary_border,
+        no_numbers=args.no_numbers,
+    )
 
     if args.speedup <= 0:
         parser.error("--speedup must be > 0")
@@ -1129,13 +1178,13 @@ Examples:
         gpu_str = "GPU OFF (CPU fallback)"
     print(f"[ReplayVideoGenerator] {gpu_str}")
 
-    def run_single(solution, output, **kwargs):
+    def run_single(solution, output, opts=RenderOptions(), **kwargs):
         try:
             gen = ReplayVideoGenerator(cleanup_frames=True)
             gen.generate_simple_replay(
                 solution=solution, output_path=output,
                 show_progress=True, use_gpu=use_gpu,
-                fps=kwargs.pop("fps", 60), **kwargs
+                fps=kwargs.pop("fps", 60), opts=opts, **kwargs
             )
         except RuntimeError as e:
             print(f"\n[CRITICAL ERROR] {e}", file=sys.stderr)
@@ -1191,7 +1240,7 @@ Examples:
                 if movetimes:
                     kwargs["movetimes"] = movetimes
 
-            batch_items.append({"solution": sol, "output_path": output_path, **kwargs})
+            batch_items.append({"solution": sol, "output_path": output_path, "opts": opts, **kwargs})
 
         gen = ReplayVideoGenerator()
         gen.batch_render(batch_items, use_gpu=use_gpu, show_progress=True)
@@ -1209,14 +1258,14 @@ Examples:
             if mode in ("url", "batch"):
                 try:
                     sol, tps, scramble, movetimes = parse_replay_url(val)
-                    run_single(sol, output_path,
+                    run_single(sol, output_path, opts=opts,
                                tps=tps or args.tps, scramble=scramble,
                                movetimes=movetimes, quality=args.quality,
                                fps=args.fps, compression=args.compression,
                                speed_factor=args.speedup,
                                force_fringe=args.force_fringe)
                 except Exception:
-                    run_single(val, output_path,
+                    run_single(val, output_path, opts=opts,
                                tps=None if movetimes else args.tps, time=args.time,
                                scramble=args.scramble, size=args.size,
                                quality=args.quality, movetimes=movetimes,
@@ -1224,7 +1273,7 @@ Examples:
                                speed_factor=args.speedup,
                                force_fringe=args.force_fringe)
             else:
-                run_single(val, output_path,
+                run_single(val, output_path, opts=opts,
                            tps=None if movetimes else args.tps, time=args.time,
                            scramble=args.scramble, size=args.size,
                            quality=args.quality, movetimes=movetimes,

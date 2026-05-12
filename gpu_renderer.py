@@ -34,26 +34,12 @@ FONT = os.path.join(_font_dir, "Roboto-Regular.ttf")
 FONT_BOLD = os.path.join(_font_dir, "Roboto-Bold.ttf")
 FONT_MONO = os.path.join(_font_dir, "JetBrainsMono-Regular.ttf")
 FONT_MONO_BOLD = os.path.join(_font_dir, "JetBrainsMono-Bold.ttf")
-BG_COLOR = (18, 18, 18)
-TILE_BG = (51, 51, 51)
-TILE_TEXT_COLOR = (0, 0, 0)
-TILE_BORDER_COLOR = (0, 0, 0)
-TILE_BORDER_WIDTH = 1
-PADDING = 20
-STATS_PANEL_WIDTH = 320
-HEADER_H = 56
-INFO_H = 40
-TIMER_BG = (22, 22, 22)
-PANEL_BG = (17, 17, 17)
-PANEL_ALPHA = 0.69
-CYAN = (0, 255, 255)
-GREEN = (0, 255, 0)
-WHITE_C = (255, 255, 255)
-GRAY_C = (128, 128, 128)
-LIGHT_GRAY = (200, 200, 200)
-ACCURATE_COLOR = (0, 255, 0)
-INACCURATE_COLOR = (255, 255, 255)
-NULL_COLOR = (248, 24, 148)
+from geometry import (PADDING, HEADER_H, STATS_PANEL_WIDTH, INFO_H, TIMER_HEIGHT,
+    BG_COLOR, TILE_BG, TILE_TEXT_COLOR, TILE_BORDER_COLOR, NULL_COLOR,
+    PANEL_BG, PANEL_ALPHA, TIMER_BG, ACCURATE_COLOR, INACCURATE_COLOR,
+    WHITE, CYAN, GREEN, GRAY, LIGHT_GRAY,
+    TILE_BORDER_WIDTH, TILE_BORDER_RADIUS_RATIO, BASE_SIZE,
+    compute_canvas_dimensions, RenderOptions)
 
 
 _font_cache = {}
@@ -112,7 +98,8 @@ def _render_timer_text(timer_text: str) -> Image.Image:
 
 
 class GPURenderer:
-    def __init__(self, width: int, height: int, tile_size: int, quality: float = 1.0, min_canvas_h: int = None):
+    def __init__(self, width: int, height: int, tile_size: int, quality: float = 1.0,
+                 min_canvas_h: int = None, opts: Optional[RenderOptions] = None):
         """
         GPU renderer with automatic optimal batching.
 
@@ -120,6 +107,7 @@ class GPURenderer:
         available free memory allows, while respecting a soft 50% VRAM ceiling.
         No knobs required.
         """
+        self.opts = opts or RenderOptions()
         self.w = width
         self.h = height
         ts = max(tile_size, int(tile_size * quality))
@@ -130,24 +118,28 @@ class GPURenderer:
 
         puzzle_w = width * ts
         puzzle_h = height * ts
-        self.canvas_w = (puzzle_w + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
-        default_h = (HEADER_H + puzzle_h + PADDING * 3 + 1) // 2 * 2
-        if min_canvas_h is not None:
-            default_h = max(default_h, min_canvas_h)
-        self.canvas_h = (default_h + 1) // 2 * 2
+        self.canvas_w, self.canvas_h = compute_canvas_dimensions(
+            width, height, ts, grid_only=self.opts.grid_only
+        )
+        if not self.opts.grid_only and min_canvas_h is not None:
+            self.canvas_h = max(self.canvas_h, min_canvas_h)
+            self.canvas_h = (self.canvas_h + 1) // 2 * 2
         self.grid_x = PADDING
-        self.grid_y = PADDING + HEADER_H + PADDING
+        self.grid_y = PADDING if self.opts.grid_only else PADDING + HEADER_H + PADDING
         self.panel_x = self.grid_x + puzzle_w + PADDING
         self.panel_y = self.grid_y
         self.panel_w = self.canvas_w - self.panel_x - PADDING
         self.panel_h = self.canvas_h - self.panel_y - PADDING
-        self.timer_bbox = (PADDING, PADDING, self.canvas_w - PADDING, PADDING + HEADER_H)
+        self.timer_bbox = (0, 0, 0, 0) if self.opts.grid_only else (PADDING, PADDING, self.canvas_w - PADDING, PADDING + HEADER_H)
 
+        self._init_success = False
         self._device = None
         self._num_batch = None
         self._tile_mask = None
         self._timer_bg = None
         self._panel_bg = None
+        self._panel_bg_rgb = None
+        self._panel_bg_a = None
         self._static_stats_bg_rgb = None
         self._static_stats_bg_a = None
         self._overlay_text_positions = None
@@ -175,13 +167,16 @@ class GPURenderer:
         if self._device is not None and self._device.type == "cuda":
             cuda_dev = self._device
 
-            tex_map = _render_number_textures(width * height, ts, self.font_size)
-            n = len(tex_map)
-            num_batch = torch.zeros(n, ts, ts, 4, device=cuda_dev, dtype=torch.float32)
-            for num, pil in tex_map.items():
-                arr = torch.from_numpy(np.array(pil)).to(cuda_dev).float() / 255.0
-                num_batch[num] = arr
-            self._num_batch = num_batch
+            if self.opts.no_numbers:
+                self._num_batch = None
+            else:
+                tex_map = _render_number_textures(width * height, ts, self.font_size)
+                n = len(tex_map)
+                num_batch = torch.zeros(n, ts, ts, 4, device=cuda_dev, dtype=torch.float32)
+                for num, pil in tex_map.items():
+                    arr = torch.from_numpy(np.array(pil)).to(cuda_dev).float() / 255.0
+                    num_batch[num] = arr
+                self._num_batch = num_batch
 
             # Tile mask (all ones) and its complement
             mask = torch.ones(ts, ts, 1, device=cuda_dev, dtype=torch.float32)
@@ -226,10 +221,11 @@ class GPURenderer:
             tx1, ty1, tx2, ty2 = self.timer_bbox
             tw = tx2 - tx1
             th = ty2 - ty1
-            timer_bg_pil = Image.new("RGB", (tw, th), TIMER_BG)
-            self._timer_bg = torch.from_numpy(
-                np.array(timer_bg_pil)
-            ).to(cuda_dev).float() / 255.0
+            if th > 0 and tw > 0:
+                timer_bg_pil = Image.new("RGB", (tw, th), TIMER_BG)
+                self._timer_bg = torch.from_numpy(
+                    np.array(timer_bg_pil)
+                ).to(cuda_dev).float() / 255.0
 
             # Stats panel background + border
             if self.panel_w > 0 and self.panel_h > 0:
@@ -248,9 +244,12 @@ class GPURenderer:
                 self._panel_bg_rgb = panel_arr[:, :, :3]
                 self._panel_bg_a = panel_arr[:, :, 3:4]
 
+        self._init_success = True
+
     @property
     def available(self):
-        return self._device is not None and self._device.type == "cuda" and self._num_batch is not None
+        return (self._device is not None and self._device.type == "cuda"
+                and self._init_success)
 
     @staticmethod
     def _blend_rgba_inplace(dst: torch.Tensor, src_rgba: torch.Tensor, x0: int, y0: int):
@@ -413,6 +412,15 @@ class GPURenderer:
 
                 # ── Upload batch data ──
                 batch_params = frame_params_list[batch_start:batch_end]
+                if batch_params:
+                    p_opts = batch_params[0].get("opts")
+                    if not isinstance(p_opts, RenderOptions):
+                        raise TypeError(f"batch_params[0]['opts'] must be RenderOptions, got {type(p_opts)}")
+                    if p_opts != self.opts:
+                        raise ValueError(
+                            f"Item opts={p_opts} != renderer opts={self.opts}. "
+                            "All items in a render batch must use identical RenderOptions."
+                        )
                 mats_np = np.stack([p["matrix"] for p in batch_params], axis=0)
                 mats = torch.from_numpy(mats_np).to(dev, non_blocking=True)
 
@@ -447,7 +455,8 @@ class GPURenderer:
                 # ── Canvas ──
                 canvas = torch.empty(batch_n, ch, cw, 3, device=dev, dtype=torch.float32)
                 canvas[:] = c_bg.view(1, 1, 1, 3)
-                canvas[:, ty1:ty2, tx1:tx2] = timer_bg.view(1, th, tw, 3)
+                if timer_bg is not None and th > 0 and tw > 0:
+                    canvas[:, ty1:ty2, tx1:tx2] = timer_bg.view(1, th, tw, 3)
                 if panel_bg_rgb is not None and self.panel_h > 0 and self.panel_w > 0:
                     ph_p, pw_p = self.panel_h, self.panel_w
                     canvas[:, py:py + ph_p, px:px + pw_p] = (
@@ -461,9 +470,14 @@ class GPURenderer:
                     n_rows = row_end - row_start
 
                     mats_chunk = mats[:, row_start:row_end, :]
-                    nums_chunk = num_tex[mats_chunk]   # (B, n_rows, W, ts, ts, 4)
-                    text_rgb_chunk = nums_chunk[..., :3]
-                    text_a_chunk = nums_chunk[..., 3:]
+                    if not self.opts.no_numbers and num_tex is not None:
+                        nums_chunk = num_tex[mats_chunk]
+                        text_rgb_chunk = nums_chunk[..., :3]
+                        text_a_chunk = nums_chunk[..., 3:]
+                    else:
+                        nums_chunk = None
+                        text_rgb_chunk = None
+                        text_a_chunk = None
 
                     cols_chunk = cols[:, row_start:row_end, ...]
                     if batch_has_colors:
@@ -476,21 +490,26 @@ class GPURenderer:
                     # In‑place tile blending
                     colored = cols_chunk.view(batch_n, n_rows, w, 1, 1, 3) * tm
                     colored.addcmul_(c_bg_6d, tm_inv)
-                    colored.mul_(bm_inv).addcmul_(c_border_6d, bm)
+                    if not self.opts.no_border:
+                        colored.mul_(bm_inv).addcmul_(c_border_6d, bm)
 
                     if batch_has_colors:
                         bar_fill_factor = has_sec_chunk * bar_fill_mask
-                        bar_border_factor = has_sec_chunk * bar_border_mask
 
                         colored.mul_(1 - bar_fill_factor)
                         sec_contrib = sec_chunk.view(batch_n, n_rows, w, 1, 1, 3) * bar_fill_mask
                         colored.add_(sec_contrib * bar_fill_factor)
                         del sec_contrib
 
-                        colored.mul_(1 - bar_border_factor)
-                        colored.addcmul_(c_border_6d, bar_border_factor)
+                        if not self.opts.no_secondary_border:
+                            bar_border_factor = has_sec_chunk * bar_border_mask
+                            colored.mul_(1 - bar_border_factor)
+                            colored.addcmul_(c_border_6d, bar_border_factor)
 
-                    tile_chunk = text_rgb_chunk * text_a_chunk + colored * (1 - text_a_chunk)
+                    if not self.opts.no_numbers and num_tex is not None:
+                        tile_chunk = text_rgb_chunk * text_a_chunk + colored * (1 - text_a_chunk)
+                    else:
+                        tile_chunk = colored
                     tile_chunk = tile_chunk.permute(0, 1, 3, 2, 4, 5).reshape(batch_n, n_rows * ts, pw, 3)
                     canvas_y = gy + row_start * ts
                     canvas[:, canvas_y:canvas_y + n_rows * ts, gx:gx + pw] = tile_chunk
@@ -591,5 +610,12 @@ class GPURenderer:
                     setattr(self, attr, None)
             torch.cuda.empty_cache()
             log.info("GPURenderer.cleanup: CUDA tensors freed")
+
+    def __del__(self):
+        if self._device is not None:
+            try:
+                self.cleanup()
+            except Exception:
+                pass
 
     # _cpu_fallback removed — GPU errors now raise RuntimeError instead of silently falling back

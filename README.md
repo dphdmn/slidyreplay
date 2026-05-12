@@ -43,6 +43,10 @@ python main.py --batch solutions.txt
 | `--force-fringe` | Force fringe colors (disable grids detection) |
 | `--batch` | File with solutions/URLs (one per line) |
 | `--log` | Enable debug logging to `logs/debug_\<timestamp\>.log` |
+| `--no-layout` | Render only the puzzle grid — no timer bar, no stats panel |
+| `--no-border` | Suppress tile border outlines |
+| `--no-secondary-border` | Suppress secondary color bar borders |
+| `--no-numbers` | Suppress tile number text (improves compression) |
 
 Debug logging is **disabled by default**. Pass `--log` to enable:
 
@@ -67,18 +71,18 @@ The GUI shows the GPU name when available, or "Not available — install CUDA" w
 
 **Settings:** quality=1.0, 60 FPS.
 
-| Puzzle | Moves | CPU    | GPU    | Speedup |
-| ------ | ----- | ------ | ------ | ------- |
-| 4×4    | 26    | 1.1s   | 0.6s   | 1.8×    |
-| 5×5    | 98    | 2.0s   | 1.6s   | 1.3×    |
-| 6×6    | 213   | 3.8s   | 2.9s   | 1.3×    |
-| 7×7    | 425   | 7.7s   | 6.0s   | 1.3×    |
-| 8×8    | 707   | 14.0s  | 11.1s  | 1.3×    |
-| 9×9    | 1251  | 26.7s  | 18.1s  | 1.5×    |
-| 10×10  | 1569  | 27.4s  | 22.3s  | 1.2×    |
-| 12×12  | 2883  | —      | 36.4s  | —       |
-| 16×16  | 7132  | —      | 112.6s | —       |
-| 20×20  | 14203 | —      | 217.0s | —       |
+| Puzzle | Moves | Unique | CPU    | GPU    | Speedup |
+| ------ | ----- | ------ | ------ | ------ | ------- |
+| 4×4    | 26    |        | 1.1s   | 0.6s   | 1.8×    |
+| 5×5    | 98    |        | 2.0s   | 1.6s   | 1.3×    |
+| 6×6    | 213   |        | 3.8s   | 2.9s   | 1.3×    |
+| 7×7    | 425   |        | 7.7s   | 6.0s   | 1.3×    |
+| 8×8    | 707   |        | 14.0s  | 11.1s  | 1.3×    |
+| 9×9    | 1251  |        | 26.7s  | 18.1s  | 1.5×    |
+| 10×10  | 1569  |        | 27.4s  | 22.3s  | 1.2×    |
+| 12×12  | 2883  |        | —      | 36.4s  | —       |
+| 16×16  | 7132  |        | —      | 112.6s | —       |
+| 20×20  | 14203 |        | —      | 217.0s | —       |
 
 
 ### Installing GPU support
