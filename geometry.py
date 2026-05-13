@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass
 from functools import lru_cache
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 PADDING = 20
@@ -157,3 +158,65 @@ class RenderOptions:
     no_border: bool = False
     no_secondary_border: bool = False
     no_numbers: bool = False
+
+
+@dataclass
+class TileSpriteCache:
+    tile_size: int
+    base_sprites: dict
+    number_texts: dict
+    bar_sprites: dict
+
+
+_RED = (200, 103, 103)
+_BLUE = (141, 179, 255)
+
+
+def _solid_base(color, tile_size, opts):
+    im = Image.new("RGBA", (tile_size, tile_size))
+    draw = ImageDraw.Draw(im)
+    draw.rectangle([(0, 0), (tile_size - 1, tile_size - 1)], fill=color)
+    if tile_size > 1 and not opts.no_border:
+        draw.rectangle(
+            [(0, 0), (tile_size - 1, tile_size - 1)],
+            outline=TILE_BORDER_COLOR, width=TILE_BORDER_WIDTH
+        )
+    return im
+
+
+def _bar_sprite(color, tile_size, opts):
+    bar_h = max(2, int(tile_size * 0.1))
+    bar_off = max(2, int(tile_size * 0.06))
+    bar_inset = max(2, int(tile_size * 0.1))
+    y0 = tile_size - bar_h - bar_off
+    y1 = tile_size - bar_off
+    x0 = bar_inset
+    x1 = tile_size - bar_inset
+
+    im = Image.new("RGBA", (tile_size, tile_size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(im)
+    bar_bbox = (x0, y0, x1, y1)
+    draw.rectangle(bar_bbox, fill=color)
+    if tile_size > 1 and not opts.no_secondary_border:
+        draw.rectangle(bar_bbox, outline=TILE_BORDER_COLOR, width=1)
+    return im
+
+
+def select_base(main_bg, num, cache: TileSpriteCache):
+    if main_bg is None:
+        return cache.base_sprites[TILE_BG]
+    if isinstance(main_bg, np.ndarray):
+        main_bg = tuple(int(x) for x in main_bg.ravel())
+    else:
+        main_bg = tuple(int(x) for x in main_bg)
+    return cache.base_sprites[main_bg]
+
+
+def select_bar(sec_bg, cache: TileSpriteCache):
+    if sec_bg is None:
+        return None
+    if isinstance(sec_bg, np.ndarray):
+        sec_bg = tuple(int(x) for x in sec_bg.ravel())
+    else:
+        sec_bg = tuple(int(x) for x in sec_bg)
+    return cache.bar_sprites.get(sec_bg)

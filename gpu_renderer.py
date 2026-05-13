@@ -2,6 +2,8 @@ from __future__ import annotations
 import math
 import json
 import time as _time_module
+import threading
+from queue import Queue
 import numpy as np
 from PIL import Image, ImageDraw
 from typing import List, Optional
@@ -196,6 +198,53 @@ class GPURenderer:
         dst_slice = dst[y0:y0 + h, x0:x0 + w]
         dst_slice.mul_(1.0 - a).add_(src[:, :, :3] * a)
 
+    def upload_sprite_atlas(self, tile_sprites, grid_states, all_fringe_schemes, w, h):
+        dev = self._device
+        ts = self.tile_size
+
+        base_items = []
+        base_color_to_idx = {}
+        for color, pil in tile_sprites.base_sprites.items():
+            idx = len(base_items)
+            arr = torch.from_numpy(np.array(pil)).to(dev).float() / 255.0
+            base_items.append(arr)
+            base_color_to_idx[color] = idx
+
+        self._base_atlas = torch.stack(base_items) if base_items else None
+
+        bar_items = []
+        bar_color_to_idx = {}
+        for color, pil in tile_sprites.bar_sprites.items():
+            idx = len(bar_items)
+            arr = torch.from_numpy(np.array(pil)).to(dev).float() / 255.0
+            bar_items.append(arr)
+            bar_color_to_idx[color] = idx
+
+        self._bar_atlas = torch.stack(bar_items) if bar_items else None
+
+        self._base_lookup = {}
+        self._bar_lookup = {}
+        for state_key, state in grid_states.items():
+            if not isinstance(state_key, (int, float)):
+                continue
+            state_sig = id(state)
+            num_to_base = torch.zeros(w * h + 1, device=dev, dtype=torch.int32)
+            num_to_bar = torch.full((w * h + 1,), -1, device=dev, dtype=torch.int32)
+            for num in range(w * h + 1):
+                from replay_video import get_tile_colors
+                main_bg, sec_bg = get_tile_colors(num, state, all_fringe_schemes, w)
+                base_color = TILE_BG if main_bg is None else tuple(int(x) for x in main_bg)
+                num_to_base[num] = base_color_to_idx.get(base_color, 0)
+                if sec_bg is not None:
+                    bar_color = tuple(int(x) for x in sec_bg)
+                    if bar_color in bar_color_to_idx:
+                        num_to_bar[num] = bar_color_to_idx[bar_color]
+            self._base_lookup[state_sig] = num_to_base
+            self._bar_lookup[state_sig] = num_to_bar
+
+        log.info(f"  _upload_sprite_atlas: {len(base_items)} base sprites, {len(bar_items)} bar sprites, "
+                 f"{len(self._base_lookup)} state lookups")
+
     def render_frames(
         self,
         frame_params_list: List[dict],
@@ -243,24 +292,28 @@ class GPURenderer:
         total_mem = torch.cuda.get_device_properties(dev).total_memory
         batch_has_colors = any(p.get("colors_main") is not None for p in frame_params_list)
 
-        # Soft 50% VRAM ceiling – we’ll exceed it if needed, bounded by free memory
-        target_mem_fraction = 0.70
+        # VRAM ceiling: stay well below total to avoid OOM / unified memory thrashing
+        vram_ceiling = int(total_mem * 0.82)
+        target_mem_fraction = 0.50
         target_used_mem = int(total_mem * target_mem_fraction)
 
-        per_frame_ema = 0.0
+        # Estimate per-frame cost from canvas size (conservative: 3x canvas bytes)
+        per_frame_ema = max(1, ch * cw * 3 * 4 * 3)
         batch_size = 1
         prev_batch_n = 0
 
         self._stats["batch_size"] = batch_size
         self._stats["batch_mem_mb"] = 0
-        self._stats["per_frame_ema_mb"] = 0.0
+        self._stats["per_frame_ema_mb"] = per_frame_ema / (1024 * 1024)
         self._stats["target_used_mem_mb"] = target_used_mem // (1024 * 1024)
+        self._stats["vram_ceiling_mb"] = vram_ceiling // (1024 * 1024)
 
         # Row‑chunked rendering: 2 rows per chunk for large puzzles
         chunk_rows = 2 if h > 6 else h
 
         frames = []
         batch_start = 0
+        _overlay_queue = None
 
         # Permanent reserved memory right after static tensors are loaded
         reserved_permanent = torch.cuda.memory_reserved(dev)
@@ -275,27 +328,29 @@ class GPURenderer:
                 remaining = n - batch_start
 
                 # ── Memory‑aware batching ──
+                reserved_mem = torch.cuda.memory_reserved(dev)
+
+                # Enforce VRAM ceiling: flush cache if we're over
+                if reserved_mem > vram_ceiling:
+                    torch.cuda.empty_cache()
+                    reserved_mem = torch.cuda.memory_reserved(dev)
+
                 allocated_mem = torch.cuda.memory_allocated(dev)
                 free_mem, _ = torch.cuda.mem_get_info(dev)
 
-                # 256 MB safety margin to avoid edge‑cases
-                reserve_margin = 128 * 1024 * 1024
+                # Safety margin
+                reserve_margin = 384 * 1024 * 1024
 
-                # Soft target headroom – if allocated_mem exceeds the target we ignore it
-                # and rely solely on physical headroom.
-                target_headroom = target_used_mem - allocated_mem - reserve_margin
-                physical_headroom = int((total_mem - allocated_mem) * 0.90)
+                # Headroom based on reserved memory (accounts for cached allocations)
+                headroom = vram_ceiling - reserved_mem - reserve_margin
 
-                if target_headroom > 0:
-                    usable = min(target_headroom, physical_headroom)
-                else:
-                    usable = physical_headroom
-
-                if usable < 0:
-                    usable = 0
+                if headroom < 0:
+                    headroom = 0
 
                 if per_frame_ema > 0:
-                    max_by_budget = max(1, int(usable / per_frame_ema * 0.85))
+                    # Peak per-frame cost is ~1.5x marginal EMA (temp buffers during render)
+                    peak_cost = per_frame_ema * 1.5
+                    max_by_budget = max(1, int(headroom / peak_cost))
                     batch_size = max(1, min(remaining, max_by_budget))
                     # EMA dampener: smooth batch size transitions
                     if prev_batch_n > 0:
@@ -312,45 +367,32 @@ class GPURenderer:
                 self._stats["batch_mem_mb"] = (ch * cw * 3 * 4 * batch_size) // (1024 * 1024)
 
                 log.info(f"  BATCH[{self._batch_counter}]: start={batch_start}, sz={batch_size}, "
-                         f"free={free_mem//(1024*1024)}MB, allocated={allocated_mem//(1024*1024)}MB, "
-                         f"usable={usable//(1024*1024)}MB, ema={per_frame_ema//(1024*1024)}MB, "
+                         f"free={free_mem//(1024*1024)}MB, reserved={reserved_mem//(1024*1024)}MB, "
+                         f"headroom={headroom//(1024*1024)}MB, ema={per_frame_ema//(1024*1024)}MB, "
                          f"batch_mem={self._stats['batch_mem_mb']}MB, t={_time_module.time()-_batch_t0:.2f}s, ram={_ram_delta_mb()}MB")
 
-                # Early OOM guard — even the calibration batch needs VRAM
-                if batch_n == 1 and per_frame_ema == 0 and usable <= 0:
-                    msg = (
-                        f"GPU out of memory: no usable VRAM available "
-                        f"(0MB usable, {free_mem // (1024*1024)}MB free). "
-                        f"Try disabling GPU acceleration."
-                    )
-                    log.critical(msg)
-                    raise RuntimeError(msg)
-
-                # GPU out of memory guard — retry with cache flush before giving up
-                if batch_n == 1 and per_frame_ema > 0 and usable < per_frame_ema:
-                    log.warning(f"  VRAM low: free={free_mem//(1024*1024)}MB, "
-                                f"usable={usable//(1024*1024)}MB < "
+                # OOM guard — retry with cache flush before giving up
+                if batch_n == 1 and headroom < per_frame_ema:
+                    log.warning(f"  VRAM low: reserved={reserved_mem//(1024*1024)}MB, "
+                                f"headroom={headroom//(1024*1024)}MB < "
                                 f"ema={per_frame_ema//(1024*1024)}MB, "
                                 f"flushing cache and retrying...")
                     torch.cuda.empty_cache()
                     r2 = torch.cuda.memory_reserved(dev)
-                    f2, _ = torch.cuda.mem_get_info(dev)
-                    th2 = target_used_mem - r2 - reserve_margin
-                    ph2 = int(f2 * 0.90)
-                    usable = min(th2, ph2) if th2 > 0 else ph2
-                    if usable < 0:
-                        usable = 0
-                    if usable < per_frame_ema:
+                    headroom = vram_ceiling - r2 - reserve_margin
+                    if headroom < 0:
+                        headroom = 0
+                    if headroom < per_frame_ema:
                         msg = (
                             f"GPU out of memory: cannot fit a single frame in available VRAM "
                             f"(needs ~{per_frame_ema // (1024*1024)}MB, "
-                            f"only ~{usable // (1024*1024)}MB available). "
+                            f"only ~{headroom // (1024*1024)}MB available). "
                             f"Try disabling GPU acceleration, reducing quality, "
                             f"or using a smaller puzzle."
                         )
                         log.critical(msg)
                         raise RuntimeError(msg)
-                    log.info(f"  Cache flush recovered {usable//(1024*1024)}MB usable, continuing")
+                    log.info(f"  Cache flush recovered {headroom//(1024*1024)}MB headroom, continuing")
 
                 self._stats["free_mem_mb"] = free_mem // (1024 * 1024)
                 self._stats["mem_used_mb"] = self._stats["total_mem_mb"] - self._stats["free_mem_mb"]
@@ -371,27 +413,42 @@ class GPURenderer:
                 mats_np = np.stack([p["matrix"] for p in batch_params], axis=0)
                 mats = torch.from_numpy(mats_np).to(dev, non_blocking=True)
 
-                if batch_has_colors:
-                    main_np = np.full((batch_n, h, w, 3), TILE_BG, dtype=np.float32)
-                    sec_np = np.zeros((batch_n, h, w, 3), dtype=np.float32)
-                    has_sec_np = np.zeros((batch_n, h, w), dtype=np.float32)
+                use_atlas = self._base_atlas is not None
+                if use_atlas:
+                    base_idx_np = np.zeros((batch_n, h, w), dtype=np.int32)
+                    bar_idx_np = np.full((batch_n, h, w), -1, dtype=np.int32)
                     for i, p in enumerate(batch_params):
-                        cm = p.get("colors_main")
-                        if cm is not None:
-                            main_np[i] = cm.reshape(h, w, 3)
-                            cs = p.get("colors_sec")
-                            if cs is not None:
-                                sec_np[i] = cs.reshape(h, w, 3)
-                            csm = p.get("colors_sec_mask")
-                            if csm is not None:
-                                has_sec_np[i] = csm.reshape(h, w).astype(np.float32)
-                    cols = torch.from_numpy(main_np).to(dev, non_blocking=True) / 255.0
-                    sec = torch.from_numpy(sec_np).to(dev, non_blocking=True) / 255.0
-                    has_sec = torch.from_numpy(has_sec_np).to(dev, non_blocking=True).view(batch_n, h, w, 1, 1, 1)
+                        state_sig = id(p["grid_state"])
+                        mats_p = np.asarray(p["matrix"])
+                        if state_sig in self._base_lookup:
+                            base_lookup_np = self._base_lookup[state_sig].cpu().numpy()
+                            bar_lookup_np = self._bar_lookup[state_sig].cpu().numpy()
+                            base_idx_np[i] = base_lookup_np[mats_p]
+                            bar_idx_np[i] = bar_lookup_np[mats_p]
+                    base_idx = torch.from_numpy(base_idx_np).to(dev, non_blocking=True)
+                    bar_idx = torch.from_numpy(bar_idx_np).to(dev, non_blocking=True)
                 else:
-                    cols = tile_bg_t.view(1, 1, 1, 3).expand(batch_n, h, w, 3)
-                    sec = torch.zeros(batch_n, h, w, 3, device=dev, dtype=torch.float32)
-                    has_sec = torch.zeros(batch_n, h, w, 1, 1, 1, device=dev, dtype=torch.float32)
+                    if batch_has_colors:
+                        main_np = np.full((batch_n, h, w, 3), TILE_BG, dtype=np.float32)
+                        sec_np = np.zeros((batch_n, h, w, 3), dtype=np.float32)
+                        has_sec_np = np.zeros((batch_n, h, w), dtype=np.float32)
+                        for i, p in enumerate(batch_params):
+                            cm = p.get("colors_main")
+                            if cm is not None:
+                                main_np[i] = cm.reshape(h, w, 3)
+                                cs = p.get("colors_sec")
+                                if cs is not None:
+                                    sec_np[i] = cs.reshape(h, w, 3)
+                                csm = p.get("colors_sec_mask")
+                                if csm is not None:
+                                    has_sec_np[i] = csm.reshape(h, w).astype(np.float32)
+                        cols = torch.from_numpy(main_np).to(dev, non_blocking=True) / 255.0
+                        sec = torch.from_numpy(sec_np).to(dev, non_blocking=True) / 255.0
+                        has_sec = torch.from_numpy(has_sec_np).to(dev, non_blocking=True).view(batch_n, h, w, 1, 1, 1)
+                    else:
+                        cols = tile_bg_t.view(1, 1, 1, 3).expand(batch_n, h, w, 3)
+                        sec = torch.zeros(batch_n, h, w, 3, device=dev, dtype=torch.float32)
+                        has_sec = torch.zeros(batch_n, h, w, 1, 1, 1, device=dev, dtype=torch.float32)
 
                 reserved_before_render = torch.cuda.memory_reserved(dev)
                 torch.cuda.reset_peak_memory_stats(dev)
@@ -408,89 +465,141 @@ class GPURenderer:
                         canvas[:, py:py + ph_p, px:px + pw_p] * (1 - panel_bg_a)
                     )
 
-                # ── Row‑chunked tile rendering ──
-                for row_start in range(0, h, chunk_rows):
-                    row_end = min(row_start + chunk_rows, h)
-                    n_rows = row_end - row_start
+                # ── Tile rendering (atlas path: batched full render, all frames in parallel) ──
+                if use_atlas:
+                    for row_start in range(0, h, chunk_rows):
+                        row_end = min(row_start + chunk_rows, h)
+                        n_rows = row_end - row_start
 
-                    mats_chunk = mats[:, row_start:row_end, :]
-                    if not self.opts.no_numbers and num_tex is not None:
-                        nums_chunk = num_tex[mats_chunk]
-                        text_rgb_chunk = nums_chunk[..., :3]
-                        text_a_chunk = nums_chunk[..., 3:]
-                    else:
-                        nums_chunk = None
-                        text_rgb_chunk = None
-                        text_a_chunk = None
+                        base_chunk = self._base_atlas[base_idx[:, row_start:row_end, :]]
+                        tile_rgb = base_chunk[..., :3]
 
-                    cols_chunk = cols[:, row_start:row_end, ...]
-                    if batch_has_colors:
-                        sec_chunk = sec[:, row_start:row_end, ...]
-                        has_sec_chunk = has_sec[:, row_start:row_end, ...]
-                    else:
-                        sec_chunk = None
-                        has_sec_chunk = None
+                        if not self.opts.no_numbers and num_tex is not None:
+                            nums = num_tex[mats[:, row_start:row_end, :]]
+                            tile_rgb = nums[..., :3] * nums[..., 3:] + tile_rgb * (1 - nums[..., 3:])
 
-                    # In‑place tile blending
-                    colored = cols_chunk.view(batch_n, n_rows, w, 1, 1, 3) * tm
-                    colored.addcmul_(c_bg_6d, tm_inv)
-                    if not self.opts.no_border:
-                        colored.mul_(bm_inv).addcmul_(c_border_6d, bm)
+                        if self._bar_atlas is not None:
+                            bi = bar_idx[:, row_start:row_end, :]
+                            bar_mask = (bi >= 0).float().view(batch_n, n_rows, w, 1, 1, 1)
+                            bar_safe = bi.clamp(min=0)
+                            bar_s = self._bar_atlas[bar_safe]
+                            tile_rgb = tile_rgb * (1 - bar_s[..., 3:] * bar_mask) + bar_s[..., :3] * bar_s[..., 3:] * bar_mask
 
-                    if batch_has_colors:
-                        bar_fill_factor = has_sec_chunk * bar_fill_mask
+                        tile_chunk = tile_rgb.permute(0, 1, 3, 2, 4, 5).reshape(batch_n, n_rows * ts, pw, 3)
+                        canvas_y = gy + row_start * ts
+                        canvas[:, canvas_y:canvas_y + n_rows * ts, gx:gx + pw] = tile_chunk
+                        del base_chunk, tile_rgb, tile_chunk
+                else:
+                    for row_start in range(0, h, chunk_rows):
+                        row_end = min(row_start + chunk_rows, h)
+                        n_rows = row_end - row_start
 
-                        colored.mul_(1 - bar_fill_factor)
-                        sec_contrib = sec_chunk.view(batch_n, n_rows, w, 1, 1, 3) * bar_fill_mask
-                        colored.add_(sec_contrib * bar_fill_factor)
-                        del sec_contrib
+                        mats_chunk = mats[:, row_start:row_end, :]
+                        if not self.opts.no_numbers and num_tex is not None:
+                            nums_chunk = num_tex[mats_chunk]
+                            text_rgb_chunk = nums_chunk[..., :3]
+                            text_a_chunk = nums_chunk[..., 3:]
+                        else:
+                            nums_chunk = None
+                            text_rgb_chunk = None
+                            text_a_chunk = None
 
-                        if not self.opts.no_secondary_border:
-                            bar_border_factor = has_sec_chunk * bar_border_mask
-                            colored.mul_(1 - bar_border_factor)
-                            colored.addcmul_(c_border_6d, bar_border_factor)
+                        cols_chunk = cols[:, row_start:row_end, ...]
+                        if batch_has_colors:
+                            sec_chunk = sec[:, row_start:row_end, ...]
+                            has_sec_chunk = has_sec[:, row_start:row_end, ...]
+                        else:
+                            sec_chunk = None
+                            has_sec_chunk = None
 
-                    if not self.opts.no_numbers and num_tex is not None:
-                        tile_chunk = text_rgb_chunk * text_a_chunk + colored * (1 - text_a_chunk)
-                    else:
-                        tile_chunk = colored
-                    tile_chunk = tile_chunk.permute(0, 1, 3, 2, 4, 5).reshape(batch_n, n_rows * ts, pw, 3)
-                    canvas_y = gy + row_start * ts
-                    canvas[:, canvas_y:canvas_y + n_rows * ts, gx:gx + pw] = tile_chunk
+                        # In‑place tile blending
+                        colored = cols_chunk.view(batch_n, n_rows, w, 1, 1, 3) * tm
+                        colored.addcmul_(c_bg_6d, tm_inv)
+                        if not self.opts.no_border:
+                            colored.mul_(bm_inv).addcmul_(c_border_6d, bm)
 
-                    del nums_chunk, text_rgb_chunk, text_a_chunk, colored, tile_chunk
+                        if batch_has_colors:
+                            bar_fill_factor = has_sec_chunk * bar_fill_mask
 
-                # ── Overlays (in‑place) ──
+                            colored.mul_(1 - bar_fill_factor)
+                            sec_contrib = sec_chunk.view(batch_n, n_rows, w, 1, 1, 3) * bar_fill_mask
+                            colored.add_(sec_contrib * bar_fill_factor)
+                            del sec_contrib
+
+                            if not self.opts.no_secondary_border:
+                                bar_border_factor = has_sec_chunk * bar_border_mask
+                                colored.mul_(1 - bar_border_factor)
+                                colored.addcmul_(c_border_6d, bar_border_factor)
+
+                        if not self.opts.no_numbers and num_tex is not None:
+                            tile_chunk = text_rgb_chunk * text_a_chunk + colored * (1 - text_a_chunk)
+                        else:
+                            tile_chunk = colored
+                        tile_chunk = tile_chunk.permute(0, 1, 3, 2, 4, 5).reshape(batch_n, n_rows * ts, pw, 3)
+                        canvas_y = gy + row_start * ts
+                        canvas[:, canvas_y:canvas_y + n_rows * ts, gx:gx + pw] = tile_chunk
+
+                        del nums_chunk, text_rgb_chunk, text_a_chunk, colored, tile_chunk
+
+                # ── Overlays (pipelined: background thread computes overlays parallel with GPU) ──
                 if overlay_render_data is not None:
-                    from replay_video import _apply_stats_dynamic as _apply_sd
-                for i in range(batch_n):
-                    fi = batch_start + i
-                    fc = canvas[i]
-                    params = frame_params_list[fi]
+                    if _overlay_queue is None:
+                        from replay_video import _apply_stats_dynamic as _apply_sd
+                        _overlay_queue = Queue(maxsize=0)
+                        def _produce_overlays():
+                            for _fi in range(n):
+                                _p = frame_params_list[_fi]
+                                _ta = np.array(render_timer_text(_p["timer_text"]))
+                                _sa = np.array(_apply_sd(
+                                    _p["stats_data"],
+                                    overlay_render_data["panel_w_val"],
+                                    overlay_render_data["static_base"],
+                                    overlay_render_data["static_layout"]
+                                ))
+                                _overlay_queue.put((_ta, _sa))
+                        _t = threading.Thread(target=_produce_overlays, daemon=True)
+                        _t.start()
 
-                    if overlay_render_data is not None:
-                        timer_img = render_timer_text(params["timer_text"])
-                        stats_img = _apply_sd(
-                            params["stats_data"],
-                            overlay_render_data["panel_w_val"],
-                            overlay_render_data["static_base"],
-                            overlay_render_data["static_layout"]
-                        )
-                        timer_arr = np.array(timer_img)
-                        stats_arr = np.array(stats_img)
-                    else:
-                        timer_arr = params.get("timer_arr")
-                        stats_arr = params.get("stats_arr")
-
-                    if timer_arr is not None:
-                        tt = torch.from_numpy(timer_arr).to(dev, non_blocking=True).float() / 255.0
-                        dx = max(tx1, tx1 + ((tx2 - tx1) - tt.shape[1]) // 2)
-                        dy = max(ty1, ty1 + ((ty2 - ty1) - tt.shape[0]) // 2)
-                        self._blend_rgba_inplace(fc, tt, dx, dy)
-
-                    if stats_arr is not None:
-                        stt = torch.from_numpy(stats_arr).to(dev, non_blocking=True).float() / 255.0
-                        self._blend_rgba_inplace(fc, stt, px, py)
+                    stats_arrays = []
+                    for _i in range(batch_n):
+                        timer_arr, stats_arr = _overlay_queue.get()
+                        if timer_arr is not None:
+                            tt = torch.from_numpy(timer_arr).to(dev, non_blocking=True).float() / 255.0
+                            dx = max(tx1, tx1 + ((tx2 - tx1) - tt.shape[1]) // 2)
+                            dy = max(ty1, ty1 + ((ty2 - ty1) - tt.shape[0]) // 2)
+                            self._blend_rgba_inplace(canvas[_i], tt, dx, dy)
+                        stats_arrays.append(stats_arr)
+                    if stats_arrays:
+                        snp = np.stack(stats_arrays, axis=0)
+                        stats_t = torch.from_numpy(snp).to(dev, non_blocking=True).float() / 255.0
+                        s_h, s_w = stats_arrays[0].shape[:2]
+                        dh = min(s_h, ch - py)
+                        dw = min(s_w, cw - px)
+                        if dh > 0 and dw > 0:
+                            canvas[:, py:py + dh, px:px + dw] = (
+                                stats_t[:, :dh, :dw, :3] * stats_t[:, :dh, :dw, 3:] +
+                                canvas[:, py:py + dh, px:px + dw] * (1 - stats_t[:, :dh, :dw, 3:])
+                            )
+                else:
+                    first_stats_arr = frame_params_list[batch_start].get("stats_arr")
+                    if first_stats_arr is not None:
+                        s_h, s_w = first_stats_arr.shape[:2]
+                        snp = np.stack([frame_params_list[batch_start + i]["stats_arr"] for i in range(batch_n)], axis=0)
+                        stats_t = torch.from_numpy(snp).to(dev, non_blocking=True).float() / 255.0
+                        dh = min(s_h, ch - py)
+                        dw = min(s_w, cw - px)
+                        if dh > 0 and dw > 0:
+                            canvas[:, py:py + dh, px:px + dw] = (
+                                stats_t[:, :dh, :dw, :3] * stats_t[:, :dh, :dw, 3:] +
+                                canvas[:, py:py + dh, px:px + dw] * (1 - stats_t[:, :dh, :dw, 3:])
+                            )
+                    for _i in range(batch_n):
+                        ta = frame_params_list[batch_start + _i].get("timer_arr")
+                        if ta is not None:
+                            tt = torch.from_numpy(ta).to(dev, non_blocking=True).float() / 255.0
+                            dx = max(tx1, tx1 + ((tx2 - tx1) - tt.shape[1]) // 2)
+                            dy = max(ty1, ty1 + ((ty2 - ty1) - tt.shape[0]) // 2)
+                            self._blend_rgba_inplace(canvas[_i], tt, dx, dy)
 
                 # ── GPU → CPU (uint8) ──
                 batch_u8 = canvas.mul(255.0).clamp_(0, 255).to(torch.uint8).cpu().numpy()
@@ -503,31 +612,22 @@ class GPURenderer:
                     if progress_callback:
                         progress_callback(batch_start + i + 1, n, gpu_stats=dict(self._stats))
 
-                # ── One‑shot calibration (first batch only) ──
-                torch.cuda.synchronize(dev)
-                reserved_peak = torch.cuda.memory_reserved(dev)
-
-                if self._batch_counter == 1 and batch_n == 1 and per_frame_ema == 0.0:
-                    marginal_cost = reserved_peak - reserved_permanent
-                    if marginal_cost > 0:
-                        per_frame_ema = marginal_cost
-                        self._stats["per_frame_ema_mb"] = per_frame_ema / (1024 * 1024)
-                        log.info(f"  CALIBRATION: reserved_peak={reserved_peak//(1024*1024)}MB, "
-                                 f"reserved_permanent={reserved_permanent//(1024*1024)}MB, "
-                                 f"marginal_cost={marginal_cost//(1024*1024)}MB, "
-                                 f"per_frame_ema={per_frame_ema/(1024*1024):.0f}MB")
-
-                # ── Free batch tensors ──
+                # ── Free batch tensors + flush CUDA cache ──
                 del canvas, mats
-                if batch_has_colors:
+                if use_atlas:
+                    del base_idx, bar_idx
+                elif batch_has_colors:
                     del cols, sec, has_sec
-                if batch_n > 1:
-                    peak_reserved = torch.cuda.max_memory_reserved(dev)
-                    marginal = peak_reserved - reserved_before_render
-                    if marginal > 0:
+                torch.cuda.synchronize(dev)
+                torch.cuda.empty_cache()
+                peak_reserved = torch.cuda.max_memory_reserved(dev)
+                marginal = peak_reserved - reserved_before_render
+                if marginal > 0 and batch_n >= 1:
                         actual_ppf = marginal / batch_n
                         old_ema = per_frame_ema
-                        per_frame_ema = max(per_frame_ema, actual_ppf * 1.15)
+                        # EMA with decay – lets batch sizes grow when per-frame cost drops
+                        alpha = 0.3
+                        per_frame_ema = per_frame_ema * (1 - alpha) + max(actual_ppf, actual_ppf * 1.10) * alpha
                         self._stats["per_frame_ema_mb"] = per_frame_ema / (1024 * 1024)
                         log.info(f"  POST-BATCH EMA: old={old_ema/(1024*1024):.0f}MB, "
                                  f"peak={peak_reserved//(1024*1024)}MB, "
@@ -559,12 +659,15 @@ class GPURenderer:
                 "_border_mask", "_border_mask_inv",
                 "_bar_fill", "_bar_border",
                 "_timer_bg", "_panel_bg", "_panel_bg_rgb", "_panel_bg_a",
+                "_base_atlas", "_bar_atlas",
             ]
             for attr in attrs:
                 t = getattr(self, attr, None)
                 if t is not None:
                     del t
                     setattr(self, attr, None)
+            self._base_lookup = {}
+            self._bar_lookup = {}
             torch.cuda.empty_cache()
             log.info("GPURenderer.cleanup: CUDA tensors freed")
 

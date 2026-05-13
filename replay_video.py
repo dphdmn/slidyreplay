@@ -49,7 +49,8 @@ from geometry import (PADDING, HEADER_H, STATS_PANEL_WIDTH, INFO_H, TIMER_HEIGHT
     get_font, render_number_texture, render_timer_text,
     compute_tile_size, compute_font_size,
     compute_grid_position, compute_panel_rect, compute_secondary_bar_rect,
-    round_canvas_height)
+    round_canvas_height,
+    TileSpriteCache, _solid_base, _bar_sprite, select_base, select_bar)
 
 # ─── Color Utilities (ported from fringeColors.js) ──────────────────
 
@@ -196,8 +197,8 @@ def get_all_fringe_schemes(grid_states):
     # Pre-scan to count unique sizes
     needed = set()
     for key, state in grid_states.items():
-        for mc in state["mainColors"]:
-            if len(state["mainColors"]) == 1:
+        if isinstance(key, (int, float)):
+            for mc in state["mainColors"]:
                 needed.add(f"{mc['width']}x{mc['height']}")
         for sc in state["secondaryColors"]:
             if sc["type"] == CT_MAP["fringe"]:
@@ -323,42 +324,85 @@ def render_frame(
     static_stats_base: Optional[Image.Image] = None,
     static_stats_layout: Optional[dict] = None,
     opts: RenderOptions = RenderOptions(),
+    tile_sprites: Optional[TileSpriteCache] = None,
+    prev_canvas: Optional[Image.Image] = None,
+    delta_mask: Optional[np.ndarray] = None,
+    timer_arr: Optional[np.ndarray] = None,
+    stats_arr: Optional[np.ndarray] = None,
 ) -> Image.Image:
     h = len(matrix)
     w = len(matrix[0])
     puzzle_w = w * tile_size
     puzzle_h = h * tile_size
+    grid_x, grid_y = compute_grid_position(opts.grid_only)
 
-    canvas_w, canvas_h = compute_canvas_dimensions(w, h, tile_size, grid_only=opts.grid_only)
-
-    if not opts.grid_only:
-        panel_w_est = canvas_w - (PADDING + puzzle_w + PADDING) - PADDING
-        stats_h = _compute_stats_full_height(
-            panel_w_est,
-            has_grid_stages=len(stats_data.get("grid_stages", [])) > 1
-        )
-        canvas_h = max(canvas_h, HEADER_H + PADDING + stats_h + PADDING)
-        canvas_h = round_canvas_height(canvas_h)
-
-    canvas = Image.new('RGB', (canvas_w, canvas_h), BG_COLOR)
-    draw = ImageDraw.Draw(canvas)
+    if prev_canvas is not None and delta_mask is not None:
+        canvas = prev_canvas.copy()
+        canvas_w, canvas_h = canvas.size
+        draw = ImageDraw.Draw(canvas)
+    else:
+        canvas_w, canvas_h = compute_canvas_dimensions(w, h, tile_size, grid_only=opts.grid_only)
+        if not opts.grid_only:
+            panel_w_est = canvas_w - (PADDING + puzzle_w + PADDING) - PADDING
+            stats_h = _compute_stats_full_height(
+                panel_w_est,
+                has_grid_stages=len(stats_data.get("grid_stages", [])) > 1
+            )
+            canvas_h = max(canvas_h, HEADER_H + PADDING + stats_h + PADDING)
+            canvas_h = round_canvas_height(canvas_h)
+        canvas = Image.new('RGB', (canvas_w, canvas_h), BG_COLOR)
+        draw = ImageDraw.Draw(canvas)
 
     # ─── Timer Bar (centered, compact) ──────────────────────────
     if not opts.grid_only:
         timer_bg_bbox = (PADDING, PADDING, canvas_w - PADDING, PADDING + HEADER_H)
         draw_filled_rect(draw, timer_bg_bbox, TIMER_BG)
 
-        timer_img = render_timer_text(timer_text)
+        if timer_arr is not None:
+            timer_img = Image.fromarray(timer_arr)
+        else:
+            timer_img = render_timer_text(timer_text)
         tw, th = timer_img.size
         tx = (canvas_w - tw) // 2
         ty = PADDING + (HEADER_H - th) // 2
         canvas.paste(timer_img, (tx, ty), timer_img)
 
     # ─── Puzzle Grid ──────────────────────────────────────────────
-    grid_x, grid_y = compute_grid_position(opts.grid_only)
-
     if gpu_grid is not None:
         canvas.paste(gpu_grid, (grid_x, grid_y))
+    elif prev_canvas is not None and delta_mask is not None:
+        rows, cols = np.where(delta_mask)
+        for r, c in zip(rows, cols):
+            num = matrix[r][c]
+            sx = grid_x + c * tile_size
+            sy = grid_y + r * tile_size
+            main_bg, sec_bg = get_tile_colors(num, grid_state, all_fringe_schemes, w)
+            base = select_base(main_bg, num, tile_sprites)
+            canvas.paste(base, (sx, sy), base)
+            if not opts.no_numbers and num != 0:
+                canvas.paste(tile_sprites.number_texts[num], (sx, sy), tile_sprites.number_texts[num])
+            if sec_bg is not None:
+                bar = select_bar(sec_bg, tile_sprites)
+                if bar is not None:
+                    canvas.paste(bar, (sx, sy), bar)
+    elif tile_sprites is not None:
+        for row_idx in range(h):
+            for col_idx in range(w):
+                num = matrix[row_idx][col_idx]
+                sx = grid_x + col_idx * tile_size
+                sy = grid_y + row_idx * tile_size
+
+                main_bg, sec_bg = get_tile_colors(num, grid_state, all_fringe_schemes, w)
+                base = select_base(main_bg, num, tile_sprites)
+                canvas.paste(base, (sx, sy), base)
+
+                if not opts.no_numbers and num != 0:
+                    canvas.paste(tile_sprites.number_texts[num], (sx, sy), tile_sprites.number_texts[num])
+
+                if sec_bg is not None:
+                    bar = select_bar(sec_bg, tile_sprites)
+                    if bar is not None:
+                        canvas.paste(bar, (sx, sy), bar)
     else:
         for row_idx in range(h):
             for col_idx in range(w):
@@ -401,7 +445,9 @@ def render_frame(
             canvas = Image.alpha_composite(canvas.convert('RGBA'), panel_img)
             canvas = Image.alpha_composite(canvas, panel_overlay)
 
-            if static_stats_base is not None and static_stats_layout is not None:
+            if stats_arr is not None:
+                stats_img = Image.fromarray(stats_arr)
+            elif static_stats_base is not None and static_stats_layout is not None:
                 stats_img = _apply_stats_dynamic(stats_data, panel_w, static_stats_base, static_stats_layout)
             else:
                 stats_img = _render_stats_full(stats_data, is_movetimes_accurate, panel_w)
@@ -761,8 +807,8 @@ def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info):
     """Overlay dynamic values and stage highlight onto a static base (labels already drawn in base)."""
     if stats_data is None:
         return static_base.copy()
-    overlay = Image.new("RGBA", static_base.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
+    result = static_base.copy()
+    draw = ImageDraw.Draw(result)
 
     px = layout_info["px"]
     inner_w = layout_info["inner_w"]
@@ -812,12 +858,125 @@ def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info):
         draw.text((px, stage_y_positions[cur_stage]),
                   line, fill=(*CYAN, 255), font=gs_lf)
 
-    result = static_base.copy()
-    result = Image.alpha_composite(result, overlay)
     return result
 
 
+def prerender_tile_layers(width, height, tile_size, font_size, opts, all_fringe_schemes, grid_states):
+    w, h = width, height
+    ts = tile_size
+
+    base_sprites = {}
+
+    for state in grid_states.values():
+        if len(state["mainColors"]) != 1:
+            continue
+        mc = state["mainColors"][0]
+        key = f"{mc['width']}x{mc['height']}"
+        scheme = all_fringe_schemes.get(key)
+        if scheme is None:
+            continue
+        for num in range(1, w * h + 1):
+            color = apply_color_any(
+                scheme, num,
+                mc['width'], mc['height'],
+                mc['offsetW'], mc['offsetH'],
+                w
+            )
+            if color is None:
+                continue
+            color = tuple(int(x) for x in color)
+            if color not in base_sprites:
+                base_sprites[color] = _solid_base(color, ts, opts)
+
+    red_t = tuple(int(x) for x in RED_GRIDS)
+    blue_t = tuple(int(x) for x in BLUE_GRIDS)
+    base_sprites[red_t] = _solid_base(red_t, ts, opts)
+    base_sprites[blue_t] = _solid_base(blue_t, ts, opts)
+    base_sprites[TILE_BG] = _solid_base(TILE_BG, ts, opts)
+    base_sprites[NULL_COLOR] = _solid_base(NULL_COLOR, ts, opts)
+
+    number_texts = {}
+    for num in range(w * h + 1):
+        number_texts[num] = render_number_texture(num, ts, font_size)
+
+    bar_sprites = {}
+    seen = set()
+    for state in grid_states.values():
+        for sc in state.get("secondaryColors", []):
+            if sc["type"] == CT_MAP["fringe"]:
+                skey = f"{sc['width']}x{sc['height']}"
+                scheme = all_fringe_schemes[skey]
+                for r in range(scheme.shape[0]):
+                    for c in range(scheme.shape[1]):
+                        color = tuple(int(x) for x in scheme[r, c])
+                        if color not in seen:
+                            seen.add(color)
+                            bar_sprites[color] = _bar_sprite(color, ts, opts)
+            elif sc["type"] == CT_MAP["grids1"]:
+                color = red_t
+                if color not in seen:
+                    seen.add(color)
+                    bar_sprites[color] = _bar_sprite(color, ts, opts)
+            elif sc["type"] == CT_MAP["grids2"]:
+                color = blue_t
+                if color not in seen:
+                    seen.add(color)
+                    bar_sprites[color] = _bar_sprite(color, ts, opts)
+
+    for col in (red_t, blue_t):
+        if col not in seen:
+            bar_sprites[col] = _bar_sprite(col, ts, opts)
+
+    return TileSpriteCache(
+        tile_size=ts,
+        base_sprites=base_sprites,
+        number_texts=number_texts,
+        bar_sprites=bar_sprites,
+    )
+
+
 import functools
+import inspect as _inspect
+
+
+_RENDER_FRAME_ARGS = None
+
+def _get_render_frame_args():
+    global _RENDER_FRAME_ARGS
+    if _RENDER_FRAME_ARGS is None:
+        _RENDER_FRAME_ARGS = set(_inspect.signature(render_frame).parameters.keys())
+    return _RENDER_FRAME_ARGS
+
+
+def _build_chunks(states_needed):
+    if not states_needed:
+        return []
+    chunks = []
+    cur = [states_needed[0]]
+    for i in range(1, len(states_needed)):
+        if states_needed[i] == states_needed[i - 1] + 1:
+            cur.append(states_needed[i])
+        else:
+            chunks.append(cur)
+            cur = [states_needed[i]]
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def _render_chunk(chunk_indices, frame_params):
+    images = []
+    prev = None
+    valid = _get_render_frame_args()
+    for idx in chunk_indices:
+        p = frame_params[idx]
+        kw = {k: v for k, v in p.items() if k in valid}
+        if prev is not None:
+            kw["prev_canvas"] = prev
+        img = render_frame(**kw)
+        images.append(img)
+        prev = img
+    return images
 
 
 def _close_pipe(proc: subprocess.Popen) -> None:
@@ -994,6 +1153,9 @@ def generate_frames(
     font_size = compute_font_size(w, h, tile_size)
     log.info(f"  tile_size={tile_size}, raw_tile={raw_tile}, font_size={font_size}")
 
+    tile_sprites = prerender_tile_layers(w, h, tile_size, font_size, opts, all_fringe_schemes, grid_states)
+    log.info(f"  tile_sprites: {len(tile_sprites.base_sprites)} bases, {len(tile_sprites.number_texts)} numbers, {len(tile_sprites.bar_sprites)} bars")
+
     all_md = calculate_manhattan_distance(matrix)
     current_md = all_md
     zp = find_zero(matrix, w, h)
@@ -1052,6 +1214,8 @@ def generate_frames(
         else:
             from gpu_renderer import GPURenderer
             gpu = GPURenderer(w, h, raw_tile, quality, min_canvas_h=min_canvas_h, opts=opts)
+        if gpu.available:
+            gpu.upload_sprite_atlas(tile_sprites, grid_states, all_fringe_schemes, w, h)
         use_gpu = use_gpu and gpu.available
         log.info(f"  canvas={gpu.canvas_w}x{gpu.canvas_h}, GPU available={gpu.available}, use_gpu={use_gpu}")
     else:
@@ -1211,11 +1375,14 @@ def generate_frames(
         colors_sec=sec0,
         colors_sec_mask=has_sec0,
         opts=opts,
+        tile_sprites=tile_sprites,
     )
 
     # Walk all states sequentially with O(1) in-place moves, build frame_params only for needed states
     _prog_step = max(1, num_needed // 100)
     _prog_count = 0 if states_needed[0] == 0 else 1  # state 0 already processed separately
+    prev_delta_matrix = None
+    prev_state_sig = None
     for frame_idx in range(sol_len + 1):
         if frame_idx in states_needed_set:
             if frame_idx == 0:
@@ -1234,8 +1401,19 @@ def generate_frames(
                 main_c, sec_c, has_sec_c = _build_tile_colors_np(mc_flat, state)
                 sd, tt = _build_stats_data(frame_idx, cur_time_ms, current_md, frame_idx)
 
+            current_matrix = mc_flat.reshape(h, w).copy()
+            current_state_sig = id(state)
+            if prev_delta_matrix is None:
+                delta_mask = np.ones((h, w), dtype=bool)
+            else:
+                delta_mask = (current_matrix != prev_delta_matrix)
+                if current_state_sig != prev_state_sig:
+                    delta_mask[:] = True
+            prev_delta_matrix = current_matrix
+            prev_state_sig = current_state_sig
+
             frame_params[frame_idx] = dict(
-                matrix=mc_flat.reshape(h, w).copy(),
+                matrix=current_matrix,
                 grid_state=state,
                 all_fringe_schemes=all_fringe_schemes,
                 tile_size=tile_size,
@@ -1251,6 +1429,8 @@ def generate_frames(
                 colors_sec=sec_c,
                 colors_sec_mask=has_sec_c,
                 opts=opts,
+                tile_sprites=tile_sprites,
+                delta_mask=delta_mask,
             )
 
             _prog_count += 1
@@ -1286,6 +1466,7 @@ def generate_frames(
         for fp_idx in states_needed:
             frame_params[fp_idx]["static_stats_base"] = static_base
             frame_params[fp_idx]["static_stats_layout"] = static_layout
+
     else:
         static_base = None
         static_layout = None
@@ -1312,11 +1493,11 @@ def generate_frames(
         panel_x = PADDING + puzzle_w + PADDING
         panel_w_val = canvas_w - panel_x - PADDING
 
-        extra_overlay_args = None if opts.grid_only else {
-            "panel_w_val": panel_w_val,
-            "static_base": static_base,
-            "static_layout": static_layout,
-        }
+        extra_overlay_args = dict(
+            panel_w_val=panel_w_val,
+            static_base=static_base,
+            static_layout=static_layout,
+        ) if not opts.grid_only else None
 
         # Pre-compute how many video frames each puzzle state spans
         state_to_count = {}
@@ -1390,29 +1571,27 @@ def generate_frames(
     log_ram("CPU: before render")
 
     _render_prog_step = max(1, num_needed // 100)
-    if parallel and num_needed > 1:
-        workers = min(os.cpu_count() or 4, num_needed)
+    chunks = _build_chunks(states_needed)
+    if parallel and len(chunks) > 1:
+        workers = min(os.cpu_count() or 4, len(chunks))
         done = 0
         _render_prog_count = 0
         pool = shared_pool if shared_pool is not None else ProcessPoolExecutor(max_workers=workers)
         try:
-            batch_size = _calc_render_batch_size(num_needed, workers)
-            fut_to_indices = {}
-            for i in range(0, num_needed, batch_size):
-                batch_indices = states_needed[i:i + batch_size]
-                batch_params = [frame_params[idx] for idx in batch_indices]
-                fut = pool.submit(_render_frame_batch, batch_params)
-                fut_to_indices[fut] = batch_indices
+            fut_to_chunk = {}
+            for chunk in chunks:
+                fut = pool.submit(_render_chunk, chunk, frame_params)
+                fut_to_chunk[fut] = chunk
 
-            remaining = set(fut_to_indices.keys())
+            remaining = set(fut_to_chunk.keys())
             while remaining:
                 if cancel_check and cancel_check():
                     raise CancelError()
                 done_set, _ = wait(remaining, timeout=0.2, return_when=FIRST_COMPLETED)
                 for fut in done_set:
-                    batch_indices = fut_to_indices[fut]
-                    batch_results = fut.result()
-                    for idx, img in zip(batch_indices, batch_results):
+                    chunk_indices = fut_to_chunk[fut]
+                    chunk_results = fut.result()
+                    for idx, img in zip(chunk_indices, chunk_results):
                         state_images[idx] = img
                         done += 1
                         _render_prog_count += 1
@@ -1424,10 +1603,19 @@ def generate_frames(
                 pool.shutdown()
     else:
         _render_prog_count = 0
+        prev_canvas = None
         for seq_idx, i in enumerate(states_needed):
             if cancel_check and cancel_check():
                 raise CancelError()
-            state_images[i] = _render_one_frame(frame_params[i])
+            p = frame_params[i]
+            if prev_canvas is None:
+                kw = {k: v for k, v in p.items() if k in _get_render_frame_args()}
+                state_images[i] = render_frame(**kw)
+            else:
+                kw = {k: v for k, v in p.items() if k in _get_render_frame_args()}
+                kw["prev_canvas"] = prev_canvas
+                state_images[i] = render_frame(**kw)
+            prev_canvas = state_images[i]
             _render_prog_count += 1
             if progress_callback and (_render_prog_count % _render_prog_step == 0 or _render_prog_count == num_needed):
                 progress_callback(_render_prog_count, num_needed, desc="Render" if _render_prog_count == _render_prog_step else None)
