@@ -1,0 +1,143 @@
+============================================================
+  Puzzle: 20x20
+============================================================
+  20x20 CPU... [[ReplayVideoGenerator] GPU OFF (CPU fallback)]
+    Process SpawnProcess-3:
+    Process SpawnProcess-5:
+    Traceback (most recent call last):
+      File "C:\Python313\Lib\multiprocessing\process.py", line 313, in _bootstrap
+        self.run()
+        ~~~~~~~~^^
+      File "C:\Python313\Lib\multiprocessing\process.py", line 108, in run
+        self._target(*self._args, **self._kwargs)
+        ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      File "C:\Python313\Lib\concurrent\futures\process.py", line 242, in _process_worker
+        call_item = call_queue.get(block=True)
+      File "C:\Python313\Lib\multiprocessing\queues.py", line 101, in get
+        res = self._recv_bytes()
+      File "C:\Python313\Lib\multiprocessing\connection.py", line 216, in recv_bytes
+        buf = self._recv_bytes(maxlength)
+      File "C:\Python313\Lib\multiprocessing\connection.py", line 334, in _recv_bytes
+        return self._get_more_data(ov, maxsize)
+               ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+      File "C:\Python313\Lib\multiprocessing\connection.py", line 356, in _get_more_data
+        ov, err = _winapi.ReadFile(self._handle, left, overlapped=True)
+                  ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    MemoryError
+    Traceback (most recent call last):
+      File "C:\Python313\Lib\multiprocessing\process.py", line 313, in _bootstrap
+        self.run()
+        ~~~~~~~~^^
+      File "C:\Python313\Lib\multiprocessing\process.py", line 108, in run
+        self._target(*self._args, **self._kwargs)
+        ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      File "C:\Python313\Lib\concurrent\futures\process.py", line 242, in _process_worker
+        call_item = call_queue.get(block=True)
+      File "C:\Python313\Lib\multiprocessing\queues.py", line 101, in get
+        res = self._recv_bytes()
+      File "C:\Python313\Lib\multiprocessing\connection.py", line 216, in recv_bytes
+        buf = self._recv_bytes(maxlength)
+      File "C:\Python313\Lib\multiprocessing\connection.py", line 334, in _recv_bytes
+        return self._get_more_data(ov, maxsize)
+               ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+      File "C:\Python313\Lib\multiprocessing\connection.py", line 356, in _get_more_data
+        ov, err = _winapi.ReadFile(self._handle, left, overlapped=True)
+                  ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    MemoryError
+    Process SpawnProcess-2:
+    Traceback (most recent call last):
+      File "C:\Python313\Lib\multiprocessing\process.py", line 313, in _bootstrap
+        self.run()
+        ~~~~~~~~^^
+      File "C:\Python313\Lib\multiprocessing\process.py", line 108, in run
+        self._target(*self._args, **self._kwargs)
+        ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      File "C:\Python313\Lib\concurrent\futures\process.py", line 242, in _process_worker
+        call_item = call_queue.get(block=True)
+      File "C:\Python313\Lib\multiprocessing\queues.py", line 120, in get
+        return _ForkingPickler.loads(res)
+               ~~~~~~~~~~~~~~~~~~~~~^^^^^
+    _pickle.UnpicklingError: invalid load key, '\x01'.
+    concurrent.futures.process._RemoteTraceback:
+    """
+    Traceback (most recent call last):
+      File "C:\Python313\Lib\multiprocessing\queues.py", line 262, in _feed
+        obj = _ForkingPickler.dumps(obj)
+      File "C:\Python313\Lib\multiprocessing\reduction.py", line 51, in dumps
+        cls(buf, protocol).dump(obj)
+        ~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+    MemoryError
+    """
+
+    The above exception was the direct cause of the following exception:
+
+    Traceback (most recent call last):
+      File "C:\coding\slidyreplay\main.py", line 1177, in run_single
+        gen.generate_simple_replay(
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~^
+            solution=solution, output_path=output,
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            show_progress=True, use_gpu=use_gpu,
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            fps=kwargs.pop("fps", 60), opts=opts, **kwargs
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        )
+        ^
+      File "C:\coding\slidyreplay\replay_video.py", line 2010, in generate_simple_replay
+        frames, frame_state_map = generate_frames(
+                                  ~~~~~~~~~~~~~~~^
+            matrix=matrix,
+            ^^^^^^^^^^^^^^
+        ...<23 lines>...
+            expanded_solution=solution_expanded,
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        )
+        ^
+      File "C:\coding\slidyreplay\replay_video.py", line 1696, in generate_frames
+        chunk_results = fut.result()
+      File "C:\Python313\Lib\concurrent\futures\_base.py", line 449, in result
+        return self.__get_result()
+               ~~~~~~~~~~~~~~~~~^^
+      File "C:\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+        raise self._exception
+      File "C:\Python313\Lib\multiprocessing\queues.py", line 262, in _feed
+        obj = _ForkingPickler.dumps(obj)
+      File "C:\Python313\Lib\multiprocessing\reduction.py", line 51, in dumps
+        cls(buf, protocol).dump(obj)
+        ~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+    MemoryError
+
+    [CRITICAL ERROR]
+FAILED
+
+============================================================
+  OVERALL BENCHMARK SUMMARY
+============================================================
+  Puzzle     Moves   Unique       CPU      GPU  Speedup GPU Info
+  ---------- ------- ------- -------- -------- -------- ------------------------------
+  4x4        26      25          1.1s     0.7s     1.6x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  5x5        98      95          1.5s     1.0s     1.5x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  6x6        213     208         3.4s     2.6s     1.3x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  7x7        425     401         6.7s     3.4s     2.0x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  8x8        707     652        10.7s     5.6s     1.9x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  9x9        1251    1079       20.8s     9.9s     2.1x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  10x10      1569    1362       22.7s    10.7s     2.1x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  12x12      2883    2470       63.0s    23.3s     2.7x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  16x16      7132    5692      381.7s    77.6s     4.9x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  20x20      14203   11177          —   163.2s        — [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+============================================================
+  OVERALL BENCHMARK SUMMARY (no-layout)
+============================================================
+  Puzzle     Moves   Unique       CPU      GPU  Speedup GPU Info
+  ---------- ------- ------- -------- -------- -------- ------------------------------
+  4x4        26      25          0.7s     0.4s     1.8x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  5x5        98      95          1.0s     0.6s     1.7x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  6x6        213     208         1.4s     1.0s     1.4x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  7x7        425     401         2.8s     1.9s     1.5x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  8x8        707     652         4.9s     3.4s     1.4x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  9x9        1251    1079       11.3s     5.9s     1.9x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  10x10      1569    1362       12.8s     6.0s     2.1x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  12x12      2883    2470       39.6s    13.9s     2.9x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  16x16      7132    5692      296.8s    52.2s     5.7x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  20x20      14203   11177          —   114.0s        — [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+============================================================

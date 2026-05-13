@@ -5,9 +5,21 @@
 - do something about layout (make it render faster? on same stage? idk)
 - fix pre render stages computations including grids and replay generator / splits, only loop through puzzle states once
 - fix parse error label in gui when 100x100
+- wrong present at gpu codec?
+- fix cpu progress bars
+- upscale fhd 2k 4k
+- combine batches (fast)
+- select encoder speed preset
+- Actually fix tps if movrtimes are provided
+- Cursor dancing
+- Fringe Hue slider
+- Grids colors select
+- Force lbl
 
-- hard major optimization ideas draft:
- changes between frames are small (like one tile changes every frame), but its kinda hard to use?) Decent idea is precomputing the ids of the tiles affected by the moves, and reuse previous frames data for unaffected frames (that's what video codecs do pretty much but at pixel level), no idea how would that interfere with gpu doing it's parallel rendering tho, I have no clue what cuda is doing
-Maybe I won't even need gpu accel with precomputing stuff 
-Plus I would need to consider the skipped frames (lower fps) etc, good news that changes between frames calculations can run in parallel without issues, just by splitting solution in parts
-Or maybe cuda is already doing all that by magic and that's how it's 10 times faster than CPU
+Anyway two major optimization ideas:
+1) Rendering only tiles that changed.
+Every move tile only swaps TWO tiles! Of course, between frames we may have more moves done, but we can calculate exactly which tiles are changed. For that the best approach is probably stro the boolean mask matrix, where each tile is marked as changed or unchanged, so ultimately for each Unique frame we would have a boolean mask of changed tiles, all other tiles must be rendered based on previous image.
+2) Pre-rendering all the tiles instead of rendering same tiles with same numbers in frames.
+This does NOT conflic with first idea. Colors are attached to the tiles, so number 15 for example always stays in purple color according to fringe color scheme, number 1 is always red (background) etc. So we always know how tile would look like and should reuse same tile instead of rendering it from scratch. I'm not sure about exact implementation details of this however, and if that is really needed if we do first idea, which is much more impactful. Also since we use grids detection, there are MORE THAN 1 kind of each tile we need to prerender: Fringe (colored version), Grids with red bar, Grids with Blue bar, Grids with colored bar of resulted subsceme (you need to carefully examine grids analysis file to understand all kinds of possible tiles. IMPORTANT: all colors on tiles are PERMANENT, attached to the tile's number basically. HOWEVER, Grids stages may change, so tile should cycle through its possible prerendered states. This is however irrelevant if puzzle only have one grids stage, in which case we only prerender Fringe tiles.
+
+

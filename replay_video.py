@@ -19,6 +19,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from typing import List, Tuple, Optional, Union, Dict
 import bisect
+import threading
 from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
 from replay_generator import (
@@ -1682,9 +1683,6 @@ def generate_frames(
                     fut = pool.submit(_render_chunk, chunk, frame_params)
                     fut_to_chunk[fut] = chunk
 
-                # Streaming write: write frames to pipe as they become available in order
-                write_ptr = 0  # index into states_needed
-                written = 0  # total video frames piped
                 _render_prog_count = 0
                 remaining = set(fut_to_chunk.keys())
                 while remaining:
@@ -1697,50 +1695,31 @@ def generate_frames(
                         for idx, img in zip(chunk_indices, chunk_results):
                             state_images[idx] = img
                             _render_prog_count += 1
+                            if progress_callback and (_render_prog_count % _render_prog_step == 0 or _render_prog_count == num_needed):
+                                progress_callback(_render_prog_count, num_needed, desc="Render" if _render_prog_count == _render_prog_step else None)
                         remaining.remove(fut)
-
-                    # Write all contiguous completed states to pipe
-                    while write_ptr < num_needed and state_images[states_needed[write_ptr]] is not None:
-                        state_idx = states_needed[write_ptr]
-                        count = state_to_count[state_idx]
-                        data = np.array(state_images[state_idx]).tobytes()
-                        for _ in range(count):
-                            ffmpeg_proc.stdin.write(data)
-                        written += count
-                        state_images[state_idx] = None  # free memory
-                        write_ptr += 1
-
-                    # Report combined render+write progress
-                    if progress_callback and (_render_prog_count % _render_prog_step == 0 or _render_prog_count == num_needed):
-                        progress_callback(_render_prog_count, num_needed, desc="Render" if _render_prog_count == _render_prog_step else None)
             finally:
                 if shared_pool is None:
                     pool.shutdown()
 
-            log.info(f"  CPU RENDER+PIPE STREAMED: {_render_prog_count} unique states rendered, {written}/{total_video_frames} video frames piped")
-            log_ram("CPU: after render (streaming)")
+            log.info(f"  CPU RENDER DONE: canvas={canvas_w_cpu}x{canvas_h_cpu}")
+            log_ram("CPU: after render (all frames in mem)")
 
-            # Drain any remaining frames not yet piped (shouldn't happen, but be safe)
+            # Write frames in video order to ffmpeg pipe (NVENC is fast)
             _encode_prog_step = max(1, total_video_frames // 100)
             _encode_prog_count = 0
-            while write_ptr < num_needed:
-                state_idx = states_needed[write_ptr]
-                if state_images[state_idx] is None:
-                    break
-                count = state_to_count[state_idx]
-                data = np.array(state_images[state_idx]).tobytes()
-                for _ in range(count):
-                    ffmpeg_proc.stdin.write(data)
-                written += count
-                state_images[state_idx] = None
-                write_ptr += 1
-                _encode_prog_count += 1
-                if progress_callback and (_encode_prog_count % _encode_prog_step == 0 or write_ptr == num_needed):
-                    progress_callback(_encode_prog_count, num_needed, desc="Encode" if _encode_prog_count == _encode_prog_step else None)
-            # Final progress update for encode phase
-            if progress_callback and written > 0:
-                progress_callback(total_video_frames, total_video_frames, desc="Encode")
-            log.info(f"  CPU FFMPEG STREAMING DONE: {written} total frames written")
+            written = 0
+            try:
+                for state_idx in frame_state:
+                    ffmpeg_proc.stdin.write(state_images[state_idx].tobytes())
+                    written += 1
+                    _encode_prog_count += 1
+                    if progress_callback and (_encode_prog_count % _encode_prog_step == 0 or written == total_video_frames):
+                        progress_callback(written, total_video_frames, desc="Encode" if _encode_prog_count == _encode_prog_step else None)
+            finally:
+                state_images = None
+
+            log.info(f"  CPU FFMPEG DONE: {written} frames written, returncode pending")
         else:
             # Serial path: write each frame to pipe immediately after rendering
             written = 0
@@ -1757,7 +1736,7 @@ def generate_frames(
 
                 # Write this frame N times to ffmpeg pipe immediately (overlap render + encode)
                 count = state_to_count[i]
-                data = np.array(img).tobytes()
+                data = img.tobytes()
                 for _ in range(count):
                     ffmpeg_proc.stdin.write(data)
                     written += 1
