@@ -598,6 +598,7 @@ class GPURenderer:
                         _data_font = _layout["data_font"]
                         _layout_px = _layout["px"]
                         _layout_inner_w = _layout["inner_w"]
+                        _row_h = _layout["row_h"]
                         _y_predicted = _layout["y_predicted"]
                         _y_md_cur = _layout["y_md_cur"]
                         _y_mmd_cur = _layout["y_mmd_cur"]
@@ -608,34 +609,106 @@ class GPURenderer:
                         _stage_w3 = _layout.get("stage_w3", 0)
                         _stage_w4 = _layout.get("stage_w4", 0)
                         _gs_lf = _layout.get("gs_lf")
+                        _panel_w = overlay_render_data.get("panel_w_val", self.panel_w)
 
-                        # Atomics chars per font (rendered once, cached to disk)
+                        # Font atlases (PIL one-time, cached to disk)
                         _data_atlas = _load_or_build_atlas(
-                            _data_font, "datafont", [32, 45, 46] + list(range(48, 58)), dev)
+                            _data_font, "datafont", list(range(32, 127)), dev)
+                        _acc_font = _layout.get("acc_font") or get_font(16, mono=True)
+                        _acc_atlas = _load_or_build_atlas(
+                            _acc_font, "accfont", list(range(32, 127)), dev)
+                        _gs_atlas = _load_or_build_atlas(
+                            _gs_lf, "gs_lf", list(range(32, 127)), dev) if _gs_lf else {}
+                        _header_font = _layout.get("header_font")
+                        _header_atlas = _load_or_build_atlas(
+                            _header_font, "headerfont", list(range(32, 127)), dev) if _header_font else _data_atlas
+                        _gs_hf = _layout.get("gs_header_font")
+                        _gs_hf_atlas = _load_or_build_atlas(
+                            _gs_hf, "gshfont", list(range(32, 127)), dev) if _gs_hf else _acc_atlas
                         _timer_font = get_font(36, bold=True, mono=True)
                         _timer_atlas = _load_or_build_atlas(
                             _timer_font, "timerfont",
                             [32, 40, 41, 46, 47] + list(range(48, 58)) + [58], dev)
 
-                        # Upload static_base to GPU
-                        _sb_pil = overlay_render_data["static_base"]
-                        _static_base_gpu = torch.from_numpy(np.array(_sb_pil)).to(dev, non_blocking=True).float() / 255.0
-                        _sb_h, _sb_w = _static_base_gpu.shape[:2]
+                        # ── Static base: GPU composition from font atlases ──
+                        _fp0 = frame_params_list[0]
+                        _stats0 = _fp0.get("stats_data", {})
+                        _is_acc = _fp0.get("is_movetimes_accurate", False)
+                        _sb_h = _layout.get("total_h", 400)
+                        _sb = torch.zeros(_sb_h, _panel_w, 4, device=dev, dtype=torch.float32)
+                        _white_rgb = torch.tensor([1., 1., 1.], device=dev)
+                        _cyan_rgb_sb = torch.tensor(CYAN, device=dev, dtype=torch.float32) / 255.0
+                        _acc_rgb = torch.tensor(ACCURATE_COLOR, device=dev, dtype=torch.float32) / 255.0
+                        _inacc_rgb = torch.tensor(INACCURATE_COLOR, device=dev, dtype=torch.float32) / 255.0
 
-                        # Pre-render stage lines as CYAN tensors (PIL, for exact alignment with static base)
-                        _gs_line_tensors = []
+                        def _pt(cv, text, atl, xx, yy, col):
+                            if not text: return
+                            ts = [atl.get(ord(c), atl[32]) for c in text]
+                            ti = torch.cat(ts, dim=1)
+                            th, tw = ti.shape[:2]
+                            if xx + tw > cv.shape[1]: tw = max(0, cv.shape[1] - xx)
+                            if yy + th > cv.shape[0]: th = max(0, cv.shape[0] - yy)
+                            if th <= 0 or tw <= 0: return
+                            sa = ti[:th, :tw, 3:4]
+                            dst = cv[yy:yy+th, xx:xx+tw]
+                            dst[:, :, :3] = col.view(1,1,3) * sa + dst[:, :, :3] * (1 - sa)
+                            dst[:, :, 3] = dst[:, :, 3] + sa.squeeze(-1) * (1 - dst[:, :, 3])
+
+                        def _pv(cv, val, atl, rxx, yy, col):
+                            if not val: return
+                            tw = sum(atl.get(ord(c), atl[32]).shape[1] for c in val)
+                            _pt(cv, val, atl, rxx - tw, yy, col)
+
+                        def _pl(cv, lbl, val, atl, xx, yy, iw):
+                            _pt(cv, lbl, atl, xx, yy, _white_rgb)
+                            _pv(cv, val, atl, xx + iw, yy, _white_rgb)
+
+                        _acc_h = _acc_atlas[32].shape[0]
+                        _gs_hf_h = _gs_hf_atlas[32].shape[0]
+
+                        # "Stats" header (24px bold)
+                        _pt(_sb, "Stats", _header_atlas, _layout_px, 10, _cyan_rgb_sb)
+                        # Static lines (label + value, WHITE)
+                        _pl(_sb, "Time (total): ", _stats0.get("time_all","0.000"), _data_atlas,
+                            _layout_px, _y_predicted - 5*_row_h, _layout_inner_w)
+                        _pl(_sb, "Moves (total): ", _stats0.get("moves_all","0"), _data_atlas,
+                            _layout_px, _y_predicted - 4*_row_h, _layout_inner_w)
+                        _pl(_sb, "TPS (total): ", _stats0.get("tps_all","0.000"), _data_atlas,
+                            _layout_px, _y_predicted - 3*_row_h, _layout_inner_w)
+                        _pl(_sb, "Cubic est: ", _stats0.get("cubic_estimate","---"), _data_atlas,
+                            _layout_px, _y_predicted - 2*_row_h, _layout_inner_w)
+                        _pl(_sb, "Playback speed: ", _stats0.get("speed_playback","1.00×"), _data_atlas,
+                            _layout_px, _y_predicted - 1*_row_h, _layout_inner_w)
+                        # Predicted moves label (CYAN)
+                        _pt(_sb, "Predicted moves: ", _data_atlas, _layout_px, _y_predicted, _cyan_rgb_sb)
+                        # MD total (WHITE)
+                        _pl(_sb, "MD (total): ", _stats0.get("md_all","0"), _data_atlas,
+                            _layout_px, _y_predicted + _row_h, _layout_inner_w)
+                        # MD current label (CYAN)
+                        _pt(_sb, "MD (current): ", _data_atlas, _layout_px, _y_md_cur, _cyan_rgb_sb)
+                        # M/MD total (WHITE)
+                        _pl(_sb, "M/MD (total): ", _stats0.get("mmd_all","0.000"), _data_atlas,
+                            _layout_px, _y_md_cur + _row_h, _layout_inner_w)
+                        # M/MD current label (CYAN)
+                        _pt(_sb, "M/MD (current): ", _data_atlas, _layout_px, _y_mmd_cur, _cyan_rgb_sb)
+                        # Accuracy text
+                        _acc_yy = _y_mmd_cur + _row_h + 4
+                        _pt(_sb, "Movetimes accurate" if _is_acc else "NOT movetimes accurate",
+                            _acc_atlas, _layout_px, _acc_yy, _acc_rgb if _is_acc else _inacc_rgb)
+                        # Grid stages (WHITE, static only)
                         if _stage_raw_lines:
-                            for _cum_s, _split_s, _mvtps_s, _label in _stage_raw_lines:
+                            _pt(_sb, "Grid stages", _gs_hf_atlas, _layout_px,
+                                _acc_yy + _acc_h + 6, _cyan_rgb_sb)
+                            for _i in range(len(_stage_raw_lines)):
+                                _cum_s, _split_s, _mvtps_s, _label = _stage_raw_lines[_i]
                                 if '.' in _cum_s:
-                                    _gs_line_text = f"{_cum_s:>{_stage_w1}} | {_split_s:>{_stage_w2}} {_mvtps_s:<{_stage_w3}} | {_label:<{_stage_w4}}"
+                                    _gl = f"{_cum_s:>{_stage_w1}} | {_split_s:>{_stage_w2}} {_mvtps_s:<{_stage_w3}} | {_label:<{_stage_w4}}"
                                 else:
-                                    _gs_line_text = f"{_cum_s:>{_stage_w1}} | {_split_s:<{_stage_w2}}  | {_label:<{_stage_w4}}"
-                                _bb = _gs_lf.getbbox(_gs_line_text)
-                                _gs_im = Image.new("RGBA", (_bb[2], _bb[3]), (0, 0, 0, 0))
-                                ImageDraw.Draw(_gs_im).text((0, 0), _gs_line_text, fill=(255, 255, 255, 255), font=_gs_lf)
-                                _gs_line_tensors.append(
-                                    torch.from_numpy(np.array(_gs_im)).to(dev, non_blocking=True).float() / 255.0)
+                                    _gl = f"{_cum_s:>{_stage_w1}} | {_split_s:<{_stage_w2}}  | {_label:<{_stage_w4}}"
+                                _pt(_sb, _gl, _gs_atlas, _layout_px, _stage_y_positions[_i], _white_rgb)
 
+                        _static_base_gpu = _sb
+                        _sb_h, _sb_w = _static_base_gpu.shape[:2]
                         _cyan_rgb = torch.tensor(CYAN, device=dev, dtype=torch.float32) / 255.0
                         _overlay_ready = True
 
@@ -688,18 +761,17 @@ class GPURenderer:
                                         px + _layout_px + _layout_inner_w - _tw, py + _y_val,
                                         cw, ch)
 
-                        # Stage highlight: blend pre-rendered PIL line tensor in CYAN (matches static base exactly)
+                        # Stage highlight: CYAN from gs_lf atlas (same positioning as white static base)
                         _cur_stage = _sd.get("grid_current", 0)
-                        if _gs_line_tensors and _cur_stage < len(_gs_line_tensors):
-                            _lt = _gs_line_tensors[_cur_stage]
-                            _sx = px + _layout_px
-                            _sy = py + _stage_y_positions[_cur_stage]
-                            _sth = min(_lt.shape[0], ch - _sy)
-                            _stw = min(_lt.shape[1], cw - _sx)
-                            if _sth > 0 and _stw > 0:
-                                _sa = _lt[:_sth, :_stw, 3:4]
-                                _dst = canvas[_i, _sy:_sy + _sth, _sx:_sx + _stw, :]
-                                _dst[:, :, :3] = _cyan_rgb.view(1, 1, 3) * _sa + _dst[:, :, :3] * (1 - _sa)
+                        if _stage_raw_lines and _cur_stage < len(_stage_raw_lines):
+                            _cums_s, _splits_s, _mvtpss_s, _label_s = _stage_raw_lines[_cur_stage]
+                            if '.' in _cums_s:
+                                _line_s = f"{_cums_s:>{_stage_w1}} | {_splits_s:>{_stage_w2}} {_mvtpss_s:<{_stage_w3}} | {_label_s:<{_stage_w4}}"
+                            else:
+                                _line_s = f"{_cums_s:>{_stage_w1}} | {_splits_s:<{_stage_w2}}  | {_label_s:<{_stage_w4}}"
+                            _blend_cyan(canvas[_i], _line_s, _gs_atlas,
+                                        px + _layout_px, py + _stage_y_positions[_cur_stage],
+                                        cw, ch)
                 else:
                     first_stats_arr = frame_params_list[batch_start].get("stats_arr")
                     if first_stats_arr is not None:
