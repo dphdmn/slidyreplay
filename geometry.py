@@ -178,6 +178,7 @@ class TileSpriteCache:
     base_sprites: dict
     number_texts: dict
     bar_sprites: dict
+    opts: RenderOptions = RenderOptions()
 
 
 _RED = (200, 103, 103)

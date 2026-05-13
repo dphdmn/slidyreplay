@@ -877,6 +877,8 @@ def _get_np_font_atlas(font, cache_name=None):
 # ─── Cached PIL Text Surfaces for Stats Panel ──────────────────
 _cache_stats_surfaces: Dict = {}
 
+
+
 def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info):
     """Overlay dynamic values and stage highlight via cached PIL text surfaces."""
     if stats_data is None:
@@ -1019,6 +1021,7 @@ def prerender_tile_layers(width, height, tile_size, font_size, opts, all_fringe_
         base_sprites=base_sprites,
         number_texts=number_texts,
         bar_sprites=bar_sprites,
+        opts=opts,
     )
 
 
@@ -1083,65 +1086,65 @@ def _close_pipe(proc: subprocess.Popen) -> None:
 
 @functools.lru_cache(maxsize=1)
 def _get_best_encoder() -> str:
-    """Return 'hevc_nvenc' if available, else 'libx264'."""
+    """Return best available encoder: 'hevc_nvenc' > 'h264_nvenc' > 'libx264'."""
     try:
         r = subprocess.run(['ffmpeg', '-encoders'], capture_output=True, text=True, timeout=5)
         if 'hevc_nvenc' in r.stdout:
             return 'hevc_nvenc'
+        if 'h264_nvenc' in r.stdout:
+            return 'h264_nvenc'
     except Exception:
         pass
     return 'libx264'
 
 
 def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18):
-    """Spawn ffmpeg with libx264 reading rawvideo from stdin (CPU path)."""
-    cmd = [
-        'ffmpeg', '-y',
-        '-f', 'rawvideo',
-        '-pix_fmt', 'rgb24',
-        '-s', f'{width}x{height}',
-        '-r', str(fps),
-        '-i', '-',
-        '-c:v', 'libx264',
-        '-preset', 'slow',
-        '-crf', str(compression),
-        '-profile:v', 'high',
-        '-level', '4.1',
-        '-pix_fmt', 'yuv420p',
-        '-fps_mode', 'cfr',
-        '-movflags', '+faststart',
-        output_path,
-    ]
-    log.info(f"_create_ffmpeg_pipe (libx264): cmd={' '.join(cmd)}")
+    """Spawn ffmpeg with best available encoder reading rawvideo from stdin.
+    Tries hevc_nvenc > h264_nvenc > libx264 veryfast."""
+    encoder = _get_best_encoder()
+
+    if encoder == 'hevc_nvenc':
+        cq = compression + 11
+        cmd = [
+            'ffmpeg', '-y', '-hide_banner',
+            '-f', 'rawvideo', '-pix_fmt', 'rgb24',
+            '-s', f'{width}x{height}', '-r', str(fps), '-i', '-',
+            '-c:v', 'hevc_nvenc', '-preset', 'p7', '-cq', str(cq),
+            '-profile:v', 'main', '-pix_fmt', 'yuv420p',
+            '-fps_mode', 'cfr', '-movflags', '+faststart',
+            output_path,
+        ]
+        log.info(f"_create_ffmpeg_pipe (hevc_nvenc): cmd={' '.join(cmd)}")
+    elif encoder == 'h264_nvenc':
+        cq = compression + 12
+        cmd = [
+            'ffmpeg', '-y', '-hide_banner',
+            '-f', 'rawvideo', '-pix_fmt', 'rgb24',
+            '-s', f'{width}x{height}', '-r', str(fps), '-i', '-',
+            '-c:v', 'h264_nvenc', '-preset', 'p7', '-cq', str(cq),
+            '-profile:v', 'high', '-pix_fmt', 'yuv420p',
+            '-fps_mode', 'cfr', '-movflags', '+faststart',
+            output_path,
+        ]
+        log.info(f"_create_ffmpeg_pipe (h264_nvenc): cmd={' '.join(cmd)}")
+    else:
+        cmd = [
+            'ffmpeg', '-y',
+            '-f', 'rawvideo', '-pix_fmt', 'rgb24',
+            '-s', f'{width}x{height}', '-r', str(fps), '-i', '-',
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', str(compression),
+            '-profile:v', 'high', '-level', '4.1', '-pix_fmt', 'yuv420p',
+            '-fps_mode', 'cfr', '-movflags', '+faststart',
+            output_path,
+        ]
+        log.info(f"_create_ffmpeg_pipe (libx264 veryfast): cmd={' '.join(cmd)}")
+
     return subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 
 def _create_ffmpeg_pipe_gpu(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18):
-    """Spawn ffmpeg with hevc_nvenc reading rawvideo from stdin (GPU path).
-    Falls back to libx264 if hevc_nvenc is not available."""
-    if _get_best_encoder() == 'libx264':
-        log.warning("hevc_nvenc not available, falling back to libx264 software encoder")
-        return _create_ffmpeg_pipe(output_path, width, height, fps, compression)
-    cq = compression + 11
-    cmd = [
-        'ffmpeg', '-y',
-        '-hide_banner',
-        '-f', 'rawvideo',
-        '-pix_fmt', 'rgb24',
-        '-s', f'{width}x{height}',
-        '-r', str(fps),
-        '-i', '-',
-        '-c:v', 'hevc_nvenc',
-        '-preset', 'p7',
-        '-cq', str(cq),
-        '-profile:v', 'main',
-        '-pix_fmt', 'yuv420p',
-        '-fps_mode', 'cfr',
-        '-movflags', '+faststart',
-        output_path,
-    ]
-    log.info(f"_create_ffmpeg_pipe_gpu (hevc_nvenc): cmd={' '.join(cmd)}")
-    return subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    """Spawn ffmpeg with best encoder (same as _create_ffmpeg_pipe)."""
+    return _create_ffmpeg_pipe(output_path, width, height, fps, compression)
 
 
 def generate_frames(
@@ -1653,79 +1656,119 @@ def generate_frames(
     log.info(f"  fonts loaded: took {time_module.time() - _font_start:.3f}s")
     log_ram("CPU: after font load")
 
-    state_images = [None] * (sol_len + 1)
+    # Pre-compute how many video frames each puzzle state spans (shared with serial path)
+    state_to_count = {}
+    for state_idx in frame_state:
+        state_to_count[state_idx] = state_to_count.get(state_idx, 0) + 1
+
     num_needed = len(states_needed)
+    total_video_frames = len(frame_state)
     log_ram("CPU: before render")
+
+    # Open ffmpeg pipe early so render + encode overlap
+    log.info(f"  CPU FFMPEG PIPE: output={output_path}, total_frames={total_video_frames}, compression={compression}")
+    ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w_cpu, canvas_h_cpu, fps=fps, compression=compression)
 
     _render_prog_step = max(1, num_needed // 100)
     chunks = _build_chunks(states_needed)
-    if parallel and len(chunks) > 1:
-        workers = min(os.cpu_count() or 4, len(chunks))
-        done = 0
-        _render_prog_count = 0
-        pool = shared_pool if shared_pool is not None else ProcessPoolExecutor(max_workers=workers)
-        try:
-            fut_to_chunk = {}
-            for chunk in chunks:
-                fut = pool.submit(_render_chunk, chunk, frame_params)
-                fut_to_chunk[fut] = chunk
+    try:
+        if parallel and len(chunks) > 1:
+            workers = min(os.cpu_count() or 4, len(chunks))
+            state_images = [None] * (sol_len + 1)
+            pool = shared_pool if shared_pool is not None else ProcessPoolExecutor(max_workers=workers)
+            try:
+                fut_to_chunk = {}
+                for chunk in chunks:
+                    fut = pool.submit(_render_chunk, chunk, frame_params)
+                    fut_to_chunk[fut] = chunk
 
-            remaining = set(fut_to_chunk.keys())
-            while remaining:
+                # Streaming write: write frames to pipe as they become available in order
+                write_ptr = 0  # index into states_needed
+                written = 0  # total video frames piped
+                _render_prog_count = 0
+                remaining = set(fut_to_chunk.keys())
+                while remaining:
+                    if cancel_check and cancel_check():
+                        raise CancelError()
+                    done_set, _ = wait(remaining, timeout=0.2, return_when=FIRST_COMPLETED)
+                    for fut in done_set:
+                        chunk_indices = fut_to_chunk[fut]
+                        chunk_results = fut.result()
+                        for idx, img in zip(chunk_indices, chunk_results):
+                            state_images[idx] = img
+                            _render_prog_count += 1
+                        remaining.remove(fut)
+
+                    # Write all contiguous completed states to pipe
+                    while write_ptr < num_needed and state_images[states_needed[write_ptr]] is not None:
+                        state_idx = states_needed[write_ptr]
+                        count = state_to_count[state_idx]
+                        data = np.array(state_images[state_idx]).tobytes()
+                        for _ in range(count):
+                            ffmpeg_proc.stdin.write(data)
+                        written += count
+                        state_images[state_idx] = None  # free memory
+                        write_ptr += 1
+
+                    # Report combined render+write progress
+                    if progress_callback and (_render_prog_count % _render_prog_step == 0 or _render_prog_count == num_needed):
+                        progress_callback(_render_prog_count, num_needed, desc="Render" if _render_prog_count == _render_prog_step else None)
+            finally:
+                if shared_pool is None:
+                    pool.shutdown()
+
+            log.info(f"  CPU RENDER+PIPE STREAMED: {_render_prog_count} unique states rendered, {written}/{total_video_frames} video frames piped")
+            log_ram("CPU: after render (streaming)")
+
+            # Drain any remaining frames not yet piped (shouldn't happen, but be safe)
+            _encode_prog_step = max(1, total_video_frames // 100)
+            _encode_prog_count = 0
+            while write_ptr < num_needed:
+                state_idx = states_needed[write_ptr]
+                if state_images[state_idx] is None:
+                    break
+                count = state_to_count[state_idx]
+                data = np.array(state_images[state_idx]).tobytes()
+                for _ in range(count):
+                    ffmpeg_proc.stdin.write(data)
+                written += count
+                state_images[state_idx] = None
+                write_ptr += 1
+                _encode_prog_count += 1
+                if progress_callback and (_encode_prog_count % _encode_prog_step == 0 or write_ptr == num_needed):
+                    progress_callback(_encode_prog_count, num_needed, desc="Encode" if _encode_prog_count == _encode_prog_step else None)
+            # Final progress update for encode phase
+            if progress_callback and written > 0:
+                progress_callback(total_video_frames, total_video_frames, desc="Encode")
+            log.info(f"  CPU FFMPEG STREAMING DONE: {written} total frames written")
+        else:
+            # Serial path: write each frame to pipe immediately after rendering
+            written = 0
+            prev_canvas = None
+            for seq_idx, i in enumerate(states_needed):
                 if cancel_check and cancel_check():
                     raise CancelError()
-                done_set, _ = wait(remaining, timeout=0.2, return_when=FIRST_COMPLETED)
-                for fut in done_set:
-                    chunk_indices = fut_to_chunk[fut]
-                    chunk_results = fut.result()
-                    for idx, img in zip(chunk_indices, chunk_results):
-                        state_images[idx] = img
-                        done += 1
-                        _render_prog_count += 1
-                        if progress_callback and (_render_prog_count % _render_prog_step == 0 or done == num_needed):
-                            progress_callback(done, num_needed, desc="Render" if _render_prog_count == _render_prog_step else None)
-                    remaining.remove(fut)
-        finally:
-            if shared_pool is None:
-                pool.shutdown()
-    else:
-        _render_prog_count = 0
-        prev_canvas = None
-        for seq_idx, i in enumerate(states_needed):
-            if cancel_check and cancel_check():
-                raise CancelError()
-            p = frame_params[i]
-            if prev_canvas is None:
+                p = frame_params[i]
                 kw = {k: v for k, v in p.items() if k in _get_render_frame_args()}
-                state_images[i] = render_frame(**kw)
-            else:
-                kw = {k: v for k, v in p.items() if k in _get_render_frame_args()}
-                kw["prev_canvas"] = prev_canvas
-                state_images[i] = render_frame(**kw)
-            prev_canvas = state_images[i]
-            _render_prog_count += 1
-            if progress_callback and (_render_prog_count % _render_prog_step == 0 or _render_prog_count == num_needed):
-                progress_callback(_render_prog_count, num_needed, desc="Render" if _render_prog_count == _render_prog_step else None)
+                if prev_canvas is not None:
+                    kw["prev_canvas"] = prev_canvas
+                img = render_frame(**kw)
+                prev_canvas = img
 
-    log.info(f"  CPU RENDER DONE: canvas={canvas_w_cpu}x{canvas_h_cpu}")
-    log_ram("CPU: after render (all frames in mem)")
+                # Write this frame N times to ffmpeg pipe immediately (overlap render + encode)
+                count = state_to_count[i]
+                data = np.array(img).tobytes()
+                for _ in range(count):
+                    ffmpeg_proc.stdin.write(data)
+                    written += 1
 
-    total_video_frames = len(frame_state)
-    log.info(f"  CPU FFMPEG PIPE: output={output_path}, total_frames={total_video_frames}, compression={compression}")
-    ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w_cpu, canvas_h_cpu, fps=fps, compression=compression)
-    written = 0
-    _encode_prog_step = max(1, total_video_frames // 100)
-    _encode_prog_count = 0
-    try:
-        for idx, state_idx in enumerate(frame_state):
-            ffmpeg_proc.stdin.write(np.array(state_images[state_idx]).tobytes())
-            written += 1
-            _encode_prog_count += 1
-            if progress_callback and (_encode_prog_count % _encode_prog_step == 0 or written == total_video_frames):
-                progress_callback(written, total_video_frames, desc="Encode" if _encode_prog_count == _encode_prog_step else None)
+                _render_prog_count = seq_idx + 1
+                if progress_callback and (_render_prog_count % _render_prog_step == 0 or _render_prog_count == num_needed):
+                    progress_callback(_render_prog_count, num_needed, desc="Render" if _render_prog_count == _render_prog_step else None)
+
+            log.info(f"  CPU RENDER+ENCODE DONE: {written} frames written, canvas={canvas_w_cpu}x{canvas_h_cpu}")
     finally:
         _close_pipe(ffmpeg_proc)
-    log.info(f"  CPU FFMPEG DONE: {written} frames written, returncode={ffmpeg_proc.returncode}")
     log_ram("CPU: after ffmpeg pipe")
 
     return [], frame_state
