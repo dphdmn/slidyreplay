@@ -49,3 +49,5 @@ full_test.py
 fix_memory.md
 moder_optimization_techniques.md
 PROJECT.MD
+render_cache/*
+layout_fixes_ideas.md

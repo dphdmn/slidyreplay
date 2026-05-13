@@ -790,6 +790,8 @@ def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_sta
     for x, y, text, fill, font in lines:
         draw.text((x, y), text, fill=(*fill, 255), font=font)
 
+    stage_line_h = gs_lf.getbbox("Xy")[3] - gs_lf.getbbox("Xy")[1] + 4
+
     layout_info = {
         "px": px, "inner_w": inner_w,
         "data_font": data_font, "row_h": row_h,
@@ -797,8 +799,14 @@ def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_sta
         "y_md_cur": y_md_cur,
         "y_mmd_cur": y_mmd_cur,
         "stage_y_positions": stage_y_positions,
+        "stage_line_h": stage_line_h,
         "grid_stages_list": grid_stages_list,
         "gs_lf": gs_lf,
+        "stage_raw_lines": raw_lines if len(grid_stages_list) > 1 else None,
+        "stage_w1": w1 if len(grid_stages_list) > 1 and raw_lines else 0,
+        "stage_w2": w2 if len(grid_stages_list) > 1 and raw_lines else 0,
+        "stage_w3": w3 if len(grid_stages_list) > 1 and raw_lines else 0,
+        "stage_w4": w4 if len(grid_stages_list) > 1 and raw_lines else 0,
     }
     return im, layout_info
 
@@ -1329,7 +1337,7 @@ def generate_frames(
             moves_display = str(current_moves)
         timer_text = f"{cur_time_display} ({moves_display} / {cur_tps_display})"
         if isinstance(cur_mmd, str):
-            predicted_moves = cur_mmd
+            predicted_moves = "-"
         else:
             predicted_moves = f"{round(cur_mmd * all_md)}"
         sd = {

@@ -1,9 +1,9 @@
 from __future__ import annotations
 import math
 import json
+import os
 import time as _time_module
-import threading
-from queue import Queue
+
 import numpy as np
 from PIL import Image, ImageDraw
 from typing import List, Optional
@@ -20,6 +20,56 @@ def _ram_delta_mb() -> int:
     return (_gpu_proc.memory_info().rss - _gpu_baseline_ram) // (1024 * 1024)
 
 
+CACHE_DIR = "render_cache"
+
+
+def _get_font_key(font) -> str | None:
+    try:
+        return f"{os.path.splitext(os.path.basename(font.path))[0]}_{font.size}"
+    except AttributeError:
+        return None
+
+
+def _build_char_atlas(font, codes, dev):
+    """Build {code: CUDA tensor} atlas for given font. Each char rendered in WHITE on transparent."""
+    atlas = {}
+    h_max = 0
+    for c in codes:
+        b = font.getbbox(chr(c))
+        h_max = max(h_max, b[3])
+    for c in codes:
+        ch = chr(c)
+        b = font.getbbox(ch)
+        w = max(b[2] - b[0], 1)
+        im = Image.new("RGBA", (w, h_max), (0, 0, 0, 0))
+        ImageDraw.Draw(im).text((0, 0), ch, fill=(255, 255, 255, 255), font=font)
+        atlas[c] = torch.from_numpy(np.array(im)).to(dev, non_blocking=True).float() / 255.0
+    return atlas
+
+
+def _load_or_build_atlas(font, cache_name, codes, dev):
+    """Load atlas from render_cache/ or build + cache it."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    fkey = _get_font_key(font)
+    if fkey:
+        path = os.path.join(CACHE_DIR, f"{cache_name}_{fkey}.pt")
+        if os.path.exists(path):
+            try:
+                cpu_data = torch.load(path, map_location="cpu")
+                atlas = {}
+                for k, v in cpu_data.items():
+                    atlas[k] = v.to(dev, non_blocking=True)
+                if all(c in atlas for c in codes):
+                    return atlas
+            except Exception:
+                pass
+    atlas = _build_char_atlas(font, codes, dev)
+    if fkey:
+        path = os.path.join(CACHE_DIR, f"{cache_name}_{fkey}.pt")
+        torch.save({k: v.cpu() for k, v in atlas.items()}, path)
+    return atlas
+
+
 
 _HAS_TORCH = False
 try:
@@ -34,7 +84,7 @@ from geometry import (PADDING, HEADER_H, STATS_PANEL_WIDTH, INFO_H, TIMER_HEIGHT
     WHITE, CYAN, GREEN, GRAY, LIGHT_GRAY,
     TILE_BORDER_WIDTH, TILE_BORDER_RADIUS_RATIO, BASE_SIZE,
     compute_canvas_dimensions, RenderOptions,
-    get_font, render_number_texture, render_timer_text,
+    get_font, render_number_texture,
     compute_tile_size, compute_font_size,
     compute_grid_position, compute_panel_rect, compute_secondary_bar_rect,
     round_canvas_height)
@@ -313,7 +363,7 @@ class GPURenderer:
 
         frames = []
         batch_start = 0
-        _overlay_queue = None
+        _overlay_ready = False
 
         # Permanent reserved memory right after static tensors are loaded
         reserved_permanent = torch.cuda.memory_reserved(dev)
@@ -541,45 +591,115 @@ class GPURenderer:
 
                         del nums_chunk, text_rgb_chunk, text_a_chunk, colored, tile_chunk
 
-                # ── Overlays (pipelined: background thread computes overlays parallel with GPU) ──
+                # ── Overlays (GPU font atlases — no PIL in render loop) ──
                 if overlay_render_data is not None:
-                    if _overlay_queue is None:
-                        from replay_video import _apply_stats_dynamic as _apply_sd
-                        _overlay_queue = Queue(maxsize=0)
-                        def _produce_overlays():
-                            for _fi in range(n):
-                                _p = frame_params_list[_fi]
-                                _ta = np.array(render_timer_text(_p["timer_text"]))
-                                _sa = np.array(_apply_sd(
-                                    _p["stats_data"],
-                                    overlay_render_data["panel_w_val"],
-                                    overlay_render_data["static_base"],
-                                    overlay_render_data["static_layout"]
-                                ))
-                                _overlay_queue.put((_ta, _sa))
-                        _t = threading.Thread(target=_produce_overlays, daemon=True)
-                        _t.start()
+                    if not _overlay_ready:
+                        _layout = overlay_render_data["static_layout"]
+                        _data_font = _layout["data_font"]
+                        _layout_px = _layout["px"]
+                        _layout_inner_w = _layout["inner_w"]
+                        _y_predicted = _layout["y_predicted"]
+                        _y_md_cur = _layout["y_md_cur"]
+                        _y_mmd_cur = _layout["y_mmd_cur"]
+                        _stage_y_positions = _layout.get("stage_y_positions", [])
+                        _stage_raw_lines = _layout.get("stage_raw_lines", [])
+                        _stage_w1 = _layout.get("stage_w1", 0)
+                        _stage_w2 = _layout.get("stage_w2", 0)
+                        _stage_w3 = _layout.get("stage_w3", 0)
+                        _stage_w4 = _layout.get("stage_w4", 0)
+                        _gs_lf = _layout.get("gs_lf")
 
-                    stats_arrays = []
+                        # Atomics chars per font (rendered once, cached to disk)
+                        _data_atlas = _load_or_build_atlas(
+                            _data_font, "datafont", [32, 45, 46] + list(range(48, 58)), dev)
+                        _timer_font = get_font(36, bold=True, mono=True)
+                        _timer_atlas = _load_or_build_atlas(
+                            _timer_font, "timerfont",
+                            [32, 40, 41, 46, 47] + list(range(48, 58)) + [58], dev)
+
+                        # Upload static_base to GPU
+                        _sb_pil = overlay_render_data["static_base"]
+                        _static_base_gpu = torch.from_numpy(np.array(_sb_pil)).to(dev, non_blocking=True).float() / 255.0
+                        _sb_h, _sb_w = _static_base_gpu.shape[:2]
+
+                        # Pre-render stage lines as CYAN tensors (PIL, for exact alignment with static base)
+                        _gs_line_tensors = []
+                        if _stage_raw_lines:
+                            for _cum_s, _split_s, _mvtps_s, _label in _stage_raw_lines:
+                                if '.' in _cum_s:
+                                    _gs_line_text = f"{_cum_s:>{_stage_w1}} | {_split_s:>{_stage_w2}} {_mvtps_s:<{_stage_w3}} | {_label:<{_stage_w4}}"
+                                else:
+                                    _gs_line_text = f"{_cum_s:>{_stage_w1}} | {_split_s:<{_stage_w2}}  | {_label:<{_stage_w4}}"
+                                _bb = _gs_lf.getbbox(_gs_line_text)
+                                _gs_im = Image.new("RGBA", (_bb[2], _bb[3]), (0, 0, 0, 0))
+                                ImageDraw.Draw(_gs_im).text((0, 0), _gs_line_text, fill=(255, 255, 255, 255), font=_gs_lf)
+                                _gs_line_tensors.append(
+                                    torch.from_numpy(np.array(_gs_im)).to(dev, non_blocking=True).float() / 255.0)
+
+                        _cyan_rgb = torch.tensor(CYAN, device=dev, dtype=torch.float32) / 255.0
+                        _overlay_ready = True
+
+                    # Blend static_base onto canvas (batch broadcast, once per batch)
+                    _dh = min(_sb_h, ch - py)
+                    _dw = min(_sb_w, cw - px)
+                    if _dh > 0 and _dw > 0:
+                        canvas[:, py:py + _dh, px:px + _dw] = (
+                            _static_base_gpu[:_dh, :_dw, :3].unsqueeze(0).expand(batch_n, -1, -1, -1).contiguous() *
+                            _static_base_gpu[:_dh, :_dw, 3:4].unsqueeze(0).expand(batch_n, -1, -1, -1).contiguous() +
+                            canvas[:, py:py + _dh, px:px + _dw] * (1 - _static_base_gpu[:_dh, :_dw, 3:4].unsqueeze(0).expand(batch_n, -1, -1, -1).contiguous())
+                        )
+
+                    def _blend_cyan(canvas_i, text, atlas, x, y, cw_max, ch_max, center_x=False, center_y=False):
+                        """Blend text from atlas in CYAN onto canvas[i] at (x,y), optionally centered."""
+                        if not text:
+                            return
+                        tensors = [atlas.get(ord(c), atlas[32]) for c in text]
+                        ti = torch.cat(tensors, dim=1)
+                        th, tw = ti.shape[:2]
+                        if center_x:
+                            x = x + ((cw_max - x) - tw) // 2
+                        if center_y:
+                            y = y + ((ch_max - y) - th) // 2
+                        th_c = min(th, ch - y)
+                        tw_c = min(tw, cw - x)
+                        if th_c > 0 and tw_c > 0:
+                            sa = ti[:th_c, :tw_c, 3:4]
+                            dst = canvas_i[y:y + th_c, x:x + tw_c, :]
+                            dst[:, :, :3] = _cyan_rgb.view(1, 1, 3) * sa + dst[:, :, :3] * (1 - sa)
+
                     for _i in range(batch_n):
-                        timer_arr, stats_arr = _overlay_queue.get()
-                        if timer_arr is not None:
-                            tt = torch.from_numpy(timer_arr).to(dev, non_blocking=True).float() / 255.0
-                            dx = max(tx1, tx1 + ((tx2 - tx1) - tt.shape[1]) // 2)
-                            dy = max(ty1, ty1 + ((ty2 - ty1) - tt.shape[0]) // 2)
-                            self._blend_rgba_inplace(canvas[_i], tt, dx, dy)
-                        stats_arrays.append(stats_arr)
-                    if stats_arrays:
-                        snp = np.stack(stats_arrays, axis=0)
-                        stats_t = torch.from_numpy(snp).to(dev, non_blocking=True).float() / 255.0
-                        s_h, s_w = stats_arrays[0].shape[:2]
-                        dh = min(s_h, ch - py)
-                        dw = min(s_w, cw - px)
-                        if dh > 0 and dw > 0:
-                            canvas[:, py:py + dh, px:px + dw] = (
-                                stats_t[:, :dh, :dw, :3] * stats_t[:, :dh, :dw, 3:] +
-                                canvas[:, py:py + dh, px:px + dw] * (1 - stats_t[:, :dh, :dw, 3:])
-                            )
+                        _p = frame_params_list[batch_start + _i]
+
+                        # Timer (GPU font atlas, no PIL)
+                        _blend_cyan(canvas[_i], _p["timer_text"], _timer_atlas,
+                                    tx1, ty1, tx2, ty2, center_x=True, center_y=True)
+
+                        _sd = _p.get("stats_data")
+                        if _sd is None:
+                            continue
+
+                        # Dynamic values (data font atlas, right-aligned, CYAN)
+                        for _key, _y_val in [("predicted_moves", _y_predicted), ("md_cur", _y_md_cur), ("mmd_cur", _y_mmd_cur)]:
+                            _text = _sd.get(_key, "")
+                            if not _text:
+                                continue
+                            _tw = sum(_data_atlas.get(ord(c), _data_atlas[32]).shape[1] for c in _text)
+                            _blend_cyan(canvas[_i], _text, _data_atlas,
+                                        px + _layout_px + _layout_inner_w - _tw, py + _y_val,
+                                        cw, ch)
+
+                        # Stage highlight: blend pre-rendered PIL line tensor in CYAN (matches static base exactly)
+                        _cur_stage = _sd.get("grid_current", 0)
+                        if _gs_line_tensors and _cur_stage < len(_gs_line_tensors):
+                            _lt = _gs_line_tensors[_cur_stage]
+                            _sx = px + _layout_px
+                            _sy = py + _stage_y_positions[_cur_stage]
+                            _sth = min(_lt.shape[0], ch - _sy)
+                            _stw = min(_lt.shape[1], cw - _sx)
+                            if _sth > 0 and _stw > 0:
+                                _sa = _lt[:_sth, :_stw, 3:4]
+                                _dst = canvas[_i, _sy:_sy + _sth, _sx:_sx + _stw, :]
+                                _dst[:, :, :3] = _cyan_rgb.view(1, 1, 3) * _sa + _dst[:, :, :3] * (1 - _sa)
                 else:
                     first_stats_arr = frame_params_list[batch_start].get("stats_arr")
                     if first_stats_arr is not None:

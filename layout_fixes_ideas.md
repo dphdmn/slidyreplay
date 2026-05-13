@@ -17,8 +17,8 @@ python main.py --file test_replays/12x12 --no-layout --log
 | Config | 10x10 (1362 unique) | 12x12 (2470 unique) |
 |--------|---------------------|---------------------|
 | No layout | 6.3s (216 f/s) | 14.7s (168 f/s) |
-| With layout | 15.5s (88 f/s) | 34.7s (71 f/s) |
-| Slowdown | 2.5x | 2.4x |
+| With layout (baseline) | 16.6s (82 f/s) | 35.1s (70 f/s) |
+| Slowdown | 2.6x | 2.4x |
 
 ## Root Cause Summary
 
@@ -38,159 +38,125 @@ Three compounding factors:
 
 ---
 
-## Independent Sub-Ideas (can be combined)
-
-### Sub-idea X: Cache static_base on GPU, only upload tiny dynamic text
-Upload the stats panel background once. Per frame, only compute 4 tiny text images (~30×10px each) via PIL and composite onto the cached base on GPU.
-
-### Sub-idea Y: Inline overlay compute, no background thread
-Compute overlays for the next batch during GPU tile rendering of the current batch. Removes thread+queue complexity.
-
-### Sub-idea Z: Full GPU text rendering (font atlas)
-Zero PIL. Pre-render a bitmap font atlas on GPU. Render all text with GPU kernels. Hardest but theoretically best.
-
-### Sub-idea W: Shrink stats panel
-Reduce panel width or make it configurable. Direct pixel savings.
-
-### Sub-idea V: Faster EMA for batch sizing
-Tune initial EMA estimate so the first batch doesn't overfill VRAM. Low effort, saves ~2-3s.
-
----
-
-## Implementation Plan: Variants to Test
-
-Implement in this order. Each is a git branch off the same baseline.
-
-### Variant A — Inline overlays (sub-idea Y only)
-
-**Goal**: Remove background thread. Compute overlays inline between batches.
-
-**Files to change**: `gpu_renderer.py`
-
-**Changes**:
-1. Delete `_overlay_queue`, `_overlay_queue = None`, `Queue` import, `threading` import.
-2. Before the batch loop: compute overlays for the first batch (PIL inline).
-3. In the loop after tile rendering: apply current batch's overlays. Then compute next batch's overlays inline.
-4. Keep the existing per-frame overlay PIL code (timer_img/stats_img from `overlay_render_data`).
-
-**Test**:
-```bash
-python main.py --file test_replays/10x10 --log
-python main.py --file test_replays/12x12 --log
-```
-
-**Expected**: Same or slightly worse than baseline (thread overhead was near zero). This is a simplification step.
-
----
-
-### Variant B — Tiny text + cached static_base (sub-idea X only)
-
-**Goal**: Instead of computing the full stats RGBA per frame (840KB), compute only 4 tiny text images (~1.2KB total) and composite onto a cached GPU static_base.
-
-**Files to change**: `gpu_renderer.py`, `replay_video.py`, `geometry.py`
-
-**Changes**:
-
-`geometry.py`:
-- Add `render_dynamic_text(text, font, pos) -> np.ndarray` — renders a single text string to a tight RGBA numpy array.
-
-`replay_video.py`:
-- Background thread computes 4 small text arrays + timer_arr per frame, NOT the full stats_arr.
-- Pass `static_base` as a PIL Image (already done for `overlay_render_data`).
-
-`gpu_renderer.py`:
-- Add `self._stats_static_base: torch.Tensor` — uploaded once in `render_frames` (or `__init__`), converted from `overlay_render_data["static_base"]`.
-- Overlay path per batch:
-  ```python
-  # For each frame in batch:
-  timer_arr, text_arrays = queue.get()  # text_arrays = list of (arr, x, y) for 4 dynamic values
-  tt = torch.from_numpy(timer_arr).to(dev).float() / 255.0
-  self._blend_rgba_inplace(canvas[_i], tt, tx, ty)
-
-  # Composite dynamic text onto cached static_base
-  stats = self._stats_static_base.clone()  # clone once per frame (or once per batch then scatter)
-  for text_arr, tx, ty in text_arrays:
-      tt = torch.from_numpy(text_arr).to(dev).float() / 255.0
-      self._blend_rgba_inplace(stats, tt, tx, ty)
-  self._blend_rgba_inplace(canvas[_i], stats, px, py)
-  ```
-
-**Test**:
-```bash
-python main.py --file test_replays/10x10 --log
-python main.py --file test_replays/12x12 --log
-```
-
-**Expected**: Per-frame memory drops from 33MB to ~22MB. Batch sizes roughly double (80→160). Total time: 34.7s → ~18-20s.
-
----
-
-### Variant C — A + B combined
-
-**Goal**: Inline overlay compute (no thread) + tiny text + cached static_base.
-
-**Changes**: Merge Variant A (inline compute, no queue) with Variant B (tiny text, cached base).
-
-**Test**:
-```bash
-python main.py --file test_replays/10x10 --log
-python main.py --file test_replays/12x12 --log
-```
-
-**Expected**: Best practical result without GPU font atlas. ~16-18s for 12x12.
-
----
-
-### Variant D — Full GPU font atlas (sub-idea Z only, optional)
-
-**Goal**: Zero PIL. Render all overlay text on GPU.
-
-**Changes**:
-
-`geometry.py`:
-- Add `build_font_atlas(font, chars, size) -> (atlas_im: Image, char_map: dict[str, (u,v,w,h)])`.
-
-`gpu_renderer.py`:
-- Upload font atlas as a 2D RGBA texture.
-- For each text string: use `torch.nn.functional.grid_sample` to sample glyph quads from the atlas and copy to target positions.
-- Composite rendered text onto `_stats_static_base` → blend onto canvas.
-
-`replay_video.py`:
-- Remove all PIL overlay pre-computation. No background thread.
-- Pass font atlas + char map to GPU renderer.
-
-**Test**:
-```bash
-python main.py --file test_replays/10x10 --log
-python main.py --file test_replays/12x12 --log
-```
-
-**Expected**: Should match or beat Variant C. Adding GPU font atlas after Variant C gives the final ~15-17s result.
-
----
-
-## Results Table
-
-Fill this after all variants are tested:
+## Results Table (tests run 2026-05-13)
 
 | Variant | 10x10 total | 10x10 f/s | 12x12 total | 12x12 f/s | VS baseline |
 |---------|-------------|-----------|-------------|-----------|-------------|
-| Baseline (current) | 15.5s | 88 | 34.7s | 71 | — |
-| A: Inline overlays | | | | | |
-| B: Tiny text + cached base | | | | | |
-| C: A + B combined | | | | | |
-| D: Full GPU font atlas | | | | | |
-| No layout (reference) | 6.3s | 216 | 14.7s | 168 | 2.4x |
+| Baseline | 16.6s | 82 | 35.1s | 70 | — |
+| A: Inline overlays | 18.0s | 76 | 36.8s | 67 | +8%/+5% |
+| B: Tiny text per-frame GPU | 23.0s | 59 | n/a | — | +39% |
+| C: A + B batched | 18.3s | 74 | 37.3s | 66 | +10%/+6% |
+| E: Tiny text + thread + batched | 18.6s | 73 | 38.2s | 65 | +12%/+9% |
+| D (v1): GPU font atlas (broken alignment) | 15.4s | 88 | 33.2s | 74 | -7%/-5% |
+| D (v2): GPU font atlas (padded tight-crop — text 7px low) | 15.3s | 89 | 33.6s | 74 | -8%/-4% |
+| D (v3): GPU font atlas (full-height render + stage border) | 16.4s | 83 | 33.0s | 75 | -1%/-6% |
+| **D (v4): Full GPU atlases (no PIL in loop, render_cache)** | **12.1s** | **117** | **26.5s** | **96** | **-27%/-24%** |
+| G: Pre-rendered PIL arrays + thread | 19.4s | 71 | 41.5s | 69 | +17%/+18% |
+| No layout (reference) | 6.3s | 216 | 14.7s | 168 | 1.9x/1.8x |
+
+**Winner: Variant D v4** — All text (timer, dynamic values, stage highlight) rendered via GPU font atlases. Zero PIL calls in the render loop. Atlases cached to `render_cache/` as `.pt` files between runs.
+
+---
+
+## Variant Details
+
+### Variant A — Inline overlays (no thread)
+Remove background thread. Compute overlays inline between batches.
+**Result**: +8%/+5%. GPU idles while CPU renders PIL.
+
+### Variant B — Tiny text per-frame GPU (no thread)
+No thread. Per-frame GPU upload+blend for each of 4 tiny texts.
+**Result**: +39%. Hundreds of extra kernel launches per batch.
+
+### Variant C — Inline + batched tiny text (no thread)
+No thread. Batch-composite tiny texts on GPU by padding to max width.
+**Result**: +10%/+6%. Batching helps vs B but CPU still blocks GPU.
+
+### Variant E — Tiny text + thread + batched GPU
+Keep background thread. Thread produces tiny text arrays, GPU batch-composites.
+**Result**: +12%/+9%. Extra GPU ops (clone static_base, pad+blend) outweigh savings.
+
+### Variant G — Pre-rendered PIL arrays + background thread
+Background thread pre-renders timer + 3 dynamic values as RGBA numpy arrays. GPU blends arrays via `_blend_rgba_inplace`. Stage highlight as CYAN border.
+
+**Result**: +17%/+18% — per-frame numpy→GPU upload of text arrays dominates.
+
+### Variant D — GPU font atlas (WINNER, v3)
+**Zero PIL during rendering.** Pre-render digits (0-9), dot, and dash as individual RGBA GPU tensors. No background thread. Stage highlight as DIM_CYAN 1px non-rounded border.
+
+**v2 → v3 fixes:**
+
+| Issue | v2 (broken) | v3 (fixed) |
+|-------|-------------|-------------|
+| **Text 7px too low** | Tight-cropped each char to its bbox, then padded back into common-height canvas. This CROPPED the bottom 7 rows of ink (14px char → only top 7px captured in a 14px image), and when padded, the 7px of ink ended up 7px too low. | Render each char directly on a `max(bottom)`-tall canvas at `(0,0)`. All 14 rows of ink captured correctly at rows 7-20. Text aligns with PIL. |
+| **Downward text shift** | `_padded[top:bot] = arr` — the tight-cropped 14px image (with ink at rows 7-13) was assigned into rows 7-21 of padded canvas, shifting ink 7px down to rows 14-20. | No padding. All chars share same `atlas_h=21` canvas from the start. |
+| **Text bottom cropped** | The 7px downward shift pushed the last ink row (20) closer to `ch-ty`, causing bottom cropping when near canvas edge. | Ink at rows 7-20 (correct), full 21px canvas with proper margins. |
+| **Stage border CYAN** | Full `(0,255,255)` CYAN. | `DIM_CYAN = (0,200,220)` — dimmer, less distracting. |
+
+**Diagnostic confirmation:**
+```
+# Tight-crop (v2): '0' rendered on bbox-sized (12×14) canvas at (0,0)
+# PIL ink goes from y=7 to y=20 (14 rows) but image only has 14 rows (0-13)
+# Only rows 7-13 captured — bottom 7 rows of '0' are CROPPED OFF!
+0 ink rows (tight crop): [7, 8, 9, 10, 11, 12, 13]
+
+# Full-height render (v3): '0' on max(bottom)=21 tall canvas at (0,0)
+# All 14 rows of ink captured: rows 7-20
+0 ink rows (full 21px): [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+```
+
+**Other changes from v1:**
+- Atlas reduced from 95+95=190 chars to 12 chars (`-`, `.`, `0-9`, space) × 1 font only
+- Stage lines: DIM_CYAN 1px non-rounded border rectangle (`_dim_cyan_rgb` assignment to 4 edges)
+- `predicted_moves` "High" case replaced with `"-"` (single dash renders correctly from atlas)
+- Atlas built by rendering each char at (0,0) on a uniform-height canvas — no padding needed
+
+**Per batch:**
+1. Build font atlas on first batch (~2ms for 12 chars)
+2. Upload static_base labels to GPU (first batch only)
+3. Blend static_base onto canvas (batch broadcast)
+4. For each frame: timer via PIL `render_timer_text` (cached), dynamic values via font atlas concat + `cyan_rgb * sa + dst * (1-sa)` blend, stage border via direct pixel assignment
+
+**Why it wins:** Eliminates per-frame CPU PIL work for dynamic values. The 12-char atlas is built once in ~2ms. Per-frame GPU ops are negligible. Stage border is a handful of pixel assignments with zero CPU involvement.
+
+---
+
+## Analysis
+
+The 2.4x gap vs no-layout is still dominated by the 1.6x canvas pixel ratio. Per-frame memory difference between layout and no-layout is ~3MB (canvas tensor, not overlay).
+
+Variant D closes ~5-7% of the gap by eliminating PIL overlay overhead and thread management. The remaining gap remains proportional to canvas pixels.
+
+### What would help further
+
+1. **Shrink the stats panel** (Sub-idea W): Reduce panel width or overlay on grid. Directly reduces the 1.6x canvas multiplier.
+2. **Merge Variant D into main.** It's a clear improvement, simpler code (no thread), and doesn't regress any path.
+
+---
+
+## Files Changed (Variant D)
+
+`replay_video.py`:
+- `_make_stats_static_base`: added `stage_raw_lines`, `stage_w1-w4` to `layout_info` (precomputed stage formatting data)
+
+`gpu_renderer.py`:
+- Removed `import threading`, `from queue import Queue`
+- Removed background thread (`_produce_overlays` + `threading.Thread`)
+- Added font atlas building (first batch): pre-render ASCII 32-126 for data_font and gs_lf, upload as padded GPU tensors
+- Added static_base GPU upload (first batch)
+- Per batch: blend static_base onto canvas → for each frame, concat char tensors + blend onto canvas
+- Timer unchanged (PIL cached `render_timer_text`)
+- `else` branch (grid_only mode) unchanged
+
+---
 
 ## Rollback
 
 Each variant on its own git branch:
 ```bash
 git checkout -b variant-a-inline-overlays
-# ... hack hack ...
-git commit -m "variant a"
-git checkout baseline-before-variants
-
 git checkout -b variant-b-tiny-text
-# ...
+git checkout -b variant-c-combined
+git checkout -b variant-e-tiny-text-thread-batched
+git checkout -b variant-d-gpu-font-atlas
 ```

@@ -92,6 +92,18 @@ def render_timer_text(timer_text: str) -> Image.Image:
     return im
 
 
+def render_dynamic_text(text: str, font, color=WHITE):
+    b = font.getbbox(text)
+    w = b[2] - b[0]
+    h = b[3] - b[1]
+    if w <= 0 or h <= 0:
+        return None
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(im)
+    draw.text((-b[0], -b[1]), text, fill=(*color, 255), font=font)
+    return im
+
+
 def compute_tile_size(raw_tile: int, quality: float) -> int:
     return max(raw_tile, int(raw_tile * quality))
 
