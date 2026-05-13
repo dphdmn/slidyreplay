@@ -12,8 +12,8 @@ from typing import Optional, Callable
 
 # ─── Phase weight constants ──────────────────────────────────────
 
-CPU_PHASE_WEIGHTS = [2, 3, 33, 62]       # Analysis, Precompute, Render, Encode
-GPU_PHASE_WEIGHTS = [2, 3, 95]            # Analysis, Precompute, GPU-Render
+CPU_PHASE_WEIGHTS = [8, 7, 30, 55]       # Analysis, Precompute, Render, Encode
+GPU_PHASE_WEIGHTS = [8, 7, 85]            # Analysis, Precompute, GPU-Render
 BATCH_PHASE_WEIGHTS = [100]                # single-phase item-level progress
 
 
@@ -121,8 +121,7 @@ class ProgressTracker:
             GPU statistics dict (forwarded to external callback).
         """
         desc_changed = bool(desc is not None and desc != self.desc)
-        phase_transition = self._prev_cur is not None and current < self._prev_cur
-        is_new_phase = phase_transition or desc_changed
+        is_new_phase = desc_changed
 
         if desc_changed:
             self.desc = desc

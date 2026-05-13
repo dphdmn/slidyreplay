@@ -192,18 +192,22 @@ def get_mono_colors(color, width: int, height: int):
 
 
 def get_all_fringe_schemes(grid_states):
-    schemes = {}
+    _t0 = time_module.time()
+    # Pre-scan to count unique sizes
+    needed = set()
     for key, state in grid_states.items():
         for mc in state["mainColors"]:
             if len(state["mainColors"]) == 1:
-                pair = f"{mc['width']}x{mc['height']}"
-                if pair not in schemes:
-                    schemes[pair] = get_fringe_colors_nxm(mc['width'], mc['height'])
+                needed.add(f"{mc['width']}x{mc['height']}")
         for sc in state["secondaryColors"]:
             if sc["type"] == CT_MAP["fringe"]:
-                pair = f"{sc['width']}x{sc['height']}"
-                if pair not in schemes:
-                    schemes[pair] = get_fringe_colors_nxm(sc['width'], sc['height'])
+                needed.add(f"{sc['width']}x{sc['height']}")
+    schemes = {}
+    for i, pair in enumerate(needed):
+        parts = pair.split('x')
+        w = int(parts[0]); h = int(parts[1])
+        schemes[pair] = get_fringe_colors_nxm(w, h)
+    log.info(f"  get_all_fringe_schemes took {time_module.time() - _t0:.3f}s, {len(needed)} unique schemes")
     return schemes
 
 
@@ -1030,7 +1034,8 @@ def generate_frames(
 
     states_needed = sorted(set(frame_state))
     states_needed_set = set(states_needed)
-    log.info(f"  frame_state: total_frames={total_frames}, unique_states={len(states_needed)}, frame_time_ms={frame_time_ms:.3f}")
+    _t_frame_state_end = time_module.time()
+    log.info(f"  frame_state: total_frames={total_frames}, unique_states={len(states_needed)}, frame_time_ms={frame_time_ms:.3f} (took {_t_frame_state_end - _t_stage1:.3f}s)")
 
     # Optional GPU acceleration for tile grid rendering
     puzzle_w_est = w * tile_size
@@ -1056,14 +1061,14 @@ def generate_frames(
         log.info(f"  Python={sys.version.split()[0]}, torch={_torch_snapshot.__version__}, CUDA={_torch_snapshot.version.cuda}")
 
     # ── Build tile color cache for every grid state lookup may need ──
+    _t_cache_start = time_module.time()
     _tile_color_cache = {}
     _tile_bg_np = np.array(TILE_BG, dtype=np.float32)
     _all_nums = np.arange(1, h * w + 1, dtype=np.int32)
     _all_rows = (_all_nums - 1) // w
     _all_cols = (_all_nums - 1) % w
-    for key in _sorted_grid_keys:
-        if key == sol_len + 1:
-            continue
+    _tile_cache_keys = [k for k in _sorted_grid_keys if k != sol_len + 1]
+    for key in _tile_cache_keys:
         cache_state = grid_states[key]
         cache_key = id(cache_state)
         if cache_key not in _tile_color_cache:
@@ -1105,6 +1110,8 @@ def generate_frames(
                 "sec": sec,
                 "has_sec": has_sec,
             }
+
+    log.info(f"  tile color cache built: {len(_tile_color_cache)} unique states, took {time_module.time() - _t_cache_start:.3f}s")
 
     # ── Stage 2: precompute data only for states that will be rendered ──
 
@@ -1595,11 +1602,39 @@ class ReplayVideoGenerator:
 
         log.info(f"  tps_val={tps_val}, is_movetimes_accurate={is_movetimes_accurate}, custom_move_times={'list' if isinstance(custom_move_times, list) else None}")
 
+        # ── Progress setup (moved before analysis so early stages are tracked) ──
+        total_frames = sol_len + 1
+        pw = GPU_PHASE_WEIGHTS if use_gpu else CPU_PHASE_WEIGHTS
+
+        if show_progress:
+            print(f"Puzzle: {width}x{height}, Moves: {sol_len}, TPS: {tps_val:.3f}")
+            print(f"Tile size: {pick_tile_size(width, height)}px x quality={quality}, Frames: {total_frames}")
+            print(f"Output: {output_path}")
+
+        prog = None
+        if show_progress or external_progress_cb:
+            prog = ProgressTracker(
+                total=total_frames,
+                desc="Render",
+                phase_weights=pw,
+                external_cb=external_progress_cb,
+                show_terminal=show_progress,
+            )
+        # Fire initial analysis progress tick to enter phase 0
+        _analysis_weight = pw[0]  # e.g. 2 (GPU) or 2 (CPU)
+        if prog:
+            prog(0, _analysis_weight, desc="Analysis")
+
+        # ── Stage: Grid analysis ──
         _t_analysis_start = time_module.time()
 
-        # Grids analysis
+        def _analysis_prog(cur, tot):
+            if prog:
+                scaled = int(round(_analysis_weight * cur / tot)) if tot > 0 else _analysis_weight
+                prog(scaled, _analysis_weight)
+
         if not force_fringe:
-            grids_data = analyse_grids_initial(matrix, solution_expanded)
+            grids_data = analyse_grids_initial(matrix, solution_expanded, progress_callback=_analysis_prog)
         else:
             grids_data = {
                 "enableGridsStatus": -1,
@@ -1609,6 +1644,8 @@ class ReplayVideoGenerator:
                 "offsetH": 0
             }
 
+        # Grid analysis fully consumed the phase weight
+        _t_gridstats_start = time_module.time()
         try:
             grid_states = generate_grids_stats(grids_data)
         except Exception:
@@ -1620,14 +1657,16 @@ class ReplayVideoGenerator:
                 "offsetH": 0
             }
             grid_states = generate_grids_stats(grids_data)
+        log.info(f"  generate_grids_stats took {time_module.time() - _t_gridstats_start:.3f}s, {len(grid_states)} states")
 
+        _t_schemes_start = time_module.time()
         all_fringe_schemes = get_all_fringe_schemes(grid_states)
+        log.info(f"  get_all_fringe_schemes took {time_module.time() - _t_schemes_start:.3f}s, {len(all_fringe_schemes)} schemes")
         _t_analysis_end = time_module.time()
-        log.info(f"  analyse_grids_initial took {_t_analysis_end - _t_analysis_start:.3f}s, enableGridsStatus={grids_data.get('enableGridsStatus')}, fringe_schemes={len(all_fringe_schemes)}, force_fringe={force_fringe}")
+        log.info(f"  analysis total took {_t_analysis_end - _t_analysis_start:.3f}s, enableGridsStatus={grids_data.get('enableGridsStatus')}")
 
+        # ── Stage: Timing ──
         _t_timing_start = time_module.time()
-
-        # Calculate timing
         if isinstance(movetimes, list) and len(movetimes) > 0:
             delays, _fake_unused = calculate_move_timings(solution, tps_val, width, height, speed_factor, expanded_solution=solution_expanded)
             inv = 1.0 / speed_factor if speed_factor != 1.0 else 1.0
@@ -1645,30 +1684,6 @@ class ReplayVideoGenerator:
 
         # Score title
         score_title_text = f"{width}x{height} sliding puzzle"
-
-        # Progress
-        total_frames = sol_len + 1
-
-        pw = GPU_PHASE_WEIGHTS if use_gpu else CPU_PHASE_WEIGHTS
-
-        if show_progress:
-            print(f"Puzzle: {width}x{height}, Moves: {sol_len}, TPS: {tps_val:.3f}")
-            print(f"Tile size: {pick_tile_size(width, height)}px x quality={quality}, Frames: {total_frames}")
-            print(f"Output: {output_path}")
-
-        prog = None
-        if show_progress or external_progress_cb:
-            prog = ProgressTracker(
-                total=total_frames,
-                desc="Render",
-                phase_weights=pw,
-                external_cb=external_progress_cb,
-                show_terminal=show_progress,
-            )
-
-        # Fire analysis progress BEFORE framing (phase 0 of pw)
-        if prog:
-            prog(1, 1, desc="Analysis")
 
         _t_prerender_end = time_module.time()
         log.info(f"  pre-render stages total took {_t_prerender_end - _t_analysis_start:.3f}s (analysis={_t_analysis_end - _t_analysis_start:.3f}s, timing={_t_timing_end - _t_timing_start:.3f}s)")

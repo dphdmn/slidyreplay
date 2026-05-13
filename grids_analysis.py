@@ -1,11 +1,14 @@
 import math
+import time
 import numpy as np
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Callable
 
 from sliding_puzzles import _MOVE_DIRS, move_matrix_inplace, find_zero
+from debug_log import get_logger
+
+log = get_logger()
 
 CT_MAP = {'fringe': 1, 'grids1': 2, 'grids2': 3}
-
 
 def _check_top_bottom_np(matrix, width, height, offset_w, offset_h, width_initial):
     new_h = math.ceil(height / 2) + offset_h
@@ -123,25 +126,40 @@ def _apply_offset(skeleton, new_offset):
     return shifted
 
 
-def analyse_grids(matrix, solution, width_initial, height_initial, width, height, offset_w, offset_h, moves_offset, shape_cache=None):
+def analyse_grids(matrix, solution, width_initial, height_initial, width, height, offset_w, offset_h, moves_offset, shape_cache=None, progress_callback: Optional[Callable] = None, progress_total: Optional[int] = None, _timing: Optional[dict] = None):
+    if _timing is None:
+        _timing = {"main_loop": 0.0, "scan_fwd": 0.0, "get_parts": 0.0, "n_calls": 0}
+    _timing["n_calls"] += 1
+
     mc_flat = np.array(matrix, dtype=np.int32).flatten()
     zp = find_zero(matrix, width_initial, height_initial)
     zp_idx = zp[0] * width_initial + zp[1]
 
-    for mi in range(len(solution)):
+    sol_len = len(solution)
+    total_for_progress = progress_total if progress_total is not None else sol_len
+    _prog_step = max(1, sol_len // 100)
+
+    _t_loop = time.time()
+    for mi in range(sol_len):
         move = solution[mi]
         move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
         dr, dc = _MOVE_DIRS[move]
         zp_idx += dr * width_initial + dc
 
+        if progress_callback and mi % _prog_step == 0:
+            progress_callback(moves_offset + mi, total_for_progress)
+
         mc_2d = mc_flat.reshape(height_initial, width_initial)
         gs = guess_grids(mc_2d, width, height, offset_w, offset_h, width_initial)
         if gs != 0:
+            _timing["main_loop"] += time.time() - _t_loop
+
             grids_started = mi
             enable_gs = gs
             girds_unsolved_last = None
             before_flat = mc_flat.copy()
 
+            _t_scan = time.time()
             for gst_id in range(grids_started + 1, len(solution)):
                 move2 = solution[gst_id]
                 move_matrix_inplace(mc_flat, move2, zp_idx, width_initial)
@@ -152,6 +170,7 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
                     girds_unsolved_last = gst_id
                 else:
                     break
+            _timing["scan_fwd"] += time.time() - _t_scan
 
             if girds_unsolved_last is None:
                 return {"enableGridsStatus": -1, "width": width, "height": height, "offsetW": offset_w, "offsetH": offset_h}
@@ -162,7 +181,6 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
             if shape_cache is None:
                 shape_cache = {}
 
-            # Compute half dimensions
             if enable_gs == 1:
                 w1 = w2 = width
                 ow1 = ow2 = offset_w
@@ -181,29 +199,38 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
             key1 = (w1, h1, ow1, oh1)
             key2 = (w2, h2, ow2, oh2)
 
-            # Only call get_grids_parts if at least one half needs analysis
+            _t_parts = time.time()
             parts = None
-            if key1 not in shape_cache or key2 not in shape_cache:
+            cache_hit = (key1 in shape_cache and key2 in shape_cache)
+            if not cache_hit:
                 matrix_before = before_flat.reshape(height_initial, width_initial).tolist()
                 parts = get_grids_parts(matrix_before, sol1, width_initial, height_initial)
+            _timing["get_parts"] += time.time() - _t_parts
 
-            # Resolve first half
+            log.info(f"  analyse_grids split@{moves_offset + grids_started}: {width}x{height} region, sol_len={sol_len}, scan_range={gst_id - grids_started - 1}, cache_hit={cache_hit}, parts={_timing['get_parts']:.3f}s")
+
+            _t_sub1 = time.time()
             if key1 in shape_cache:
                 next_first = _apply_offset(shape_cache[key1], moves_offset + grids_started + 1)
             elif parts is not None:
-                next_first = analyse_grids(parts[0], sol1, width_initial, height_initial, w1, h1, ow1, oh1, moves_offset + grids_started + 1, shape_cache)
+                next_first = analyse_grids(parts[0], sol1, width_initial, height_initial, w1, h1, ow1, oh1, moves_offset + grids_started + 1, shape_cache, progress_callback, progress_total, _timing)
                 shape_cache[key1] = _to_relative(next_first, moves_offset + grids_started + 1)
             else:
                 next_first = None
+            t_sub1 = time.time() - _t_sub1
 
-            # Resolve second half
+            _t_sub2 = time.time()
             if key2 in shape_cache:
                 next_second = _apply_offset(shape_cache[key2], moves_offset + grids_stopped + 1)
             elif parts is not None:
-                next_second = analyse_grids(parts[1], sol2, width_initial, height_initial, w2, h2, ow2, oh2, moves_offset + grids_stopped + 1, shape_cache)
+                next_second = analyse_grids(parts[1], sol2, width_initial, height_initial, w2, h2, ow2, oh2, moves_offset + grids_stopped + 1, shape_cache, progress_callback, progress_total, _timing)
                 shape_cache[key2] = _to_relative(next_second, moves_offset + grids_stopped + 1)
             else:
                 next_second = None
+            t_sub2 = time.time() - _t_sub2
+
+            if t_sub1 + t_sub2 > 0.1:
+                log.info(f"    sub-calls: half1={t_sub1:.3f}s, half2={t_sub2:.3f}s")
 
             return {
                 "enableGridsStatus": enable_gs,
@@ -214,13 +241,18 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
                 "nextLayerFirst": next_first,
                 "nextLayerSecond": next_second,
             }
+    _timing["main_loop"] += time.time() - _t_loop
     return {"enableGridsStatus": -1, "width": width, "height": height, "offsetW": offset_w, "offsetH": offset_h}
 
 
-def analyse_grids_initial(matrix, solution):
+def analyse_grids_initial(matrix, solution, progress_callback: Optional[Callable] = None):
     h = len(matrix)
     w = len(matrix[0])
-    return analyse_grids(matrix, solution, w, h, w, h, 0, 0, 0, shape_cache={})
+    _timing = {"main_loop": 0.0, "scan_fwd": 0.0, "get_parts": 0.0, "n_calls": 0}
+    result = analyse_grids(matrix, solution, w, h, w, h, 0, 0, 0, shape_cache={}, progress_callback=progress_callback, progress_total=len(solution), _timing=_timing)
+    total = _timing["main_loop"] + _timing["scan_fwd"] + _timing["get_parts"]
+    log.info(f"  analysis timing: main_loop={_timing['main_loop']:.3f}s, scan_fwd={_timing['scan_fwd']:.3f}s, get_parts={_timing['get_parts']:.3f}s, n_calls={_timing['n_calls']}, total={total:.3f}s")
+    return result
 
 
 def get_sizes_for_layer(type_n, layer):
