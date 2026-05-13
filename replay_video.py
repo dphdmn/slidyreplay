@@ -813,35 +813,111 @@ def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_sta
         "stage_w4": w4 if len(grid_stages_list) > 1 and raw_lines else 0,
     }
     return im, layout_info
+# ─── Font Atlas Disk Cache for CPU path ───────────────────────
+_NP_CACHE_DIR = "render_cache"
 
+def _get_np_font_key(font) -> str | None:
+    try:
+        return f"{os.path.splitext(os.path.basename(font.path))[0]}_{font.size}"
+    except AttributeError:
+        return None
+
+def _build_np_font_atlas(font, cache_name=None):
+    codes = range(32, 127)
+    h_max = 1
+    for code in codes:
+        b = font.getbbox(chr(code))
+        h_max = max(h_max, b[3])
+    atlas = {}
+    for code in codes:
+        c = chr(code)
+        b = font.getbbox(c)
+        w = max(b[2] - b[0], 1)
+        im = Image.new("RGBA", (w, h_max), (0, 0, 0, 0))
+        ImageDraw.Draw(im).text((0, 0), c, fill=(255, 255, 255, 255), font=font)
+        atlas[code] = np.array(im)
+    if cache_name:
+        fkey = _get_np_font_key(font)
+        if fkey:
+            os.makedirs(_NP_CACHE_DIR, exist_ok=True)
+            path = os.path.join(_NP_CACHE_DIR, f"{cache_name}_{fkey}.npz")
+            np.savez_compressed(path, **{f"c{k}": v for k, v in atlas.items()})
+    return atlas
+
+def _load_np_atlas(font, cache_name):
+    fkey = _get_np_font_key(font)
+    if not fkey:
+        return None
+    path = os.path.join(_NP_CACHE_DIR, f"{cache_name}_{fkey}.npz")
+    if not os.path.exists(path):
+        return None
+    try:
+        data = np.load(path)
+        atlas = {}
+        for key in data:
+            code = int(key[1:])
+            atlas[code] = data[key]
+        return atlas
+    except Exception:
+        return None
+
+_np_font_atlas_cache: Dict = {}
+
+def _get_np_font_atlas(font, cache_name=None):
+    atlas = _np_font_atlas_cache.get(font)
+    if atlas is not None:
+        return atlas
+    if cache_name:
+        atlas = _load_np_atlas(font, cache_name)
+    if atlas is None:
+        atlas = _build_np_font_atlas(font, cache_name)
+    _np_font_atlas_cache[font] = atlas
+    return atlas
+
+# ─── Cached PIL Text Surfaces for Stats Panel ──────────────────
+_cache_stats_surfaces: Dict = {}
 
 def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info):
-    """Overlay dynamic values and stage highlight onto a static base (labels already drawn in base)."""
+    """Overlay dynamic values and stage highlight via cached PIL text surfaces."""
     if stats_data is None:
         return static_base.copy()
     result = static_base.copy()
-    draw = ImageDraw.Draw(result)
 
     px = layout_info["px"]
     inner_w = layout_info["inner_w"]
     data_font = layout_info["data_font"]
     gs_lf = layout_info["gs_lf"]
 
+    # Pre-build font atlases for disk cache (.npz files for GPU to share)
+    _get_np_font_atlas(data_font, "datafont")
+    if gs_lf:
+        _get_np_font_atlas(gs_lf, "gs_lf")
+
+    def overlay_surface(text, font, fill, x, y):
+        if not text:
+            return
+        key = (text, font.size, fill)
+        surface = _cache_stats_surfaces.get(key)
+        if surface is None:
+            b = font.getbbox(text)
+            surface = Image.new('RGBA', (b[2], b[3]), (0, 0, 0, 0))
+            ImageDraw.Draw(surface).text((0, 0), text, fill=(255, 255, 255, 255), font=font)
+            s_arr = np.array(surface)
+            s_arr[:,:,:3] = fill
+            surface = Image.fromarray(s_arr, 'RGBA')
+            _cache_stats_surfaces[key] = surface
+        result.paste(surface, (x, y), surface)
+
     def draw_value(value, fill, y_pos):
-        vb = data_font.getbbox(value)
-        vw = vb[2] - vb[0]
-        draw.text((px + inner_w - vw, y_pos), value, fill=(*fill, 255), font=data_font)
+        if not value:
+            return
+        b = data_font.getbbox(value)
+        overlay_surface(value, data_font, fill, px + inner_w - b[2], y_pos)
 
-    # Predicted moves (dynamic value only)
     draw_value(stats_data.get("predicted_moves", ""), CYAN, layout_info["y_predicted"])
-
-    # MD (current) (dynamic value only)
     draw_value(stats_data.get("md_cur", "0"), CYAN, layout_info["y_md_cur"])
-
-    # M/MD (current) (dynamic value only)
     draw_value(stats_data.get("mmd_cur", "0.000"), CYAN, layout_info["y_mmd_cur"])
 
-    # Current grid stage highlight (CYAN)
     stages = stats_data.get("grid_stages", [])
     cur_stage = stats_data.get("grid_current", 0)
     stage_y_positions = layout_info["stage_y_positions"]
@@ -867,8 +943,7 @@ def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info):
             line = f"{cum_s:>{w1}} | {split_s:>{w2}} {mvtps_s:<{w3}} | {label:<{w4}}"
         else:
             line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
-        draw.text((px, stage_y_positions[cur_stage]),
-                  line, fill=(*CYAN, 255), font=gs_lf)
+        overlay_surface(line, gs_lf, CYAN, px, stage_y_positions[cur_stage])
 
     return result
 
