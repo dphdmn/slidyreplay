@@ -228,6 +228,7 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
             lo_state = mc_flat.copy()
             lo_zp = zp_idx
             step = 4
+            snapshots = []  # (checkpoint_pos, state_copy, zp, step_used)
 
             while cur_pos + step < sol_len:
                 target = cur_pos + step
@@ -240,6 +241,7 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
                     dr, dc = _MOVE_DIRS[move]
                     zp_idx += dr * width_initial + dc
 
+                snapshots.append((cur_pos, snapshot.copy(), snapshot_zp, step))
                 cur_pos = target
                 gs = _check_gs(mc_flat.reshape(height_initial, width_initial), *_gs_args)
 
@@ -284,23 +286,39 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
                 lo_zp = zp_idx
                 step = min(step * 2, 256)
 
+        # New fallback – no full linear scan from 0
         if grids_started == -1:
-            # Fallback: restore to initial state, do full linear scan
-            # (gs can be non-monotonic — galloping may skip the first non-zero)
-            mc_flat[:] = init_flat
-            zp_idx = init_zp
-            for mi in range(sol_len):
+            # 1) Post‑last‑checkpoint scan: cur_pos → end
+            mc_flat[:] = lo_state
+            zp_idx = lo_zp
+            for mi in range(cur_pos + 1, sol_len):
                 move = solution[mi]
                 move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
                 dr, dc = _MOVE_DIRS[move]
                 zp_idx += dr * width_initial + dc
                 gs = _check_gs(mc_flat.reshape(height_initial, width_initial), *_gs_args)
-                if progress_callback:
-                    with _lock:
-                        progress_callback(moves_offset + mi, total_for_progress)
                 if gs:
-                    gs_type = gs
                     grids_started = mi
+                    gs_type = gs
+                    break
+
+        if grids_started == -1:
+            # 2) Reverse‑gap scan over earlier jumps (if any)
+            for snap_pos, snap_state, snap_zp, step_len in reversed(snapshots):
+                end_scan = min(snap_pos + step_len, sol_len)
+                mc_flat[:] = snap_state
+                zp_idx = snap_zp
+                for mi in range(snap_pos + 1, end_scan):
+                    move = solution[mi]
+                    move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
+                    dr, dc = _MOVE_DIRS[move]
+                    zp_idx += dr * width_initial + dc
+                    gs = _check_gs(mc_flat.reshape(height_initial, width_initial), *_gs_args)
+                    if gs:
+                        grids_started = mi
+                        gs_type = gs
+                        break
+                if grids_started != -1:
                     break
 
     with _lock:
@@ -396,17 +414,47 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
                 step = min(step * 2, 256)
 
         if grids_stopped == -1:
-            # Fallback: restore to start of scan, do full linear scan
-            mc_flat[:] = transition_flat
-            zp_idx = transition_zp
-            for si in range(scan_len):
-                move = scan_solution[si]
-                move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
-                dr, dc = _MOVE_DIRS[move]
-                zp_idx += dr * width_initial + dc
+            # New fallback – forward binary search on the tail
+            # lo_state is state at cur_pos (the last gallop target)
+            mc_flat[:] = lo_state
+            zp_idx = lo_zp
+            lo = cur_pos + 1
+            hi = scan_len - 1
+            while lo < hi:
+                mid = (lo + hi) // 2
+                mc_flat[:] = lo_state
+                zp_idx = lo_zp
+                for i in range(cur_pos + 1, mid + 1):
+                    move = scan_solution[i]
+                    move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
+                    dr, dc = _MOVE_DIRS[move]
+                    zp_idx += dr * width_initial + dc
                 if _check_solved(mc_flat.reshape(height_initial, width_initial), *_solv_args):
-                    grids_stopped = grids_started + 1 + si
-                    break
+                    hi = mid
+                else:
+                    lo = mid + 1
+            if lo <= hi:
+                mc_flat[:] = lo_state
+                zp_idx = lo_zp
+                for i in range(cur_pos + 1, lo + 1):
+                    move = scan_solution[i]
+                    move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
+                    dr, dc = _MOVE_DIRS[move]
+                    zp_idx += dr * width_initial + dc
+                if _check_solved(mc_flat.reshape(height_initial, width_initial), *_solv_args):
+                    grids_stopped = grids_started + 1 + lo
+            # As a safety net (should never be needed for monotonic solved)
+            if grids_stopped == -1:
+                mc_flat[:] = lo_state
+                zp_idx = lo_zp
+                for si in range(cur_pos + 1, scan_len):
+                    move = scan_solution[si]
+                    move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
+                    dr, dc = _MOVE_DIRS[move]
+                    zp_idx += dr * width_initial + dc
+                    if _check_solved(mc_flat.reshape(height_initial, width_initial), *_solv_args):
+                        grids_stopped = grids_started + 1 + si
+                        break
 
     with _lock:
         _timing["scan_fwd"] += time.time() - _t_scan
