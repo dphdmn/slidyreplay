@@ -361,24 +361,7 @@ class GPURenderer:
         c_border_6d = c_border.view(1, 1, 1, 1, 1, 3)
         tile_bg_t = torch.tensor(TILE_BG, device=dev, dtype=torch.float32) / 255.0
 
-        total_mem = torch.cuda.get_device_properties(dev).total_memory
         batch_has_colors = any(p.get("colors_main") is not None for p in frame_params_list)
-
-        # VRAM ceiling: stay well below total to avoid OOM / unified memory thrashing
-        vram_ceiling = int(total_mem * 0.82)
-        target_mem_fraction = 0.50
-        target_used_mem = int(total_mem * target_mem_fraction)
-
-        # Estimate per-frame cost from canvas size (conservative: 3x canvas bytes)
-        per_frame_ema = max(1, ch * cw * 3 * 4 * 3)
-        batch_size = 1
-        prev_batch_n = 0
-
-        self._stats["batch_size"] = batch_size
-        self._stats["batch_mem_mb"] = 0
-        self._stats["per_frame_ema_mb"] = per_frame_ema / (1024 * 1024)
-        self._stats["target_used_mem_mb"] = target_used_mem // (1024 * 1024)
-        self._stats["vram_ceiling_mb"] = vram_ceiling // (1024 * 1024)
 
         # Row‑chunked rendering: 2 rows per chunk for large puzzles
         chunk_rows = 2 if h > 6 else h
@@ -387,16 +370,13 @@ class GPURenderer:
         batch_start = 0
         _overlay_ready = False
 
-        # Permanent reserved memory right after static tensors are loaded
-        reserved_permanent = torch.cuda.memory_reserved(dev)
-        log.info(f"render_frames: {n} frames, canvas={cw}x{ch}, chunk_rows={chunk_rows}, reserved_static={reserved_permanent // (1024*1024)}MB, target_used_mem={target_used_mem // (1024*1024)}MB")
+        log.info(f"render_frames: {n} frames, canvas={cw}x{ch}, chunk_rows={chunk_rows}")
 
         # Pre-allocate pinned memory buffers + CUDA stream for async GPU→CPU download (3B-b)
-        _safe_margin = 384 * 1024 * 1024
-        _max_batch_n = max(1, min(n, max(1, (vram_ceiling - reserved_permanent - _safe_margin) // (ch * cw * 3 * 4))))
         _N_BUFS = 6
+        _MAX_BATCH_SLOTS = 4  # Plan D: batch size for sequential delta
         _pinned_bufs = [
-            torch.empty(1, ch, cw, 3, dtype=torch.uint8, pin_memory=True)
+            torch.empty(_MAX_BATCH_SLOTS, ch, cw, 3, dtype=torch.uint8, pin_memory=True)
             for _ in range(_N_BUFS)
         ]
         _buf_free_events = [threading.Event() for _ in range(_N_BUFS)]
@@ -434,81 +414,17 @@ class GPURenderer:
                     raise CancelError()
 
                 remaining = n - batch_start
-
-                # ── Memory‑aware batching ──
-                reserved_mem = torch.cuda.memory_reserved(dev)
-
-                # Enforce VRAM ceiling: flush cache if we're over
-                if reserved_mem > vram_ceiling:
-                    torch.cuda.empty_cache()
-                    reserved_mem = torch.cuda.memory_reserved(dev)
-
-                allocated_mem = torch.cuda.memory_allocated(dev)
-                free_mem, _ = torch.cuda.mem_get_info(dev)
-
-                # Safety margin
-                reserve_margin = 384 * 1024 * 1024
-
-                # Headroom based on reserved memory (accounts for cached allocations)
-                headroom = vram_ceiling - reserved_mem - reserve_margin
-
-                if headroom < 0:
-                    headroom = 0
-
-                if per_frame_ema > 0:
-                    # Peak per-frame cost is ~1.5x marginal EMA (temp buffers during render)
-                    peak_cost = per_frame_ema * 1.5
-                    max_by_budget = max(1, int(headroom / peak_cost))
-                    batch_size = max(1, min(remaining, max_by_budget))
-                    # EMA dampener: smooth batch size transitions
-                    if prev_batch_n > 0:
-                        damp = 0.5
-                        batch_size = max(1, int(prev_batch_n * (1 - damp) + batch_size * damp))
-                        batch_size = min(remaining, batch_size)
-                else:
-                    batch_size = 1
-
-                batch_end = min(batch_start + batch_size, n)
+                batch_size = min(_MAX_BATCH_SLOTS, remaining)
+                # Split batch at delta-incompatible boundaries (grid stage transitions)
+                _boundary = batch_start + batch_size
+                for _j in range(batch_start + 1, batch_start + batch_size):
+                    _p = frame_params_list[_j]
+                    if _p.get("changed_tiles") is None:
+                        _boundary = _j
+                        break
+                batch_end = _boundary
                 batch_n = batch_end - batch_start
 
-                # 666: force batch_size=1 for delta rendering
-                batch_size = 1
-                batch_end = batch_start + 1
-                batch_n = 1
-
-                self._stats["batch_size"] = batch_size
-                self._stats["batch_mem_mb"] = (ch * cw * 3 * 4 * batch_size) // (1024 * 1024)
-
-                log.info(f"  BATCH[{self._batch_counter}]: start={batch_start}, sz={batch_size}, "
-                         f"free={free_mem//(1024*1024)}MB, reserved={reserved_mem//(1024*1024)}MB, "
-                         f"headroom={headroom//(1024*1024)}MB, ema={per_frame_ema//(1024*1024)}MB, "
-                         f"batch_mem={self._stats['batch_mem_mb']}MB, t={_time_module.time()-_batch_t0:.2f}s, ram={_ram_delta_mb()}MB")
-
-                # OOM guard — retry with cache flush before giving up
-                if batch_n == 1 and headroom < per_frame_ema:
-                    log.warning(f"  VRAM low: reserved={reserved_mem//(1024*1024)}MB, "
-                                f"headroom={headroom//(1024*1024)}MB < "
-                                f"ema={per_frame_ema//(1024*1024)}MB, "
-                                f"flushing cache and retrying...")
-                    torch.cuda.empty_cache()
-                    r2 = torch.cuda.memory_reserved(dev)
-                    headroom = vram_ceiling - r2 - reserve_margin
-                    if headroom < 0:
-                        headroom = 0
-                    if headroom < per_frame_ema:
-                        msg = (
-                            f"GPU out of memory: cannot fit a single frame in available VRAM "
-                            f"(needs ~{per_frame_ema // (1024*1024)}MB, "
-                            f"only ~{headroom // (1024*1024)}MB available). "
-                            f"Try disabling GPU acceleration, reducing quality, "
-                            f"or using a smaller puzzle."
-                        )
-                        log.critical(msg)
-                        raise RuntimeError(msg)
-                    log.info(f"  Cache flush recovered {headroom//(1024*1024)}MB headroom, continuing")
-
-                self._stats["free_mem_mb"] = free_mem // (1024 * 1024)
-                self._stats["mem_used_mb"] = self._stats["total_mem_mb"] - self._stats["free_mem_mb"]
                 self._batch_counter += 1
                 self._stats["batch_idx"] = self._batch_counter
 
@@ -529,10 +445,14 @@ class GPURenderer:
                 use_composite = hasattr(self, '_composite_atlas') and self._composite_atlas is not None
                 use_atlas = not use_composite and self._base_atlas is not None
 
-                # Determine if this frame can use delta path (skip full composite_idx build)
-                _changed_tiles = batch_params[0].get("changed_tiles") if batch_params else None
-                _can_delta = (use_composite and _prev_canvas is not None
-                              and _changed_tiles is not None and len(_changed_tiles) > 0)
+                # Determine if ALL frames in batch can use delta path
+                _can_delta = use_composite and _prev_canvas is not None
+                if _can_delta:
+                    for _p in batch_params:
+                        _ct = _p.get("changed_tiles")
+                        if _ct is None or len(_ct) == 0:
+                            _can_delta = False
+                            break
 
                 composite_idx = None
                 base_idx = bar_idx = None
@@ -582,8 +502,6 @@ class GPURenderer:
                         sec = torch.zeros(batch_n, h, w, 3, device=dev, dtype=torch.float32)
                         has_sec = torch.zeros(batch_n, h, w, 1, 1, 1, device=dev, dtype=torch.float32)
 
-                reserved_before_render = torch.cuda.memory_reserved(dev)
-                torch.cuda.reset_peak_memory_stats(dev)
                 _prof_setup = _prof_setup + _tick() - _pt_setup
 
                 # ── Canvas ──
@@ -599,33 +517,39 @@ class GPURenderer:
                         canvas[:, py:py + ph_p, px:px + pw_p] * (1 - panel_bg_a)
                     )
 
-                # ── 666: Delta patch (copy prev canvas, update only changed tiles) ──
+                # ── Delta patch: sequential within batch ──
                 _delta_applied = False
                 if _can_delta:
-                    canvas[0].copy_(_prev_canvas)
-                    state_sig = id(batch_params[0]["grid_state"])
-                    if state_sig not in self._composite_lookup_cpu:
-                        self._composite_lookup_cpu[state_sig] = self._composite_lookup[state_sig].cpu().numpy()
-                    lookup_np = self._composite_lookup_cpu[state_sig]
-                    mats_p = np.asarray(batch_params[0]["matrix"])
-                    ti_np = lookup_np[mats_p[_changed_tiles[:, 0], _changed_tiles[:, 1]]]
-                    ti_t = torch.from_numpy(ti_np).to(dev)
-                    _t_batch = self._composite_atlas[ti_t, :, :, :3].float() / 255.0
-                    for _k in range(len(_changed_tiles)):
-                        _r, _c = _changed_tiles[_k]
-                        _sy, _sx = gy + _r * ts, gx + _c * ts
-                        canvas[0, _sy:_sy + ts, _sx:_sx + ts] = _t_batch[_k]
-                    del _t_batch, ti_t
+                    for i in range(batch_n):
+                        _p = batch_params[i]
+                        _ct = _p["changed_tiles"]
+                        if i == 0:
+                            canvas[i].copy_(_prev_canvas)
+                        else:
+                            canvas[i].copy_(canvas[i - 1])
+                        # Clear overlay areas from prev_canvas ghosting
+                        if timer_bg is not None and th > 0 and tw > 0:
+                            canvas[i, ty1:ty2, tx1:tx2] = timer_bg.view(th, tw, 3)
+                        if panel_bg_rgb is not None and self.panel_h > 0 and self.panel_w > 0:
+                            canvas[i, py:py + self.panel_h, px:px + self.panel_w] = (
+                                panel_bg_rgb * panel_bg_a +
+                                canvas[i, py:py + self.panel_h, px:px + self.panel_w] * (1 - panel_bg_a)
+                            )
+                        if len(_ct) > 0:
+                            state_sig = id(_p["grid_state"])
+                            if state_sig not in self._composite_lookup_cpu:
+                                self._composite_lookup_cpu[state_sig] = self._composite_lookup[state_sig].cpu().numpy()
+                            lookup_np = self._composite_lookup_cpu[state_sig]
+                            mats_p = np.asarray(_p["matrix"])
+                            ti_np = lookup_np[mats_p[_ct[:, 0], _ct[:, 1]]]
+                            ti_t = torch.from_numpy(ti_np).to(dev)
+                            _t_batch = self._composite_atlas[ti_t, :, :, :3].float() / 255.0
+                            for _k in range(len(_ct)):
+                                _r, _c = _ct[_k]
+                                _sy, _sx = gy + _r * ts, gx + _c * ts
+                                canvas[i, _sy:_sy + ts, _sx:_sx + ts] = _t_batch[_k]
+                            del _t_batch, ti_t
                     _delta_applied = True
-
-                    # Clear overlay areas from prev_canvas ghosting
-                    if timer_bg is not None and th > 0 and tw > 0:
-                        canvas[0, ty1:ty2, tx1:tx2] = timer_bg.view(th, tw, 3)
-                    if panel_bg_rgb is not None and self.panel_h > 0 and self.panel_w > 0:
-                        canvas[0, py:py + self.panel_h, px:px + self.panel_w] = (
-                            panel_bg_rgb * panel_bg_a +
-                            canvas[0, py:py + self.panel_h, px:px + self.panel_w] * (1 - panel_bg_a)
-                        )
 
                 # ── Tile rendering (skipped when delta applied) ──
                 if use_composite and not _delta_applied:
@@ -944,17 +868,6 @@ class GPURenderer:
                 uint8_gpu = canvas.mul(255.0).clamp_(0, 255).to(torch.uint8)
                 _prof_uint8 += _tick() - _pt0; _pt0 = _tick()
 
-                # Grow pinned buffers if batch size exceeds pre-allocated capacity (defensive)
-                if batch_n > 1:
-                    _max_batch_n = batch_n
-                    _pinned_bufs = [
-                        torch.empty(batch_n, ch, cw, 3, dtype=torch.uint8, pin_memory=True)
-                        for _ in range(_N_BUFS)
-                    ]
-                    _buf_free_events = [threading.Event() for _ in range(_N_BUFS)]
-                    for _e in _buf_free_events:
-                        _e.set()
-
                 if frame_handler:
                     # Async download via pinned memory + CUDA stream (3B-b)
                     _default_stream = torch.cuda.current_stream(dev)
@@ -965,8 +878,8 @@ class GPURenderer:
                         _pinned_bufs[_dl_buf_idx][:batch_n].copy_(uint8_gpu, non_blocking=True)
                     _dl_event = _dl_stream.record_event()
 
-                    # Save canvas for next frame's delta, then free GPU tensors
-                    _prev_canvas = canvas[0].clone()
+                    # Save canvas for next frame's delta (last frame in batch), then free GPU tensors
+                    _prev_canvas = canvas[batch_n - 1].clone()
                     del canvas, mats
                     if composite_idx is not None:
                         del composite_idx
@@ -998,7 +911,7 @@ class GPURenderer:
                 else:
                     # Sync download (no handler → no overlap possible)
                     batch_u8 = uint8_gpu.cpu().numpy()
-                    _prev_canvas = canvas[0].clone()
+                    _prev_canvas = canvas[batch_n - 1].clone()
                     del uint8_gpu, canvas, mats
                     if composite_idx is not None:
                         del composite_idx
@@ -1011,26 +924,11 @@ class GPURenderer:
                         if progress_callback:
                             progress_callback(batch_start + i + 1, n, gpu_stats=dict(self._stats))
 
-                peak_reserved = torch.cuda.max_memory_reserved(dev)
-                marginal = peak_reserved - reserved_before_render
-                if marginal > 0 and batch_n >= 1:
-                        actual_ppf = marginal / batch_n
-                        old_ema = per_frame_ema
-                        # EMA with decay – lets batch sizes grow when per-frame cost drops
-                        alpha = 0.3
-                        per_frame_ema = per_frame_ema * (1 - alpha) + max(actual_ppf, actual_ppf * 1.10) * alpha
-                        self._stats["per_frame_ema_mb"] = per_frame_ema / (1024 * 1024)
-                        log.info(f"  POST-BATCH EMA: old={old_ema/(1024*1024):.0f}MB, "
-                                 f"peak={peak_reserved//(1024*1024)}MB, "
-                                 f"marginal={marginal//(1024*1024)}MB, "
-                                 f"actual_ppf={actual_ppf/(1024*1024):.0f}MB, "
-                                 f"new_ema={per_frame_ema/(1024*1024):.0f}MB")
                 log.info(f"  BATCH[{self._batch_counter}] DONE: "
+                         f"sz={batch_n}, "
                          f"t={_time_module.time()-_batch_t0:.2f}s, "
-                         f"peak={torch.cuda.max_memory_reserved(dev)//(1024*1024)}MB, "
                          f"ram={_ram_delta_mb()}MB")
 
-                prev_batch_n = batch_n
                 batch_start = batch_end
 
         # Process last batch's frames (async path)
