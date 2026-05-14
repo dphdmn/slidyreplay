@@ -137,6 +137,7 @@ class GPURenderer:
         self._overlay_text_positions = None
         self._composite_atlas = None
         self._composite_lookup = {}
+        self._composite_lookup_cpu = {}
 
         if _HAS_TORCH:
             self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -310,6 +311,7 @@ class GPURenderer:
             arr[i] = np.array(pil)
         self._composite_atlas = torch.from_numpy(arr).to(dev)
         self._composite_lookup = {}
+        self._composite_lookup_cpu = {}
         for state_sig, lookup_list in composite_lookup.items():
             self._composite_lookup[state_sig] = torch.tensor(lookup_list, device=dev, dtype=torch.int32)
         log.info(f"  upload_composite_atlas: {n} entries, "
@@ -411,9 +413,23 @@ class GPURenderer:
         # 666 delta rendering state
         _prev_canvas = None
 
+        # Profiling accumulators (seconds)
+        _prof_canvas_init = 0.0
+        _prof_setup = 0.0
+        _prof_delta_patch = 0.0
+        _prof_full_render = 0.0
+        _prof_overlays = 0.0
+        _prof_uint8 = 0.0
+        _prof_dl_handler = 0.0
+        _prof_delta_count = 0
+        _prof_full_count = 0
+        _tick = _time_module.perf_counter
+        _p0 = _tick()
+
         with torch.inference_mode():
             _batch_t0 = _time_module.time()
             while batch_start < n:
+                _pt_setup = _tick()
                 if cancel_check and cancel_check():
                     raise CancelError()
 
@@ -513,15 +529,24 @@ class GPURenderer:
                 use_composite = hasattr(self, '_composite_atlas') and self._composite_atlas is not None
                 use_atlas = not use_composite and self._base_atlas is not None
 
-                if use_composite:
+                # Determine if this frame can use delta path (skip full composite_idx build)
+                _changed_tiles = batch_params[0].get("changed_tiles") if batch_params else None
+                _can_delta = (use_composite and _prev_canvas is not None
+                              and _changed_tiles is not None and len(_changed_tiles) > 0)
+
+                composite_idx = None
+                base_idx = bar_idx = None
+                if use_composite and not _can_delta:
                     composite_idx_np = np.zeros((batch_n, h, w), dtype=np.int32)
                     for i, p in enumerate(batch_params):
                         state_sig = id(p["grid_state"])
                         mats_p = np.asarray(p["matrix"])
-                        lookup_np = self._composite_lookup[state_sig].cpu().numpy()
+                        if state_sig not in self._composite_lookup_cpu:
+                            self._composite_lookup_cpu[state_sig] = self._composite_lookup[state_sig].cpu().numpy()
+                        lookup_np = self._composite_lookup_cpu[state_sig]
                         composite_idx_np[i] = lookup_np[mats_p]
                     composite_idx = torch.from_numpy(composite_idx_np).to(dev, non_blocking=True)
-                elif use_atlas:
+                elif use_atlas and not _can_delta:
                     base_idx_np = np.zeros((batch_n, h, w), dtype=np.int32)
                     bar_idx_np = np.full((batch_n, h, w), -1, dtype=np.int32)
                     for i, p in enumerate(batch_params):
@@ -559,8 +584,10 @@ class GPURenderer:
 
                 reserved_before_render = torch.cuda.memory_reserved(dev)
                 torch.cuda.reset_peak_memory_stats(dev)
+                _prof_setup = _prof_setup + _tick() - _pt_setup
 
                 # ── Canvas ──
+                _pt0 = _tick()
                 canvas = torch.empty(batch_n, ch, cw, 3, device=dev, dtype=torch.float32)
                 canvas[:] = c_bg.view(1, 1, 1, 3)
                 if timer_bg is not None and th > 0 and tw > 0:
@@ -574,17 +601,22 @@ class GPURenderer:
 
                 # ── 666: Delta patch (copy prev canvas, update only changed tiles) ──
                 _delta_applied = False
-                if use_composite and _prev_canvas is not None:
-                    _changed_tiles = batch_params[0].get("changed_tiles")
-                    if _changed_tiles is not None:
-                        canvas[0].copy_(_prev_canvas)
-                        for _r, _c in _changed_tiles:
-                            _ti = composite_idx[0, _r, _c]
-                            _t = self._composite_atlas[_ti, :, :, :3].float() / 255.0
-                            _sy = gy + _r * ts
-                            _sx = gx + _c * ts
-                            canvas[0, _sy:_sy + ts, _sx:_sx + ts] = _t
-                        _delta_applied = True
+                if _can_delta:
+                    canvas[0].copy_(_prev_canvas)
+                    state_sig = id(batch_params[0]["grid_state"])
+                    if state_sig not in self._composite_lookup_cpu:
+                        self._composite_lookup_cpu[state_sig] = self._composite_lookup[state_sig].cpu().numpy()
+                    lookup_np = self._composite_lookup_cpu[state_sig]
+                    mats_p = np.asarray(batch_params[0]["matrix"])
+                    ti_np = lookup_np[mats_p[_changed_tiles[:, 0], _changed_tiles[:, 1]]]
+                    ti_t = torch.from_numpy(ti_np).to(dev)
+                    _t_batch = self._composite_atlas[ti_t, :, :, :3].float() / 255.0
+                    for _k in range(len(_changed_tiles)):
+                        _r, _c = _changed_tiles[_k]
+                        _sy, _sx = gy + _r * ts, gx + _c * ts
+                        canvas[0, _sy:_sy + ts, _sx:_sx + ts] = _t_batch[_k]
+                    del _t_batch, ti_t
+                    _delta_applied = True
 
                     # Clear overlay areas from prev_canvas ghosting
                     if timer_bg is not None and th > 0 and tw > 0:
@@ -680,6 +712,15 @@ class GPURenderer:
                         canvas[:, canvas_y:canvas_y + n_rows * ts, gx:gx + pw] = tile_chunk
 
                         del nums_chunk, text_rgb_chunk, text_a_chunk, colored, tile_chunk
+
+                # ── Profile: tiles done ──
+                if _delta_applied:
+                    _prof_delta_patch += _tick() - _pt0
+                    _prof_delta_count += 1
+                else:
+                    _prof_full_render += _tick() - _pt0
+                    _prof_full_count += 1
+                _pt0 = _tick()
 
                 # ── Overlays (GPU font atlases — no PIL in render loop) ──
                 if overlay_render_data is not None:
@@ -802,23 +843,37 @@ class GPURenderer:
                         _cyan_rgb = torch.tensor(CYAN, device=dev, dtype=torch.float32) / 255.0
                         _overlay_ready = True
 
-                    # Blend static_base onto canvas (batch broadcast, once per batch)
+                    # Blend static_base onto canvas (batch broadcast)
                     _dh = min(_sb_h, ch - py)
                     _dw = min(_sb_w, cw - px)
                     if _dh > 0 and _dw > 0:
-                        canvas[:, py:py + _dh, px:px + _dw] = (
-                            _static_base_gpu[:_dh, :_dw, :3].unsqueeze(0).expand(batch_n, -1, -1, -1).contiguous() *
-                            _static_base_gpu[:_dh, :_dw, 3:4].unsqueeze(0).expand(batch_n, -1, -1, -1).contiguous() +
-                            canvas[:, py:py + _dh, px:px + _dw] * (1 - _static_base_gpu[:_dh, :_dw, 3:4].unsqueeze(0).expand(batch_n, -1, -1, -1).contiguous())
-                        )
+                        _base_rgb = _static_base_gpu[:_dh, :_dw, :3]
+                        _base_a = _static_base_gpu[:_dh, :_dw, 3:4]
+                        if batch_n == 1:
+                            canvas[0, py:py + _dh, px:px + _dw] = _base_rgb * _base_a + canvas[0, py:py + _dh, px:px + _dw] * (1 - _base_a)
+                        else:
+                            _base_rgb_e = _base_rgb.unsqueeze(0).expand(batch_n, -1, -1, -1).contiguous()
+                            _base_a_e = _base_a.unsqueeze(0).expand(batch_n, -1, -1, -1).contiguous()
+                            canvas[:, py:py + _dh, px:px + _dw] = _base_rgb_e * _base_a_e + canvas[:, py:py + _dh, px:px + _dw] * (1 - _base_a_e)
+
+                    _overlay_text_cache = {}
+                    def _compose_text(text, atlas):
+                        """Return (tensor, width) for text, cached."""
+                        cached = _overlay_text_cache.get(text)
+                        if cached is not None and cached[2] is atlas:
+                            return cached[0], cached[1]
+                        tensors = [atlas.get(ord(c), atlas[32]) for c in text]
+                        ti = torch.cat(tensors, dim=1)
+                        tw = ti.shape[1]
+                        _overlay_text_cache[text] = (ti, tw, atlas)
+                        return ti, tw
 
                     def _blend_cyan(canvas_i, text, atlas, x, y, cw_max, ch_max, center_x=False, center_y=False):
                         """Blend text from atlas in CYAN onto canvas[i] at (x,y), optionally centered."""
                         if not text:
                             return
-                        tensors = [atlas.get(ord(c), atlas[32]) for c in text]
-                        ti = torch.cat(tensors, dim=1)
-                        th, tw = ti.shape[:2]
+                        ti, tw = _compose_text(text, atlas)
+                        th = ti.shape[0]
                         if center_x:
                             x = x + ((cw_max - x) - tw) // 2
                         if center_y:
@@ -846,7 +901,7 @@ class GPURenderer:
                             _text = _sd.get(_key, "")
                             if not _text:
                                 continue
-                            _tw = sum(_data_atlas.get(ord(c), _data_atlas[32]).shape[1] for c in _text)
+                            _tw = _compose_text(_text, _data_atlas)[1]
                             _blend_cyan(canvas[_i], _text, _data_atlas,
                                         px + _layout_px + _layout_inner_w - _tw, py + _y_val,
                                         cw, ch)
@@ -883,8 +938,11 @@ class GPURenderer:
                             dy = max(ty1, ty1 + ((ty2 - ty1) - tt.shape[0]) // 2)
                             self._blend_rgba_inplace(canvas[_i], tt, dx, dy)
 
+                _prof_overlays += _tick() - _pt0; _pt0 = _tick()
+
                 # ── GPU → CPU (uint8) ──
                 uint8_gpu = canvas.mul(255.0).clamp_(0, 255).to(torch.uint8)
+                _prof_uint8 += _tick() - _pt0; _pt0 = _tick()
 
                 # Grow pinned buffers if batch size exceeds pre-allocated capacity (defensive)
                 if batch_n > 1:
@@ -910,9 +968,9 @@ class GPURenderer:
                     # Save canvas for next frame's delta, then free GPU tensors
                     _prev_canvas = canvas[0].clone()
                     del canvas, mats
-                    if use_composite:
+                    if composite_idx is not None:
                         del composite_idx
-                    elif use_atlas:
+                    elif base_idx is not None:
                         del base_idx, bar_idx
                     elif batch_has_colors:
                         del cols, sec, has_sec
@@ -936,14 +994,15 @@ class GPURenderer:
                     _dl_prev_start = batch_start
                     _prev_buf_idx = _dl_buf_idx
                     _dl_buf_idx = (_dl_buf_idx + 1) % _N_BUFS
+                    _prof_dl_handler += _tick() - _pt0
                 else:
                     # Sync download (no handler → no overlap possible)
                     batch_u8 = uint8_gpu.cpu().numpy()
                     _prev_canvas = canvas[0].clone()
                     del uint8_gpu, canvas, mats
-                    if use_composite:
+                    if composite_idx is not None:
                         del composite_idx
-                    elif use_atlas:
+                    elif base_idx is not None:
                         del base_idx, bar_idx
                     elif batch_has_colors:
                         del cols, sec, has_sec
@@ -952,8 +1011,6 @@ class GPURenderer:
                         if progress_callback:
                             progress_callback(batch_start + i + 1, n, gpu_stats=dict(self._stats))
 
-                torch.cuda.current_stream(dev).synchronize()
-                torch.cuda.empty_cache()
                 peak_reserved = torch.cuda.max_memory_reserved(dev)
                 marginal = peak_reserved - reserved_before_render
                 if marginal > 0 and batch_n >= 1:
@@ -989,10 +1046,19 @@ class GPURenderer:
 
         log.info(f"render_frames: DONE. total_batches={self._batch_counter}, frames_rendered={batch_start}")
         total_t = _time_module.time() - _batch_t0
+        _prof_sum = _prof_setup + _prof_canvas_init + _prof_delta_patch + _prof_full_render + _prof_overlays + _prof_uint8 + _prof_dl_handler
+        _prof_other = total_t - _prof_sum
         log.info(f"===== GPU RENDER SUMMARY =====")
         log.info(f"  total_time={total_t:.1f}s, batches={self._batch_counter}, "
                  f"frames={n}, avg_batch_size={n/max(1,self._batch_counter):.1f}, "
                  f"throughput={n/total_t:.0f} f/s (unique)")
+        log.info(f"  profile: setup={_prof_setup:.2f}s canvas_init={_prof_canvas_init:.2f}s "
+                 f"delta_patch={_prof_delta_patch:.2f}s ({_prof_delta_count}f) "
+                 f"full_render={_prof_full_render:.2f}s ({_prof_full_count}f) "
+                 f"overlays={_prof_overlays:.2f}s "
+                 f"uint8={_prof_uint8:.2f}s "
+                 f"dl_handler={_prof_dl_handler:.2f}s "
+                 f"other={_prof_other:.2f}s")
         log.info(f"  RAM delta: {_ram_delta_mb()}MB")
         torch.cuda.empty_cache()
         return frames if not frame_handler else []
@@ -1015,6 +1081,7 @@ class GPURenderer:
             self._base_lookup = {}
             self._bar_lookup = {}
             self._composite_lookup = {}
+            self._composite_lookup_cpu = {}
             torch.cuda.empty_cache()
             log.info("GPURenderer.cleanup: CUDA tensors freed")
 
