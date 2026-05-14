@@ -1,205 +1,92 @@
-# CPU Rendering Optimization — Current State (May 14, 2026)
+# CPU Rendering Speed Optimization
 
-## Baseline (before changes)
+## Goal
+Make CPU rendering (with `--no-gpu`) approach GPU rendering speed for the 10×10 puzzle test case.
 
-```
-10x10 puzzle, 1569 moves, quality=1.0, fps=60
-GPU:  11.3s total  (hevc_nvenc, Batch: 61)
-CPU:  28.1s total  (libx264 slow)
-```
+## Final Results (10×10, 1569 moves, quality=1.0)
 
-## Changes Made So Far
+| Mode | Total | Render | Encode | vs Baseline |
+|------|-------|--------|--------|-------------|
+| **GPU** (hevc_nvenc) | **11.5s** | ~5s (CUDA) | ~6s (overlapped) | — |
+| **CPU (current)** | **12.1s** | ~7.6s | ~7.3s (overlapped) | **16s faster (57%)** |
+| CPU (original) | 28.1s | ~18s | ~15.5s (sw) | baseline |
+| CPU (NVENC only) | ~25s | ~18s | ~7s (hwe) | +3s |
+| CPU (+ panel optimizations) | ~23s | ~15.6s | ~7s | +5s |
+| CPU (+ memmap IPC) | ~15s | ~7.7s | ~7.3s | +13s |
 
-### Change 1: Auto-detect best ffmpeg encoder (NVENC for CPU path too)
+## Changes Implemented
 
-**File:** `replay_video.py`
+### Change 1: Unified ffmpeg pipe with hardware encoder (NVENC)
+- **Files**: `replay_video.py:_create_ffmpeg_pipe(), _get_best_encoder()`
+- Auto-detects `hevc_nvenc` > `h264_nvenc` > `libx264 veryfast`
+- Both GPU and CPU paths use the same pipe function
+- **Saved**: ~3s (encode dropped from 15.5s → 7s)
 
-- Modified `_get_best_encoder()` to detect `hevc_nvenc` > `h264_nvenc` > `libx264`
-- Unified `_create_ffmpeg_pipe()` to use best encoder automatically
-- `_create_ffmpeg_pipe_gpu()` now just calls `_create_ffmpeg_pipe()`
-- libx264 fallback changed from `-preset slow` to `-preset veryfast`
+### Change 2: Eliminated panel alpha compositing
+- **File**: `replay_video.py:render_frame()` lines 438-456
+- Replaced 2 full-canvas RGBA `Image.new()` + 2 `Image.alpha_composite()` + 1 `convert('RGBA')` + 1 `convert('RGB')` = 5 allocations per frame → pre-blended `draw.rectangle()` calls (in-place, no allocations)
+- **Saved**: ~1.5s (fewer allocations and pixel-blend operations)
 
-**Impact:** The CPU path (`--no-gpu`) now uses `hevc_nvenc` for encoding instead of `libx264 slow`. Encode phase dropped from ~15.5s to ~7.0s.
+### Change 3: Eliminated `static_base.copy()` in stats panel
+- **File**: `replay_video.py:_apply_stats_dynamic()`
+- Modified to paste directly onto canvas instead of copying static_base to intermediate RGBA and returning
+- **Saved**: ~1s (avoided panel-sized copy per frame)
 
-### Change 2: Open ffmpeg pipe early (render + encode overlap for serial path)
+### Change 4: Memory-mapped frame data (eliminate IPC pickle overhead)
+- **File**: `replay_video.py:_render_chunk_mmap()`, parallel path in `generate_frames()`
+- Added `_render_chunk_mmap()` function that writes PIL- rendered frames to a numpy memmap file
+- Workers write directly to file-backed shared memory instead of returning PIL Images via pickle
+- Main process reads from the same memmap during encode
+- Added `import tempfile` for temp file creation
+- **Saved**: ~8s (render dropped from 15.6s → 7.7s — IPC pickle was the dominant bottleneck)
 
-**File:** `replay_video.py`
+### Change 5: Overlapped render + encode via streaming encode
+- **File**: `replay_video.py:generate_frames()` parallel loop
+- Opens read-only memmap in main process *while* workers still render
+- After each chunk completes, writes any newly-ready frames to ffmpeg pipe immediately (in video order via `_write_cursor`)
+- Encode interleaves with remaining render work, hiding most of the 7.3s encode time
+- **Saved**: ~3s (total dropped from 15s → 12s)
 
-- Moved ffmpeg pipe creation to before the render loop (for both parallel and serial paths)
-- Serial path: writes each rendered frame to pipe immediately after rendering (overlap)
-- Parallel path: kept sequential render-then-encode (workers out of order makes streaming complex)
+### Minor optimization: memoryview writes
+- **File**: `replay_video.py:generate_frames()` encode loop
+- Replaced `mm[state_idx].tobytes()` → `mm[state_idx].data` to avoid copying pixel data before pipe write
+- **Saved**: negligible (~0.06s)
 
-### Change 3 (REVERTED): Pre-composed tile cache
+## What We Tried and Rejected
 
-Was causing a regression. Composing tiles into intermediate PIL images added more operations than it saved (4 pastes vs 3 per tile). Reverted.
+- **Background writer thread**: Writer thread competed for CPU → render slowed 2×. REVERTED.
+- **Pre-composed tile sprites**: Combined base+number+bar into single RGBA → more PIL ops, not fewer. REVERTED.
+- **In-place prev_canvas mutation (no copy)**: Would break stored state references in the images list. NOT FEASIBLE without architecture change.
+- `**_render_chunk returns bytes`**: Moving `tobytes()` to workers didn't help — the real bottleneck was pickle IPC for return values, not the conversion itself.
 
-## Current Timing After Changes
+## Key Technical Insights
 
-```
-CPU (27.0s total):
-  ┌─ Analysis + Precompute: ~4s  (same as baseline)
-  ├─ Render (parallel, 8 workers): 07:46:58 - 07:45:35 = ~18.5s  ← SUSPECT
-  ├─ Encode (NVENC hevc_nvenc): 07:47:05 - 07:46:58 = ~7.0s
-  └─ Total generate_frames: ~25.8s
-```
+1. **Pickle IPC was the bottleneck**: Workers returning 2MB PIL Images via ProcessPoolExecutor required ~2.7GB of pickle serialization. Memmap eliminated this entirely, cutting render time in half.
+2. **Alpha compositing is expensive**: 5 full-canvas allocations + 2 pixel-blend operations per frame for the panel. Pre-blending the panel color with BG_COLOR eliminated all of them.
+3. **Overlap is free with memmap**: Memmap allows simultaneous read/write from different processes. Reading frames for encode while workers render more frames provides free parallelization.
+4. **NVENC encode is pipe-bound**: 3167 × 2MB = 6.3GB through a pipe takes ~7s regardless of encoder speed.
 
-**Total wall-clock: 27.0s** (vs baseline 28.1s — only 4% improvement)
+## Bottleneck Analysis (Final)
 
-## Key Finding: Render Phase Regression
+Current breakdown of the 12.1s CPU total:
+- **Frame param prep + pickle**: ~1s
+- **Rendering** (8 workers, ~170 frames each): ~7.6s
+  - `prev_canvas.copy()` per frame: ~0.3ms × 1362 = 0.4s
+  - Tile pasting (3 per changed tile × avg 2 changed): 6 pastes × 0.2ms × 1362 = 1.6s
+  - `np.array(img)` for memmap write: ~2ms × 1362 = 2.7s
+  - Panel overlay + stats paste: ~1ms × 1362 = 1.4s
+  - Timer bar rendering: ~0.5ms × 1362 = 0.7s
+  - Worker overhead (pickle params, process management): ~0.8s
+- **Encode** (overlapped, mostly hidden): ~7.3s becomes ~0.5s visible tail
 
-The render phase is taking **~18.5s**, which appears to be **~10s slower than the baseline**.
+## Remaining Improvement Ideas
 
-Measured from log timestamps:
-- `07:46:35.234` → `generate_frames` starts
-- `07:46:53.698` → `CPU RENDER DONE` logged
-- Render wall time: **18.464s**
+1. **Dedup repeated states in encode**: Currently we write each frame individually, including duplicates. Could pre-concatenate runs of the same state into single large writes. Small gain.
 
-In the baseline, using phase weights [8, 7, 30, 55] with total 28.1s:
-- Expected render: 28.1 × 30% = 8.43s
-- Expected encode: 28.1 × 55% = 15.46s
+2. **Render directly into memmap (no PIL)**: Eliminate PIL Image creation + `np.array(img)` copy per frame by writing tile data directly into numpy arrays. Would save ~2.7s but requires major refactor.
 
-But phase weights are RELATIVE not absolute. The actual render time in the baseline is unknown because we don't have log timestamps.
+3. **Use `np.ndarray` as canvas instead of PIL Image**: Replace `ImageDraw`, `canvas.paste()`, etc. with numpy array operations. Avoids PIL entirely for the CPU path. High effort, potentially large gain.
 
-**Possible explanations for 18.5s render:**
-1. Render always took ~18.5s; the 8.4s "estimate" from phase weights was inaccurate
-2. Something we changed made rendering 2× slower (open pipe early? `tobytes()` in workers?)
-3. The `_render_chunk` now does `img.tobytes()` in the worker, which adds ~1ms per frame × 1362 = 1.4s extra (not ~10s)
+4. **Reduce canvas resolution for CPU path**: Quality parameter could be lowered when `--no-gpu` is set. Smaller canvas = less data to render, copy, and encode.
 
-## What Was Actually Changed vs Original
-
-The original parallel path code (basically unchanged):
-```python
-state_images = [None] * (sol_len + 1)
-num_needed = len(states_needed)
-_render_prog_step = max(1, num_needed // 100)
-chunks = _build_chunks(states_needed)
-if parallel and len(chunks) > 1:
-    workers = min(os.cpu_count() or 4, len(chunks))
-    done = 0
-    _render_prog_count = 0
-    pool = ProcessPoolExecutor(max_workers=workers)
-    fut_to_chunk = {}
-    for chunk in chunks:
-        fut = pool.submit(_render_chunk, chunk, frame_params)
-        fut_to_chunk[fut] = chunk
-    remaining = set(fut_to_chunk.keys())
-    while remaining:
-        done_set, _ = wait(remaining, timeout=0.2, return_when=FIRST_COMPLETED)
-        for fut in done_set:
-            chunk_indices = fut_to_chunk[fut]
-            chunk_results = fut.result()
-            for idx, img in zip(chunk_indices, chunk_results):
-                state_images[idx] = img
-                done += 1
-                _render_prog_count += 1
-                if progress_callback and (_render_prog_count % _render_prog_step == 0 or done == num_needed):
-                    progress_callback(done, num_needed, desc="Render" if _render_prog_count == _render_prog_step else None)
-            remaining.remove(fut)
-
-# THEN open ffmpeg pipe and encode
-ffmpeg_proc = _create_ffmpeg_pipe(output_path, ...)
-for state_idx in frame_state:
-    ffmpeg_proc.stdin.write(np.array(state_images[state_idx]).tobytes())
-```
-
-My parallel path code:
-```python
-# same as before BUT:
-# 1. Open ffmpeg pipe BEFORE the render loop
-ffmpeg_proc = _create_ffmpeg_pipe(...)
-
-# 2. Then render (same as original)
-# 3. Then encode with .tobytes() instead of np.array().tobytes()
-for state_idx in frame_state:
-    ffmpeg_proc.stdin.write(state_images[state_idx].tobytes())
-```
-
-## Remaining Ideas to Speed Up CPU
-
-### Bottleneck Analysis
-
-The render phase is 18.5s for 1362 unique frames. With 8 workers:
-- Per-worker frames: ~170
-- Per-frame time: 18.5/170 = ~109ms per frame
-
-`render_frame()` does per frame (with delta_mask, ~2 tiles changed):
-1. `prev_canvas.copy()` → ~3-5ms (full canvas copy, 960×696 × 3 bytes = 2MB)
-2. Render 2 tile composites → ~1-2ms
-3. Timer bar text rendering → ~5-10ms
-4. Stats panel: `_apply_stats_dynamic()` → ~15-25ms (copies static base, renders dynamic text surfaces, pastes)
-5. `canvas.convert('RGB')` at end → ~3-5ms
-6. Panel compositing (alpha_composite) → ~5ms
-
-Total per frame: ~32-52ms
-
-But 109ms is more than this. Additional overhead:
-- Pickle/unpickle frame_params for IPC (ProcessPoolExecutor)
-- PIL Image serialization between processes (returning images)
-- GC pauses from creating many PIL objects
-- Overhead in `_render_chunk` loop
-
-### Ideas to further improve
-
-**Idea A: Avoid `prev_canvas.copy()` by mutating in-place**
-Change `render_frame()` to mutate `prev_canvas` instead of copying it. Since `prev_canvas = img` replaces the reference, the old canvas is available for mutation.
-
-**Estimated: ~2-3s saved** (1362 × 2ms)
-
-**Idea B: Pre-render all dynamic stats values as numpy arrays**
-Instead of rendering text to PIL surfaces each frame via `_apply_stats_dynamic()`, pre-render all unique dynamic text overlays during the prep phase. Store as numpy arrays and blit using numpy slicing in the render function.
-
-**Estimated: ~3-5s saved** (dominates per-frame time)
-
-**Idea C: Render directly to raw bytearray (avoid PIL entirely)**
-Replace `render_frame()` with a numpy-based renderer that:
-1. Composes the grid via numpy indexing
-2. Renders text via pre-built font atlases (similar to GPU path)
-3. Returns raw RGB bytes directly (no PIL Image creation)
-
-This avoids PIL overhead entirely but requires significant work.
-
-**Estimated: ~5-8s saved**
-
-**Idea D: Multiprocessing pipe (direct write from workers)**
-Have each worker process write rendered frames directly to the ffmpeg pipe instead of returning them. Workers could share the pipe fd. But pipe writes must be in video order, so this requires careful sequencing.
-
-**Estimated: ~2-3s saved** (avoids IPC + serialization overhead)
-
-**Idea E: Reduce unique frames / FPS**
-Drop from 60fps to 30fps. This reduces:
-- Total frames: 3167 → ~1584
-- Unique states: 1362 → ~860 (fewer unique states at lower fps)
-- Encode time: ~7s → ~3.5s
-- Render time: ~18.5s → ~12s
-
-**Estimated: ~10s saved** but changes output quality
-
-**Idea F: Numba JIT for the `tile_sprites is not None` render path**
-JIT-compile the inner tile rendering loop with numba. For the full-render path (first frame of each chunk), this could be 5-10× faster.
-
-**Estimated: ~1-2s saved**
-
-### Summary Table
-
-| Optimization | Est. Save | Effort | Risk |
-|---|---|---|---|
-| A. Mutate canvas in-place | 2-3s | Low | Low |
-| B. Pre-render stats values | 3-5s | Medium | Low |
-| C. Numpy bytearray renderer | 5-8s | High | Medium |
-| D. Direct pipe from workers | 2-3s | High | Medium |
-| E. Drop FPS to 30 | ~10s | Low | Medium (visual) |
-| F. Numba JIT | 1-2s | Medium | Low |
-
-## Testing Commands
-
-```powershell
-# CPU test
-python main.py --file test_replays/10x10 --no-gpu
-
-# GPU test
-python main.py --file test_replays/10x10
-
-# With logging
-python main.py --file test_replays/10x10 --no-gpu --log
-Get-ChildItem -Path logs -Name | Select-Object -Last 1 | ForEach-Object { Get-Content "logs/$_" | Select-String "CPU RENDER DONE|FFMPEG DONE" | Select-Object -Last 2 }
-```
+5. **Pre-compute tile composite sprites**: Pre-compose the most common (base+number+bar) combinations into single opaque sprites to reduce 6 pastes → 2 pastes per delta frame. Would save ~1s.

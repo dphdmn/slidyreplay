@@ -1712,45 +1712,54 @@ def generate_frames(
                         fut = pool.submit(_render_chunk_mmap, chunk, chunk_params, mmap_path, mmap_shape, mmap_dtype)
                         fut_to_chunk[fut] = chunk
 
-                    _render_prog_count = 0
-                    remaining = set(fut_to_chunk.keys())
-                    while remaining:
-                        if cancel_check and cancel_check():
-                            raise CancelError()
-                        done_set, _ = wait(remaining, timeout=0.2, return_when=FIRST_COMPLETED)
-                        for fut in done_set:
-                            chunk_indices = fut_to_chunk[fut]
-                            fut.result()
-                            _render_prog_count += len(chunk_indices)
-                            if progress_callback and (_render_prog_count % _render_prog_step == 0 or _render_prog_count == num_needed):
-                                progress_callback(_render_prog_count, num_needed, desc="Render")
-                            remaining.remove(fut)
+                    # Open read-only memmap for encoding; workers use 'r+' for writing
+                    mm_read = np.memmap(mmap_path, dtype=mmap_dtype, mode='r', shape=mmap_shape)
+                    try:
+                        _render_prog_count = 0
+                        _encode_prog_step = max(1, total_video_frames // 100)
+                        _encode_prog_count = 0
+                        _ready_states = set()
+                        _write_cursor = 0
+                        _written = 0
+
+                        remaining = set(fut_to_chunk.keys())
+                        while remaining:
+                            if cancel_check and cancel_check():
+                                raise CancelError()
+                            done_set, _ = wait(remaining, timeout=0.2, return_when=FIRST_COMPLETED)
+                            for fut in done_set:
+                                chunk_indices = fut_to_chunk[fut]
+                                fut.result()
+                                _ready_states.update(chunk_indices)
+                                _render_prog_count += len(chunk_indices)
+                                if progress_callback and (_render_prog_count % _render_prog_step == 0 or _render_prog_count == num_needed):
+                                    progress_callback(_render_prog_count, num_needed, desc="Render")
+                                remaining.remove(fut)
+
+                            # Flush newly-ready frames to ffmpeg pipe (overlap render + encode)
+                            while _write_cursor < len(frame_state) and frame_state[_write_cursor] in _ready_states:
+                                ffmpeg_proc.stdin.write(mm_read[frame_state[_write_cursor]].data)
+                                _written += 1
+                                _write_cursor += 1
+                                _encode_prog_count += 1
+                                if progress_callback and (_encode_prog_count % _encode_prog_step == 0 or _written == total_video_frames):
+                                    progress_callback(_written, total_video_frames, desc="Encode" if _encode_prog_count == _encode_prog_step else None)
+
+                        # Write remaining frames not yet flushed
+                        while _write_cursor < len(frame_state):
+                            ffmpeg_proc.stdin.write(mm_read[frame_state[_write_cursor]].data)
+                            _written += 1
+                            _write_cursor += 1
+                            _encode_prog_count += 1
+                            if progress_callback and (_encode_prog_count % _encode_prog_step == 0 or _written == total_video_frames):
+                                progress_callback(_written, total_video_frames, desc="Encode" if _encode_prog_count == _encode_prog_step else None)
+                    finally:
+                        del mm_read
                 finally:
                     if shared_pool is None:
                         pool.shutdown()
 
-                log.info(f"  CPU RENDER DONE: canvas={canvas_w_cpu}x{canvas_h_cpu}")
-                log_ram("CPU: after render (all frames in memmap)")
-
-                # Write frames in video order to ffmpeg pipe (NVENC is fast)
-                _encode_prog_step = max(1, total_video_frames // 100)
-                _encode_prog_count = 0
-                written = 0
-                try:
-                    mm = np.memmap(mmap_path, dtype=mmap_dtype, mode='r', shape=mmap_shape)
-                    try:
-                        for state_idx in frame_state:
-                            ffmpeg_proc.stdin.write(mm[state_idx].data)
-                            written += 1
-                            _encode_prog_count += 1
-                            if progress_callback and (_encode_prog_count % _encode_prog_step == 0 or written == total_video_frames):
-                                progress_callback(written, total_video_frames, desc="Encode" if _encode_prog_count == _encode_prog_step else None)
-                    finally:
-                        del mm
-                finally:
-                    pass
-
-                log.info(f"  CPU FFMPEG DONE: {written} frames written, returncode pending")
+                log.info(f"  CPU RENDER+ENCODE DONE: canvas={canvas_w_cpu}x{canvas_h_cpu}")
             finally:
                 if _mmap_cleanup:
                     try:
