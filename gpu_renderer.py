@@ -134,6 +134,8 @@ class GPURenderer:
         self._static_stats_bg_rgb = None
         self._static_stats_bg_a = None
         self._overlay_text_positions = None
+        self._composite_atlas = None
+        self._composite_lookup = {}
 
         if _HAS_TORCH:
             self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -294,6 +296,23 @@ class GPURenderer:
 
         log.info(f"  _upload_sprite_atlas: {len(base_items)} base sprites, {len(bar_items)} bar sprites, "
                  f"{len(self._base_lookup)} state lookups")
+
+    def upload_composite_atlas(self, composite_images, composite_lookup):
+        """Upload pre-rendered composite tiles as uint8 CUDA tensor.
+        Replaces decomposed _base_atlas / _bar_atlas / _num_batch for render.
+        """
+        dev = self._device
+        ts = self.tile_size
+        n = len(composite_images)
+        arr = np.zeros((n, ts, ts, 4), dtype=np.uint8)
+        for i, pil in enumerate(composite_images):
+            arr[i] = np.array(pil)
+        self._composite_atlas = torch.from_numpy(arr).to(dev)
+        self._composite_lookup = {}
+        for state_sig, lookup_list in composite_lookup.items():
+            self._composite_lookup[state_sig] = torch.tensor(lookup_list, device=dev, dtype=torch.int32)
+        log.info(f"  upload_composite_atlas: {n} entries, "
+                 f"size={n*ts*ts*4//(1024*1024)}MB (uint8)")
 
     def render_frames(
         self,
@@ -463,8 +482,18 @@ class GPURenderer:
                 mats_np = np.stack([p["matrix"] for p in batch_params], axis=0)
                 mats = torch.from_numpy(mats_np).to(dev, non_blocking=True)
 
-                use_atlas = self._base_atlas is not None
-                if use_atlas:
+                use_composite = hasattr(self, '_composite_atlas') and self._composite_atlas is not None
+                use_atlas = not use_composite and self._base_atlas is not None
+
+                if use_composite:
+                    composite_idx_np = np.zeros((batch_n, h, w), dtype=np.int32)
+                    for i, p in enumerate(batch_params):
+                        state_sig = id(p["grid_state"])
+                        mats_p = np.asarray(p["matrix"])
+                        lookup_np = self._composite_lookup[state_sig].cpu().numpy()
+                        composite_idx_np[i] = lookup_np[mats_p]
+                    composite_idx = torch.from_numpy(composite_idx_np).to(dev, non_blocking=True)
+                elif use_atlas:
                     base_idx_np = np.zeros((batch_n, h, w), dtype=np.int32)
                     bar_idx_np = np.full((batch_n, h, w), -1, dtype=np.int32)
                     for i, p in enumerate(batch_params):
@@ -515,8 +544,18 @@ class GPURenderer:
                         canvas[:, py:py + ph_p, px:px + pw_p] * (1 - panel_bg_a)
                     )
 
-                # ── Tile rendering (atlas path: batched full render, all frames in parallel) ──
-                if use_atlas:
+                # ── Tile rendering ──
+                if use_composite:
+                    for row_start in range(0, h, chunk_rows):
+                        row_end = min(row_start + chunk_rows, h)
+                        n_rows = row_end - row_start
+                        tile_chunk = self._composite_atlas[composite_idx[:, row_start:row_end, :]]
+                        tile_rgb = tile_chunk[..., :3].float() / 255.0
+                        tile_chunk_out = tile_rgb.permute(0, 1, 3, 2, 4, 5).reshape(batch_n, n_rows * ts, pw, 3)
+                        canvas_y = gy + row_start * ts
+                        canvas[:, canvas_y:canvas_y + n_rows * ts, gx:gx + pw] = tile_chunk_out
+                        del tile_chunk, tile_rgb, tile_chunk_out
+                elif use_atlas:
                     for row_start in range(0, h, chunk_rows):
                         row_end = min(row_start + chunk_rows, h)
                         n_rows = row_end - row_start
@@ -806,7 +845,9 @@ class GPURenderer:
 
                 # ── Free batch tensors + flush CUDA cache ──
                 del canvas, mats
-                if use_atlas:
+                if use_composite:
+                    del composite_idx
+                elif use_atlas:
                     del base_idx, bar_idx
                 elif batch_has_colors:
                     del cols, sec, has_sec
@@ -851,7 +892,7 @@ class GPURenderer:
                 "_border_mask", "_border_mask_inv",
                 "_bar_fill", "_bar_border",
                 "_timer_bg", "_panel_bg", "_panel_bg_rgb", "_panel_bg_a",
-                "_base_atlas", "_bar_atlas",
+                "_base_atlas", "_bar_atlas", "_composite_atlas",
             ]
             for attr in attrs:
                 t = getattr(self, attr, None)
@@ -860,6 +901,7 @@ class GPURenderer:
                     setattr(self, attr, None)
             self._base_lookup = {}
             self._bar_lookup = {}
+            self._composite_lookup = {}
             torch.cuda.empty_cache()
             log.info("GPURenderer.cleanup: CUDA tensors freed")
 

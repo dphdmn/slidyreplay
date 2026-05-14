@@ -215,6 +215,20 @@ def _bar_sprite(color, tile_size, opts):
     return im
 
 
+def prerender_composite_tile(num: int, main_bg, sec_bg, tile_sprites: TileSpriteCache, opts: RenderOptions) -> Image.Image:
+    """Pre-composite one tile: base + number + bar into single RGBA PIL Image."""
+    base = select_base(main_bg, num, tile_sprites)
+    composite = base.copy()
+    if not opts.no_numbers and num != 0:
+        nt = tile_sprites.number_texts[num]
+        composite.paste(nt, (0, 0), nt)
+    if sec_bg is not None:
+        bar = select_bar(sec_bg, tile_sprites)
+        if bar is not None:
+            composite.paste(bar, (0, 0), bar)
+    return composite.convert("RGBA")
+
+
 def select_base(main_bg, num, cache: TileSpriteCache):
     if main_bg is None:
         return cache.base_sprites[TILE_BG]
