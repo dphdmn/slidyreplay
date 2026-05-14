@@ -1607,7 +1607,6 @@ def generate_frames(
         # Open ffmpeg pipe with selected encoder
         log.info(f"  OPENING FFMPEG PIPE: output={output_path}, canvas={canvas_w}x{canvas_h}, fps={fps}, compression={compression}, encoder=hevc_nvenc")
         enc_proc = _create_ffmpeg_pipe_gpu(output_path, canvas_w, canvas_h, fps=fps, compression=compression)
-        writer = _PipeWriter(enc_proc)
         unique_params = [frame_params[i] for i in states_needed]
         _t_stage3 = time_module.time()
         log.info("====== STAGE 3: GPU RENDER ======")
@@ -1617,7 +1616,8 @@ def generate_frames(
         def handler(img, idx_in_unique, total):
             count = state_to_count[states_needed[idx_in_unique]]
             data = img.tobytes()
-            writer.write(data, count)
+            for _ in range(count):
+                enc_proc.stdin.write(data)
 
         _gpu_render_step = max(1, len(unique_params) // 100)
         _gpu_render_count = 0
@@ -1641,7 +1641,7 @@ def generate_frames(
                 if gpu_renderer is None:
                     gpu.cleanup()
         finally:
-            writer.close()
+            _close_pipe(enc_proc)
 
         log.info(f"====== STAGE 3 DONE: {time_module.time() - _t_stage3:.1f}s ======")
 
