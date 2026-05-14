@@ -1705,47 +1705,35 @@ def generate_frames(
     _render_prog_step = max(1, num_needed // 100)
     chunks = _build_chunks(states_needed)
     try:
-        if parallel and len(chunks) > 1:
+        _use_parallel_mmap = parallel and len(chunks) > 1
+        if _use_parallel_mmap:
             workers = min(os.cpu_count() or 4, len(chunks))
-
-            # Compact mapping: state_idx → row in shared array (num_needed rows, not sol_len+1)
             state_to_midx = {idx: pos for pos, idx in enumerate(states_needed)}
             mmap_shape = (num_needed, canvas_h_cpu, canvas_w_cpu, 3)
             mmap_dtype = np.uint8
             total_bytes = num_needed * canvas_h_cpu * canvas_w_cpu * 3
 
-            # Try SharedMemory (RAM/page file), fall back to file-backed memmap
-            _use_shm = True
+            # Try SharedMemory (RAM/page file). If it fails (too large / no space),
+            # fall through to serial path which uses O(1) memory.
             shm = None
-            mmap_path = None
             try:
                 shm = SharedMemory(create=True, size=total_bytes)
                 log.info(f"  SharedMemory: name={shm.name}, size={total_bytes} ({num_needed}x{canvas_w_cpu}x{canvas_h_cpu}x3)")
             except (OSError, ValueError) as e:
-                log.warning(f"  SharedMemory failed ({e}), using file-backed memmap")
-                _use_shm = False
-                mmap_fd, mmap_path = tempfile.mkstemp(suffix='.render')
-                os.close(mmap_fd)
-                mm_init = np.memmap(mmap_path, dtype=mmap_dtype, mode='w+', shape=mmap_shape)
-                del mm_init
+                log.warning(f"  SharedMemory failed ({e}) — too large for {num_needed} states, using serial path")
+                _use_parallel_mmap = False
 
+        if _use_parallel_mmap:
             try:
                 pool = shared_pool if shared_pool is not None else ProcessPoolExecutor(max_workers=workers)
                 try:
                     fut_to_chunk = {}
                     for chunk in chunks:
                         chunk_params = {idx: frame_params[idx] for idx in chunk}
-                        if _use_shm:
-                            fut = pool.submit(_render_chunk_shm, chunk, chunk_params, shm.name, mmap_shape, mmap_dtype, state_to_midx)
-                        else:
-                            fut = pool.submit(_render_chunk_mmap, chunk, chunk_params, mmap_path, mmap_shape, mmap_dtype)
+                        fut = pool.submit(_render_chunk_shm, chunk, chunk_params, shm.name, mmap_shape, mmap_dtype, state_to_midx)
                         fut_to_chunk[fut] = chunk
 
-                    # Open shared buffer for concurrent read during encode
-                    if _use_shm:
-                        arr_shared = np.ndarray(mmap_shape, dtype=mmap_dtype, buffer=shm.buf)
-                    else:
-                        arr_shared = np.memmap(mmap_path, dtype=mmap_dtype, mode='r', shape=mmap_shape)
+                    arr_shared = np.ndarray(mmap_shape, dtype=mmap_dtype, buffer=shm.buf)
                     try:
                         _render_prog_count = 0
                         _encode_prog_step = max(1, total_video_frames // 100)
@@ -1753,7 +1741,6 @@ def generate_frames(
                         _ready_states = set()
                         _write_cursor = 0
                         _written = 0
-                        _prog_step = max(1, total_video_frames // 100)
                         _last_prog_out = -1
 
                         def _report_overall():
@@ -1763,6 +1750,7 @@ def generate_frames(
                                 frac = _render_prog_count / num_needed if num_needed > 0 else 1.0
                                 label = "Render"
                             else:
+
                                 frac = _written / total_video_frames if total_video_frames > 0 else 1.0
                                 label = "Encode"
                             intra = int(round(frac * 100))
@@ -1785,7 +1773,6 @@ def generate_frames(
                                 _report_overall()
                                 remaining.remove(fut)
 
-                            # Flush newly-ready frames to ffmpeg pipe (overlap render + encode)
                             while _write_cursor < len(frame_state) and frame_state[_write_cursor] in _ready_states:
                                 ffmpeg_proc.stdin.write(arr_shared[state_to_midx[frame_state[_write_cursor]]].data)
                                 _written += 1
@@ -1794,7 +1781,6 @@ def generate_frames(
                                 if _encode_prog_count % _encode_prog_step == 0 or _written == total_video_frames:
                                     _report_overall()
 
-                        # Write remaining frames not yet flushed
                         while _write_cursor < len(frame_state):
                             ffmpeg_proc.stdin.write(arr_shared[state_to_midx[frame_state[_write_cursor]]].data)
                             _written += 1
@@ -1810,14 +1796,9 @@ def generate_frames(
 
                 log.info(f"  CPU RENDER+ENCODE DONE: canvas={canvas_w_cpu}x{canvas_h_cpu}")
             finally:
-                if _use_shm:
+                if shm is not None:
                     shm.close()
                     shm.unlink()
-                else:
-                    try:
-                        os.unlink(mmap_path)
-                    except OSError:
-                        pass
         else:
             # Serial path: write each frame to pipe immediately after rendering
             written = 0
