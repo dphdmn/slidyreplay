@@ -146,9 +146,6 @@ class GPURenderer:
             "gpu_name": "",
             "total_mem_mb": 0,
             "free_mem_mb": 0,
-            "mem_used_mb": 0,
-            "batch_size": 0,
-            "batch_mem_mb": 0,
         }
         self._batch_counter = 0
         log.info(f"GPURenderer.__init__: {width}x{height}, tile_size={ts}, canvas={self.canvas_w}x{self.canvas_h}, device={self._device}")
@@ -373,7 +370,7 @@ class GPURenderer:
         log.info(f"render_frames: {n} frames, canvas={cw}x{ch}, chunk_rows={chunk_rows}")
 
         # Pre-allocate pinned memory buffers + CUDA stream for async GPU→CPU download (3B-b)
-        _N_BUFS = 6
+        _N_BUFS = 2
         _pinned_bufs = [
             torch.empty(1, ch, cw, 3, dtype=torch.uint8, pin_memory=True)
             for _ in range(_N_BUFS)
@@ -386,14 +383,12 @@ class GPURenderer:
         _prev_buf_idx = None
         _dl_prev_event = None
         _dl_prev_uint8 = None
-        _dl_prev_n = 0
         _dl_prev_start = 0
 
         # 666 delta rendering state
         _prev_canvas = None
 
         # Profiling accumulators (seconds)
-        _prof_canvas_init = 0.0
         _prof_setup = 0.0
         _prof_delta_patch = 0.0
         _prof_full_render = 0.0
@@ -403,7 +398,6 @@ class GPURenderer:
         _prof_delta_count = 0
         _prof_full_count = 0
         _tick = _time_module.perf_counter
-        _p0 = _tick()
 
         with torch.inference_mode():
             _batch_t0 = _time_module.time()
@@ -850,12 +844,12 @@ class GPURenderer:
                         del composite_idx
                     elif base_idx is not None:
                         del base_idx, bar_idx
-                    elif batch_has_colors:
+                    else:
                         del cols, sec, has_sec
 
                     # Process PREVIOUS batch's frame from the other pinned buffer
                     # (overlaps with THIS batch's DMA transfer)
-                    if _dl_prev_event is not None and _prev_buf_idx is not None:
+                    if _dl_prev_event is not None:
                         _dl_prev_event.synchronize()
                         _prev_buf = _pinned_bufs[_prev_buf_idx]
                         frame_handler(_prev_buf[0].numpy(), _dl_prev_start, n, _buf_free_events[_prev_buf_idx])
@@ -867,7 +861,6 @@ class GPURenderer:
                     # Rotate for next batch
                     _dl_prev_uint8 = uint8_gpu
                     _dl_prev_event = _dl_event
-                    _dl_prev_n = batch_n
                     _dl_prev_start = batch_start
                     _prev_buf_idx = _dl_buf_idx
                     _dl_buf_idx = (_dl_buf_idx + 1) % _N_BUFS
@@ -881,16 +874,11 @@ class GPURenderer:
                         del composite_idx
                     elif base_idx is not None:
                         del base_idx, bar_idx
-                    elif batch_has_colors:
+                    else:
                         del cols, sec, has_sec
                     frames.append(Image.fromarray(batch_u8[0]))
                     if progress_callback:
                         progress_callback(batch_start + 1, n, gpu_stats=dict(self._stats))
-
-                log.info(f"  BATCH[{self._batch_counter}] DONE: "
-                         f"sz={batch_n}, "
-                         f"t={_time_module.time()-_batch_t0:.2f}s, "
-                         f"ram={_ram_delta_mb()}MB")
 
                 batch_start = batch_end
 
@@ -906,13 +894,13 @@ class GPURenderer:
 
         log.info(f"render_frames: DONE. total_batches={self._batch_counter}, frames_rendered={batch_start}")
         total_t = _time_module.time() - _batch_t0
-        _prof_sum = _prof_setup + _prof_canvas_init + _prof_delta_patch + _prof_full_render + _prof_overlays + _prof_uint8 + _prof_dl_handler
+        _prof_sum = _prof_setup + _prof_delta_patch + _prof_full_render + _prof_overlays + _prof_uint8 + _prof_dl_handler
         _prof_other = total_t - _prof_sum
         log.info(f"===== GPU RENDER SUMMARY =====")
         log.info(f"  total_time={total_t:.1f}s, batches={self._batch_counter}, "
                  f"frames={n}, avg_batch_size={n/max(1,self._batch_counter):.1f}, "
                  f"throughput={n/total_t:.0f} f/s (unique)")
-        log.info(f"  profile: setup={_prof_setup:.2f}s canvas_init={_prof_canvas_init:.2f}s "
+        log.info(f"  profile: setup={_prof_setup:.2f}s "
                  f"delta_patch={_prof_delta_patch:.2f}s ({_prof_delta_count}f) "
                  f"full_render={_prof_full_render:.2f}s ({_prof_full_count}f) "
                  f"overlays={_prof_overlays:.2f}s "
