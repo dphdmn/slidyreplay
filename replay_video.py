@@ -1509,7 +1509,10 @@ def generate_frames(
 
     # Process state 0
     state0 = grid_states[0]
-    main0, sec0, has_sec0 = _build_tile_colors_np(mc_flat, state0)
+    if not use_gpu:
+        main0, sec0, has_sec0 = _build_tile_colors_np(mc_flat, state0)
+    else:
+        main0 = sec0 = has_sec0 = None
     sd0, tt0 = _build_stats_data(0, 0, all_md, 0)
     frame_params[0] = dict(
         matrix=mc_flat.reshape(h, w).copy(),
@@ -1553,7 +1556,10 @@ def generate_frames(
                 else:
                     _ft = original_fake_times if original_fake_times else fake_times
                     cur_time_ms = _ft[frame_idx - 1] if frame_idx - 1 < len(_ft) else 0
-                main_c, sec_c, has_sec_c = _build_tile_colors_np(mc_flat, state)
+                if not use_gpu:
+                    main_c, sec_c, has_sec_c = _build_tile_colors_np(mc_flat, state)
+                else:
+                    main_c = sec_c = has_sec_c = None
                 sd, tt = _build_stats_data(frame_idx, cur_time_ms, current_md, frame_idx)
 
             current_matrix = mc_flat.reshape(h, w).copy()
