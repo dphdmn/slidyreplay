@@ -1563,15 +1563,18 @@ def generate_frames(
                 sd, tt = _build_stats_data(frame_idx, cur_time_ms, current_md, frame_idx)
 
             current_matrix = mc_flat.reshape(h, w).copy()
-            current_state_sig = id(state)
-            if prev_delta_matrix is None:
-                delta_mask = np.ones((h, w), dtype=bool)
+            if not use_gpu:
+                current_state_sig = id(state)
+                if prev_delta_matrix is None:
+                    delta_mask = np.ones((h, w), dtype=bool)
+                else:
+                    delta_mask = (current_matrix != prev_delta_matrix)
+                    if current_state_sig != prev_state_sig:
+                        delta_mask[:] = True
+                prev_delta_matrix = current_matrix
+                prev_state_sig = current_state_sig
             else:
-                delta_mask = (current_matrix != prev_delta_matrix)
-                if current_state_sig != prev_state_sig:
-                    delta_mask[:] = True
-            prev_delta_matrix = current_matrix
-            prev_state_sig = current_state_sig
+                delta_mask = None
 
             frame_params[frame_idx] = dict(
                 matrix=current_matrix,
