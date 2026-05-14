@@ -330,7 +330,7 @@ def render_frame(
     opts: RenderOptions = RenderOptions(),
     tile_sprites: Optional[TileSpriteCache] = None,
     prev_canvas: Optional[Image.Image] = None,
-    delta_mask: Optional[np.ndarray] = None,
+    changed_tiles: Optional[np.ndarray] = None,
     timer_arr: Optional[np.ndarray] = None,
     stats_arr: Optional[np.ndarray] = None,
     composite_atlas: Optional[List[Image.Image]] = None,
@@ -342,7 +342,7 @@ def render_frame(
     puzzle_h = h * tile_size
     grid_x, grid_y = compute_grid_position(opts.grid_only)
 
-    if prev_canvas is not None and delta_mask is not None:
+    if prev_canvas is not None and changed_tiles is not None:
         canvas = prev_canvas.copy()
         canvas_w, canvas_h = canvas.size
         draw = ImageDraw.Draw(canvas)
@@ -376,18 +376,16 @@ def render_frame(
     # ─── Puzzle Grid ──────────────────────────────────────────────
     if gpu_grid is not None:
         canvas.paste(gpu_grid, (grid_x, grid_y))
-    elif composite_atlas is not None and composite_lookup is not None and prev_canvas is not None and delta_mask is not None:
+    elif composite_atlas is not None and composite_lookup is not None and prev_canvas is not None and changed_tiles is not None:
         state_sig = id(grid_state)
         lookup = composite_lookup[state_sig]
-        rows, cols = np.where(delta_mask)
-        for r, c in zip(rows, cols):
+        for r, c in changed_tiles:
             num = matrix[r][c]
             sx = grid_x + c * tile_size
             sy = grid_y + r * tile_size
             canvas.paste(composite_atlas[lookup[num]], (sx, sy), composite_atlas[lookup[num]])
-    elif prev_canvas is not None and delta_mask is not None:
-        rows, cols = np.where(delta_mask)
-        for r, c in zip(rows, cols):
+    elif prev_canvas is not None and changed_tiles is not None:
+        for r, c in changed_tiles:
             num = matrix[r][c]
             sx = grid_x + c * tile_size
             sy = grid_y + r * tile_size
@@ -1567,11 +1565,13 @@ def generate_frames(
             current_matrix = mc_flat.reshape(h, w).copy()
             current_state_sig = id(state)
             if prev_delta_matrix is None:
-                delta_mask = np.ones((h, w), dtype=bool)
+                changed_tiles = None
             else:
-                delta_mask = (current_matrix != prev_delta_matrix)
                 if current_state_sig != prev_state_sig:
-                    delta_mask[:] = True
+                    changed_tiles = None
+                else:
+                    _mask = (current_matrix != prev_delta_matrix)
+                    changed_tiles = np.argwhere(_mask)
             prev_delta_matrix = current_matrix
             prev_state_sig = current_state_sig
 
@@ -1593,7 +1593,7 @@ def generate_frames(
                 colors_sec_mask=has_sec_c,
                 opts=opts,
                 tile_sprites=tile_sprites,
-                delta_mask=delta_mask,
+                changed_tiles=changed_tiles,
                 composite_atlas=composite_images,
                 composite_lookup=composite_lookup,
             )

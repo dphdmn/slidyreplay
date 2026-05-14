@@ -575,12 +575,10 @@ class GPURenderer:
                 # ── 666: Delta patch (copy prev canvas, update only changed tiles) ──
                 _delta_applied = False
                 if use_composite and _prev_canvas is not None:
-                    _dm = np.asarray(batch_params[0].get("delta_mask"))
-                    if _dm is not None and _dm.any() and not _dm.all():
+                    _changed_tiles = batch_params[0].get("changed_tiles")
+                    if _changed_tiles is not None:
                         canvas[0].copy_(_prev_canvas)
-                        _changed_rows, _changed_cols = np.where(_dm)
-                        for _k in range(len(_changed_rows)):
-                            _r, _c = _changed_rows[_k], _changed_cols[_k]
+                        for _r, _c in _changed_tiles:
                             _ti = composite_idx[0, _r, _c]
                             _t = self._composite_atlas[_ti, :, :, :3].float() / 255.0
                             _sy = gy + _r * ts

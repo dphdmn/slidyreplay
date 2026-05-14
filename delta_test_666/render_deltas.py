@@ -22,22 +22,21 @@ _original_frame_args = set(inspect.signature(_original_render_frame).parameters.
 def _patched_render_frame(**kw):
     global _render_count
     img = _original_render_frame(**kw)
-    has_delta = kw.get('prev_canvas') is not None and kw.get('delta_mask') is not None
+    has_delta = kw.get('prev_canvas') is not None and kw.get('changed_tiles') is not None
 
     if has_delta:
         prev = kw['prev_canvas']
-        dm = kw['delta_mask']
+        ct = kw['changed_tiles']
         matrix = kw['matrix']
         h, w = len(matrix), len(matrix[0])
         ts = kw['tile_size']
         opts = kw.get('opts', RenderOptions())
         gx, gy = compute_grid_position(opts.grid_only)
 
-        rows, cols = np.where(dm)
-        n_changed = len(rows)
+        n_changed = len(ct)
         viz = prev.copy()
         viz = ImageEnhance.Brightness(viz).enhance(0.25)
-        for r, c in zip(rows, cols):
+        for r, c in ct:
             sx = gx + c * ts
             sy = gy + r * ts
             tile = img.crop((sx, sy, sx + ts, sy + ts))
