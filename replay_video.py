@@ -1814,7 +1814,7 @@ class ReplayVideoGenerator:
 
         # ── Progress setup (moved before analysis so early stages are tracked) ──
         total_frames = sol_len + 1
-        pw = GPU_PHASE_WEIGHTS if use_gpu else CPU_PHASE_WEIGHTS
+        pw = GPU_PHASE_WEIGHTS  # both GPU and CPU use overlapped pipe (no separate encode phase)
 
         if show_progress:
             print(f"Puzzle: {width}x{height}, Moves: {sol_len}, TPS: {tps_val:.3f}")
