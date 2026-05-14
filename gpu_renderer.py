@@ -835,11 +835,10 @@ class GPURenderer:
                 # ── GPU → CPU (uint8) ──
                 batch_u8 = canvas.mul(255.0).clamp_(0, 255).to(torch.uint8).cpu().numpy()
                 for i in range(batch_n):
-                    img = Image.fromarray(batch_u8[i])
                     if frame_handler:
-                        frame_handler(img, batch_start + i, n)
+                        frame_handler(batch_u8[i], batch_start + i, n)
                     else:
-                        frames.append(img)
+                        frames.append(Image.fromarray(batch_u8[i]))
                     if progress_callback:
                         progress_callback(batch_start + i + 1, n, gpu_stats=dict(self._stats))
 

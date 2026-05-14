@@ -1680,7 +1680,10 @@ def generate_frames(
 
         def handler(img, idx_in_unique, total):
             count = state_to_count[states_needed[idx_in_unique]]
-            data = img.tobytes()
+            if isinstance(img, np.ndarray):
+                data = memoryview(img)
+            else:
+                data = img.tobytes()
             writer.write(data, count)
 
         _gpu_render_step = max(1, len(unique_params) // 100)
