@@ -1367,7 +1367,6 @@ def generate_frames(
             from gpu_renderer import GPURenderer
             gpu = GPURenderer(w, h, raw_tile, quality, min_canvas_h=min_canvas_h, opts=opts)
         if gpu.available:
-            gpu.upload_sprite_atlas(tile_sprites, grid_states, all_fringe_schemes, w, h)
             gpu.upload_composite_atlas(composite_images, composite_lookup)
         use_gpu = use_gpu and gpu.available
         log.info(f"  canvas={gpu.canvas_w}x{gpu.canvas_h}, GPU available={gpu.available}, use_gpu={use_gpu}")

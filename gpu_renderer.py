@@ -85,8 +85,7 @@ from geometry import (PADDING, HEADER_H, STATS_PANEL_WIDTH, INFO_H, TIMER_HEIGHT
     WHITE, CYAN, GREEN, GRAY, LIGHT_GRAY,
     TILE_BORDER_WIDTH, TILE_BORDER_RADIUS_RATIO, BASE_SIZE,
     compute_canvas_dimensions, RenderOptions,
-    get_font, render_number_texture,
-    compute_tile_size, compute_font_size,
+    get_font, render_number_texture, compute_tile_size, compute_font_size,
     compute_grid_position, compute_panel_rect, compute_secondary_bar_rect,
     round_canvas_height)
 
@@ -126,7 +125,6 @@ class GPURenderer:
 
         self._init_success = False
         self._device = None
-        self._num_batch = None
         self._tile_mask = None
         self._timer_bg = None
         self._panel_bg = None
@@ -157,17 +155,6 @@ class GPURenderer:
 
         if self._device is not None and self._device.type == "cuda":
             cuda_dev = self._device
-
-            if self.opts.no_numbers:
-                self._num_batch = None
-            else:
-                n = width * height
-                num_batch = torch.zeros(n, ts, ts, 4, device=cuda_dev, dtype=torch.float32)
-                for num in range(n):
-                    pil = render_number_texture(num, ts, self.font_size)
-                    arr = torch.from_numpy(np.array(pil)).to(cuda_dev).float() / 255.0
-                    num_batch[num] = arr
-                self._num_batch = num_batch
 
             # Tile mask (all ones) and its complement
             mask = torch.ones(ts, ts, 1, device=cuda_dev, dtype=torch.float32)
@@ -248,57 +235,8 @@ class GPURenderer:
         dst_slice = dst[y0:y0 + h, x0:x0 + w]
         dst_slice.mul_(1.0 - a).add_(src[:, :, :3] * a)
 
-    def upload_sprite_atlas(self, tile_sprites, grid_states, all_fringe_schemes, w, h):
-        dev = self._device
-        ts = self.tile_size
-
-        base_items = []
-        base_color_to_idx = {}
-        for color, pil in tile_sprites.base_sprites.items():
-            idx = len(base_items)
-            arr = torch.from_numpy(np.array(pil)).to(dev).float() / 255.0
-            base_items.append(arr)
-            base_color_to_idx[color] = idx
-
-        self._base_atlas = torch.stack(base_items) if base_items else None
-
-        bar_items = []
-        bar_color_to_idx = {}
-        for color, pil in tile_sprites.bar_sprites.items():
-            idx = len(bar_items)
-            arr = torch.from_numpy(np.array(pil)).to(dev).float() / 255.0
-            bar_items.append(arr)
-            bar_color_to_idx[color] = idx
-
-        self._bar_atlas = torch.stack(bar_items) if bar_items else None
-
-        self._base_lookup = {}
-        self._bar_lookup = {}
-        for state_key, state in grid_states.items():
-            if not isinstance(state_key, (int, float)):
-                continue
-            state_sig = id(state)
-            num_to_base = torch.zeros(w * h + 1, device=dev, dtype=torch.int32)
-            num_to_bar = torch.full((w * h + 1,), -1, device=dev, dtype=torch.int32)
-            for num in range(w * h + 1):
-                from replay_video import get_tile_colors
-                main_bg, sec_bg = get_tile_colors(num, state, all_fringe_schemes, w)
-                base_color = TILE_BG if main_bg is None else tuple(int(x) for x in main_bg)
-                num_to_base[num] = base_color_to_idx.get(base_color, 0)
-                if sec_bg is not None:
-                    bar_color = tuple(int(x) for x in sec_bg)
-                    if bar_color in bar_color_to_idx:
-                        num_to_bar[num] = bar_color_to_idx[bar_color]
-            self._base_lookup[state_sig] = num_to_base
-            self._bar_lookup[state_sig] = num_to_bar
-
-        log.info(f"  _upload_sprite_atlas: {len(base_items)} base sprites, {len(bar_items)} bar sprites, "
-                 f"{len(self._base_lookup)} state lookups")
-
     def upload_composite_atlas(self, composite_images, composite_lookup):
-        """Upload pre-rendered composite tiles as uint8 CUDA tensor.
-        Replaces decomposed _base_atlas / _bar_atlas / _num_batch for render.
-        """
+        """Upload pre-rendered composite tiles as uint8 CUDA tensor."""
         dev = self._device
         ts = self.tile_size
         n = len(composite_images)
@@ -339,25 +277,11 @@ class GPURenderer:
         th, tw = ty2 - ty1, tx2 - tx1
 
         dev = self._device
-        num_tex = self._num_batch
-        # 6‑D broadcast views for blending
-        tm = self._tile_mask[None, None, None, :, :, :]
-        tm_inv = self._tile_mask_inv[None, None, None, :, :, :]
-        bm = self._border_mask[None, None, None, :, :, :]
-        bm_inv = self._border_mask_inv[None, None, None, :, :, :]
-        bar_fill_mask = self._bar_fill[None, None, None, :, :, :]
-        bar_border_mask = self._bar_border[None, None, None, :, :, :]
         timer_bg = self._timer_bg
         panel_bg_rgb = self._panel_bg_rgb
         panel_bg_a = self._panel_bg_a
 
         c_bg = torch.tensor(BG_COLOR, device=dev, dtype=torch.float32) / 255.0
-        c_border = torch.tensor(TILE_BORDER_COLOR, device=dev, dtype=torch.float32) / 255.0
-        c_bg_6d = c_bg.view(1, 1, 1, 1, 1, 3)
-        c_border_6d = c_border.view(1, 1, 1, 1, 1, 3)
-        tile_bg_t = torch.tensor(TILE_BG, device=dev, dtype=torch.float32) / 255.0
-
-        batch_has_colors = any(p.get("colors_main") is not None for p in frame_params_list)
 
         # Row‑chunked rendering: 2 rows per chunk for large puzzles
         chunk_rows = 2 if h > 6 else h
@@ -424,17 +348,17 @@ class GPURenderer:
                 mats = torch.from_numpy(np.asarray(p["matrix"])[None, :, :]).to(dev, non_blocking=True)
 
                 use_composite = hasattr(self, '_composite_atlas') and self._composite_atlas is not None
-                use_atlas = not use_composite and self._base_atlas is not None
+                if not use_composite:
+                    raise RuntimeError("upload_composite_atlas must be called before render_frames")
 
                 # Check if this frame can use delta path
                 _ct = p.get("changed_tiles")
                 _can_delta = use_composite and _prev_canvas is not None and _ct is not None
-                _delta_threshold = h * w // 4
+                _delta_threshold = h * w // 6
                 _will_delta = _can_delta and len(_ct) <= _delta_threshold
 
                 composite_idx = None
-                base_idx = bar_idx = None
-                if use_composite and not _will_delta:
+                if not _will_delta:
                     state_sig = id(p["grid_state"])
                     if state_sig not in self._composite_lookup_cpu:
                         self._composite_lookup_cpu[state_sig] = self._composite_lookup[state_sig].cpu().numpy()
@@ -442,43 +366,6 @@ class GPURenderer:
                     mats_p = np.asarray(p["matrix"])
                     composite_idx_np = lookup_np[mats_p][None, :, :]
                     composite_idx = torch.from_numpy(composite_idx_np).to(dev, non_blocking=True)
-                elif use_atlas and not _will_delta:
-                    state_sig = id(p["grid_state"])
-                    mats_p = np.asarray(p["matrix"])
-                    if state_sig in self._base_lookup:
-                        base_lookup_np = self._base_lookup[state_sig].cpu().numpy()
-                        bar_lookup_np = self._bar_lookup[state_sig].cpu().numpy()
-                        base_idx_np = base_lookup_np[mats_p][None, :, :]
-                        bar_idx_np = bar_lookup_np[mats_p][None, :, :]
-                        base_idx = torch.from_numpy(base_idx_np).to(dev, non_blocking=True)
-                        bar_idx = torch.from_numpy(bar_idx_np).to(dev, non_blocking=True)
-                    else:
-                        base_idx = torch.full((1, h, w), 0, device=dev, dtype=torch.int32)
-                        bar_idx = torch.full((1, h, w), -1, device=dev, dtype=torch.int32)
-                else:
-                    if batch_has_colors:
-                        cm = p.get("colors_main")
-                        if cm is not None:
-                            main_np = cm.reshape(1, h, w, 3).astype(np.float32)
-                        else:
-                            main_np = np.full((1, h, w, 3), TILE_BG, dtype=np.float32)
-                        cs = p.get("colors_sec")
-                        if cs is not None:
-                            sec_np = cs.reshape(1, h, w, 3).astype(np.float32)
-                        else:
-                            sec_np = np.zeros((1, h, w, 3), dtype=np.float32)
-                        csm = p.get("colors_sec_mask")
-                        if csm is not None:
-                            has_sec_np = csm.reshape(1, h, w).astype(np.float32)
-                        else:
-                            has_sec_np = np.zeros((1, h, w), dtype=np.float32)
-                        cols = torch.from_numpy(main_np).to(dev, non_blocking=True) / 255.0
-                        sec = torch.from_numpy(sec_np).to(dev, non_blocking=True) / 255.0
-                        has_sec = torch.from_numpy(has_sec_np).to(dev, non_blocking=True).view(1, h, w, 1, 1, 1)
-                    else:
-                        cols = tile_bg_t.view(1, 1, 1, 3)
-                        sec = torch.zeros(1, h, w, 3, device=dev, dtype=torch.float32)
-                        has_sec = torch.zeros(1, h, w, 1, 1, 1, device=dev, dtype=torch.float32)
 
                 _prof_setup = _prof_setup + _tick() - _pt_setup
 
@@ -516,7 +403,7 @@ class GPURenderer:
                     _delta_applied = True
 
                 # ── Tile rendering (skipped when delta applied) ──
-                if use_composite and not _delta_applied:
+                if not _delta_applied:
                     for row_start in range(0, h, chunk_rows):
                         row_end = min(row_start + chunk_rows, h)
                         n_rows = row_end - row_start
@@ -526,80 +413,6 @@ class GPURenderer:
                         canvas_y = gy + row_start * ts
                         canvas[:, canvas_y:canvas_y + n_rows * ts, gx:gx + pw] = tile_chunk_out
                         del tile_chunk, tile_rgb, tile_chunk_out
-                elif use_atlas and not _delta_applied:
-                    for row_start in range(0, h, chunk_rows):
-                        row_end = min(row_start + chunk_rows, h)
-                        n_rows = row_end - row_start
-
-                        base_chunk = self._base_atlas[base_idx[:, row_start:row_end, :]]
-                        tile_rgb = base_chunk[..., :3]
-
-                        if not self.opts.no_numbers and num_tex is not None:
-                            nums = num_tex[mats[:, row_start:row_end, :]]
-                            tile_rgb = nums[..., :3] * nums[..., 3:] + tile_rgb * (1 - nums[..., 3:])
-
-                        if self._bar_atlas is not None:
-                            bi = bar_idx[:, row_start:row_end, :]
-                            bar_mask = (bi >= 0).float().view(batch_n, n_rows, w, 1, 1, 1)
-                            bar_safe = bi.clamp(min=0)
-                            bar_s = self._bar_atlas[bar_safe]
-                            tile_rgb = tile_rgb * (1 - bar_s[..., 3:] * bar_mask) + bar_s[..., :3] * bar_s[..., 3:] * bar_mask
-
-                        tile_chunk = tile_rgb.permute(0, 1, 3, 2, 4, 5).reshape(batch_n, n_rows * ts, pw, 3)
-                        canvas_y = gy + row_start * ts
-                        canvas[:, canvas_y:canvas_y + n_rows * ts, gx:gx + pw] = tile_chunk
-                        del base_chunk, tile_rgb, tile_chunk
-                elif not _delta_applied:
-                    for row_start in range(0, h, chunk_rows):
-                        row_end = min(row_start + chunk_rows, h)
-                        n_rows = row_end - row_start
-
-                        mats_chunk = mats[:, row_start:row_end, :]
-                        if not self.opts.no_numbers and num_tex is not None:
-                            nums_chunk = num_tex[mats_chunk]
-                            text_rgb_chunk = nums_chunk[..., :3]
-                            text_a_chunk = nums_chunk[..., 3:]
-                        else:
-                            nums_chunk = None
-                            text_rgb_chunk = None
-                            text_a_chunk = None
-
-                        cols_chunk = cols[:, row_start:row_end, ...]
-                        if batch_has_colors:
-                            sec_chunk = sec[:, row_start:row_end, ...]
-                            has_sec_chunk = has_sec[:, row_start:row_end, ...]
-                        else:
-                            sec_chunk = None
-                            has_sec_chunk = None
-
-                        # In‑place tile blending
-                        colored = cols_chunk.view(batch_n, n_rows, w, 1, 1, 3) * tm
-                        colored.addcmul_(c_bg_6d, tm_inv)
-                        if not self.opts.no_border:
-                            colored.mul_(bm_inv).addcmul_(c_border_6d, bm)
-
-                        if batch_has_colors:
-                            bar_fill_factor = has_sec_chunk * bar_fill_mask
-
-                            colored.mul_(1 - bar_fill_factor)
-                            sec_contrib = sec_chunk.view(batch_n, n_rows, w, 1, 1, 3) * bar_fill_mask
-                            colored.add_(sec_contrib * bar_fill_factor)
-                            del sec_contrib
-
-                            if not self.opts.no_secondary_border:
-                                bar_border_factor = has_sec_chunk * bar_border_mask
-                                colored.mul_(1 - bar_border_factor)
-                                colored.addcmul_(c_border_6d, bar_border_factor)
-
-                        if not self.opts.no_numbers and num_tex is not None:
-                            tile_chunk = text_rgb_chunk * text_a_chunk + colored * (1 - text_a_chunk)
-                        else:
-                            tile_chunk = colored
-                        tile_chunk = tile_chunk.permute(0, 1, 3, 2, 4, 5).reshape(batch_n, n_rows * ts, pw, 3)
-                        canvas_y = gy + row_start * ts
-                        canvas[:, canvas_y:canvas_y + n_rows * ts, gx:gx + pw] = tile_chunk
-
-                        del nums_chunk, text_rgb_chunk, text_a_chunk, colored, tile_chunk
 
                 # ── Profile: tiles done ──
                 if _delta_applied:
@@ -836,10 +649,6 @@ class GPURenderer:
                     del canvas, mats
                     if composite_idx is not None:
                         del composite_idx
-                    elif base_idx is not None:
-                        del base_idx, bar_idx
-                    else:
-                        del cols, sec, has_sec
 
                     # Process PREVIOUS batch's frame from the other pinned buffer
                     # (overlaps with THIS batch's DMA transfer)
@@ -865,10 +674,6 @@ class GPURenderer:
                     del uint8_gpu, canvas, mats
                     if composite_idx is not None:
                         del composite_idx
-                    elif base_idx is not None:
-                        del base_idx, bar_idx
-                    else:
-                        del cols, sec, has_sec
                     frames.append(Image.fromarray(batch_u8[0]))
                     if progress_callback:
                         progress_callback(batch_start + 1, n, gpu_stats=dict(self._stats))
@@ -907,11 +712,11 @@ class GPURenderer:
     def cleanup(self):
         if self._device is not None and self._device.type == "cuda":
             attrs = [
-                "_num_batch", "_tile_mask", "_tile_mask_inv",
+                "_tile_mask", "_tile_mask_inv",
                 "_border_mask", "_border_mask_inv",
                 "_bar_fill", "_bar_border",
                 "_timer_bg", "_panel_bg", "_panel_bg_rgb", "_panel_bg_a",
-                "_base_atlas", "_bar_atlas", "_composite_atlas",
+                "_composite_atlas",
                 "_pinned_bufs", "_dl_stream",
             ]
             for attr in attrs:
@@ -919,8 +724,6 @@ class GPURenderer:
                 if t is not None:
                     del t
                     setattr(self, attr, None)
-            self._base_lookup = {}
-            self._bar_lookup = {}
             self._composite_lookup = {}
             self._composite_lookup_cpu = {}
             torch.cuda.empty_cache()
