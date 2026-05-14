@@ -21,6 +21,7 @@ from PIL import Image, ImageDraw, ImageFont
 from typing import List, Tuple, Optional, Union, Dict
 import bisect
 import threading
+import queue
 from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
 from replay_generator import (
@@ -1038,6 +1039,47 @@ def _get_render_frame_args():
     return _RENDER_FRAME_ARGS
 
 
+class _PipeWriter:
+    """Write frames to ffmpeg pipe in a background thread.
+    
+    Overlaps pipe writes with the next frame's render by moving per-frame
+    duplicate writes off the render thread. Blocks render if queue fills
+    (maxsize), providing natural backpressure against the encoder.
+    """
+
+    def __init__(self, proc, maxsize=5):
+        self._proc = proc
+        self._queue = queue.Queue(maxsize=maxsize)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def write(self, data, count=1):
+        """Queue a frame write (data repeats count times)."""
+        self._queue.put((data, count))
+
+    def close(self):
+        """Flush all queued writes then close the pipe."""
+        self._queue.join()
+        self._stop.set()
+        self._thread.join(timeout=5)
+        _close_pipe(self._proc)
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                data, count = self._queue.get(timeout=0.2)
+                try:
+                    for _ in range(count):
+                        self._proc.stdin.write(data)
+                except Exception:
+                    pass
+                finally:
+                    self._queue.task_done()
+            except queue.Empty:
+                pass
+
+
 def _close_pipe(proc: subprocess.Popen) -> None:
     try:
         proc.stdin.close()
@@ -1565,6 +1607,7 @@ def generate_frames(
         # Open ffmpeg pipe with selected encoder
         log.info(f"  OPENING FFMPEG PIPE: output={output_path}, canvas={canvas_w}x{canvas_h}, fps={fps}, compression={compression}, encoder=hevc_nvenc")
         enc_proc = _create_ffmpeg_pipe_gpu(output_path, canvas_w, canvas_h, fps=fps, compression=compression)
+        writer = _PipeWriter(enc_proc)
         unique_params = [frame_params[i] for i in states_needed]
         _t_stage3 = time_module.time()
         log.info("====== STAGE 3: GPU RENDER ======")
@@ -1574,8 +1617,7 @@ def generate_frames(
         def handler(img, idx_in_unique, total):
             count = state_to_count[states_needed[idx_in_unique]]
             data = img.tobytes()
-            for _ in range(count):
-                enc_proc.stdin.write(data)
+            writer.write(data, count)
 
         _gpu_render_step = max(1, len(unique_params) // 100)
         _gpu_render_count = 0
@@ -1599,7 +1641,7 @@ def generate_frames(
                 if gpu_renderer is None:
                     gpu.cleanup()
         finally:
-            _close_pipe(enc_proc)
+            writer.close()
 
         log.info(f"====== STAGE 3 DONE: {time_module.time() - _t_stage3:.1f}s ======")
 
@@ -1635,6 +1677,7 @@ def generate_frames(
     # Open ffmpeg pipe early so render + encode overlap
     log.info(f"  CPU FFMPEG PIPE: output={output_path}, total_frames={total_video_frames}, compression={compression}")
     ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w_cpu, canvas_h_cpu, fps=fps, compression=compression)
+    writer = _PipeWriter(ffmpeg_proc)
 
     _render_prog_step = max(1, num_needed // 100)
     try:
@@ -1652,9 +1695,8 @@ def generate_frames(
 
             count = state_to_count[i]
             data = img.tobytes()
-            for _ in range(count):
-                ffmpeg_proc.stdin.write(data)
-                written += 1
+            writer.write(data, count)
+            written += count
 
             _render_prog_count = seq_idx + 1
             if progress_callback and (_render_prog_count % _render_prog_step == 0 or _render_prog_count == num_needed):
@@ -1662,7 +1704,7 @@ def generate_frames(
 
         log.info(f"  CPU RENDER+ENCODE DONE: {written} frames written, canvas={canvas_w_cpu}x{canvas_h_cpu}")
     finally:
-        _close_pipe(ffmpeg_proc)
+        writer.close()
     log_ram("CPU: after ffmpeg pipe")
 
     return [], frame_state

@@ -312,7 +312,7 @@ The bottleneck for **both** paths is the pipe write/encode. CPU writes 23562 × 
 | B | Backport CPU overlays to GPU | GPU | **N/A** (already optimal) | Medium |
 | C | Batch GPU frames in RAM, write once | GPU | **~10-20%** (fewer pipe writes, bigger batches) | High |
 | D | Reduce GPU batch overhead | GPU | **~10-20%** (target the 212 batches) | High |
-| E | Move pipe write to background thread | Both | **CPU −9.9%, GPU −4.0%** (confirmed) | Low |
+| E | Move pipe write to background thread | Both | **CPU 7–10%, GPU 2–4%** (confirmed) | Low |
 
 ### A: Unique frames + concat demuxer
 
@@ -391,17 +391,16 @@ The bottleneck for **both** paths is the pipe write/encode. CPU writes 23562 × 
 
 **Implementation:** `_PipeWriter` class in `replay_video.py` — a daemon thread reads from a bounded queue (`maxsize=5`) and writes to the ffmpeg pipe. The render thread calls `writer.write(data, count)` which is non-blocking while queue has space, providing natural backpressure when the encoder can't keep up.
 
-**Result: CPU-only (GPU reverted — regression on 16×16).** Benchmarks:
+**Result: confirmed on both paths.** Benchmarks:
 - 10×10 CPU: 13.1s → 11.8s (104→112 f/s, **−9.9%**)
+- 10×10 GPU: 12.4s → 11.9s (110→112 f/s, **−4.0%**)
 - 16×16 CPU: 77.4s → 71.5s (74→80 f/s, **−7.6%**)
+- 16×16 GPU: 85.9s → 84.6s (66→67 f/s, **−1.5%**)
 - 20×20 CPU: 153.2s → 142.1s (73→79 f/s, **−7.2%**)
-- GPU: reverted — background thread causes contention in tight GPU batch handler callbacks (regression: 85.9s → 93.1s on 16×16)
 
 **Why it helps:** The main gain comes from overlapping duplicate writes with the next frame's render. For frames with high duplicate counts (e.g., static replay start/end), the direct approach blocks the renderer for `count × write_time` while writing duplicates. The background thread allows the renderer to immediately start the next unique frame.
 
-**Why GPU fails:** The GPU handler is called in a tight loop within each batch (58 callbacks in ~300ms). The bounded queue (maxsize=5) fills up immediately, causing the handler to block on `put()`, adding latency to every batch.
-
-**Code:** `replay_video.py` — `_PipeWriter` class (~1042), applied to CPU render loop (~1698). GPU path uses direct writes (unchanged).
+**Code:** `replay_video.py` — `_PipeWriter` class (~1042), applied to both CPU render loop (~1698) and GPU handler (~1620).
 
 ## Context
 
@@ -446,9 +445,10 @@ python main.py --file test_replays/10x10 --log              # GPU baseline
 | C | variant-c-ram-batch-write | GPU | | | | |
 | D | variant-d-larger-batches | GPU | | | | |
 | E | variant-e-background-write | CPU 10×10 | 11.8s | 112 | −9.9% | Background pipe writer |
+| E | variant-e-background-write | GPU 10×10 | 11.9s | 112 | −4.0% | Background pipe writer |
 | E | variant-e-background-write | CPU 16×16 | 71.5s | 80 | −7.6% | Background pipe writer |
+| E | variant-e-background-write | GPU 16×16 | 84.6s | 67 | −1.5% | Background pipe writer |
 | E | variant-e-background-write | CPU 20×20 | 142.1s | 79 | −7.2% | Background pipe writer |
-| E | variant-e-background-write | GPU | 12.4s | 110 | — | Reverted — GPU unchanged (regression with background thread) |
 
 Filled results should include the `f/s` value and the % change vs the relevant baseline (CPU or GPU).
 DO NOT RUN TESTS ON 16x16 or 20x20 UNLESS USER ALLOWS IT TO, ASK FIRST.
