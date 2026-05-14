@@ -53,8 +53,7 @@ from geometry import (PADDING, HEADER_H, STATS_PANEL_WIDTH, INFO_H, TIMER_HEIGHT
     compute_tile_size, compute_font_size,
     compute_grid_position, compute_panel_rect, compute_secondary_bar_rect,
     round_canvas_height,
-    TileSpriteCache, _solid_base, _bar_sprite, select_base, select_bar,
-    prerender_composite_tile)
+    TileSpriteCache, _solid_base, _bar_sprite, select_base, select_bar)
 
 # ─── Color Utilities (ported from fringeColors.js) ──────────────────
 
@@ -333,8 +332,6 @@ def render_frame(
     delta_mask: Optional[np.ndarray] = None,
     timer_arr: Optional[np.ndarray] = None,
     stats_arr: Optional[np.ndarray] = None,
-    composite_atlas: Optional[List[Image.Image]] = None,
-    composite_lookup: Optional[Dict] = None,
 ) -> Image.Image:
     h = len(matrix)
     w = len(matrix[0])
@@ -376,15 +373,6 @@ def render_frame(
     # ─── Puzzle Grid ──────────────────────────────────────────────
     if gpu_grid is not None:
         canvas.paste(gpu_grid, (grid_x, grid_y))
-    elif composite_atlas is not None and composite_lookup is not None and prev_canvas is not None and delta_mask is not None:
-        state_sig = id(grid_state)
-        lookup = composite_lookup[state_sig]
-        rows, cols = np.where(delta_mask)
-        for r, c in zip(rows, cols):
-            num = matrix[r][c]
-            sx = grid_x + c * tile_size
-            sy = grid_y + r * tile_size
-            canvas.paste(composite_atlas[lookup[num]], (sx, sy), composite_atlas[lookup[num]])
     elif prev_canvas is not None and delta_mask is not None:
         rows, cols = np.where(delta_mask)
         for r, c in zip(rows, cols):
@@ -400,15 +388,6 @@ def render_frame(
                 bar = select_bar(sec_bg, tile_sprites)
                 if bar is not None:
                     canvas.paste(bar, (sx, sy), bar)
-    elif composite_atlas is not None and composite_lookup is not None:
-        state_sig = id(grid_state)
-        lookup = composite_lookup[state_sig]
-        for row_idx in range(h):
-            for col_idx in range(w):
-                num = matrix[row_idx][col_idx]
-                sx = grid_x + col_idx * tile_size
-                sy = grid_y + row_idx * tile_size
-                canvas.paste(composite_atlas[lookup[num]], (sx, sy), composite_atlas[lookup[num]])
     elif tile_sprites is not None:
         for row_idx in range(h):
             for col_idx in range(w):
@@ -1047,34 +1026,6 @@ def prerender_tile_layers(width, height, tile_size, font_size, opts, all_fringe_
     )
 
 
-def build_composite_atlas(tile_sprites, w, h, font_size, opts, grid_states, all_fringe_schemes):
-    """Pre-render composite tiles: base + number + bar into single RGBA PIL Image per (state, num).
-    Returns (composite_images, composite_lookup):
-      composite_images: list of PIL RGBA Images (atlas entries, all tile_size×tile_size)
-      composite_lookup: dict[state_sig] → list[num] → atlas index
-    """
-    composite_images: List[Image.Image] = []
-    composite_lookup = {}
-    ts = tile_sprites.tile_size
-
-    for state_key, state in grid_states.items():
-        if not isinstance(state_key, (int, float)):
-            continue
-        state_sig = id(state)
-        lookup = [0] * (w * h + 1)
-        for num in range(w * h + 1):
-            main_bg, sec_bg = get_tile_colors(num, state, all_fringe_schemes, w)
-            composite = prerender_composite_tile(num, main_bg, sec_bg, tile_sprites, opts)
-            idx = len(composite_images)
-            composite_images.append(composite)
-            lookup[num] = idx
-        composite_lookup[state_sig] = lookup
-
-    log.info(f"  build_composite_atlas: {len(composite_images)} entries, {len(composite_lookup)} states, "
-             f"tile_size={ts}, total_mem={len(composite_images)*ts*ts*4//(1024*1024)}MB")
-    return composite_images, composite_lookup
-
-
 import functools
 import inspect as _inspect
 
@@ -1304,10 +1255,6 @@ def generate_frames(
     tile_sprites = prerender_tile_layers(w, h, tile_size, font_size, opts, all_fringe_schemes, grid_states)
     log.info(f"  tile_sprites: {len(tile_sprites.base_sprites)} bases, {len(tile_sprites.number_texts)} numbers, {len(tile_sprites.bar_sprites)} bars")
 
-    composite_images, composite_lookup = build_composite_atlas(
-        tile_sprites, w, h, font_size, opts, grid_states, all_fringe_schemes
-    )
-
     all_md = calculate_manhattan_distance(matrix)
     current_md = all_md
     zp = find_zero(matrix, w, h)
@@ -1368,7 +1315,6 @@ def generate_frames(
             gpu = GPURenderer(w, h, raw_tile, quality, min_canvas_h=min_canvas_h, opts=opts)
         if gpu.available:
             gpu.upload_sprite_atlas(tile_sprites, grid_states, all_fringe_schemes, w, h)
-            gpu.upload_composite_atlas(composite_images, composite_lookup)
         use_gpu = use_gpu and gpu.available
         log.info(f"  canvas={gpu.canvas_w}x{gpu.canvas_h}, GPU available={gpu.available}, use_gpu={use_gpu}")
     else:
@@ -1529,8 +1475,6 @@ def generate_frames(
         colors_sec_mask=has_sec0,
         opts=opts,
         tile_sprites=tile_sprites,
-        composite_atlas=composite_images,
-        composite_lookup=composite_lookup,
     )
 
     # Walk all states sequentially with O(1) in-place moves, build frame_params only for needed states
@@ -1586,8 +1530,6 @@ def generate_frames(
                 opts=opts,
                 tile_sprites=tile_sprites,
                 delta_mask=delta_mask,
-                composite_atlas=composite_images,
-                composite_lookup=composite_lookup,
             )
 
             _prog_count += 1
