@@ -1098,6 +1098,7 @@ Examples:
     parser.add_argument("--output", "-o", default="replay.mp4", help="Output file path")
     parser.add_argument("--quality", type=float, default=1.0, help="Render quality (1.0-4.0)")
     parser.add_argument("--compression", type=int, default=18, help="Video encoder quality (10-40, lower = fewer artifacts but larger file, default: 18)")
+    parser.add_argument("--preset", type=str, default="", help="FFmpeg encoder preset (e.g. p7, p4, p1 for NVENC; veryfast, medium, slow for libx264; default: p7/veryfast)")
     parser.add_argument("--fps", type=int, default=60, help="Output video frame rate (default: 60)")
     parser.add_argument("--no-gpu", action="store_true", default=None,
                         help="Disable GPU acceleration")
@@ -1215,7 +1216,7 @@ Examples:
                 output_path = f"{root}_{idx+1:03d}{ext}"
 
                 kwargs = dict(quality=args.quality, fps=args.fps, compression=args.compression,
-                              speed_factor=args.speedup, force_fringe=args.force_fringe)
+                              preset=args.preset, speed_factor=args.speedup, force_fringe=args.force_fringe)
                 try:
                     sol, tps, scramble, movetimes = parse_replay_url(val)
                     kwargs["tps"] = tps or args.tps
@@ -1260,7 +1261,7 @@ Examples:
                                tps=tps or args.tps, scramble=scramble,
                                movetimes=movetimes, quality=args.quality,
                                fps=args.fps, compression=args.compression,
-                               speed_factor=args.speedup,
+                               preset=args.preset, speed_factor=args.speedup,
                                force_fringe=args.force_fringe)
                 else:
                     run_single(val, output_path, opts=opts,
@@ -1268,7 +1269,7 @@ Examples:
                                scramble=args.scramble, size=args.size,
                                quality=args.quality, movetimes=movetimes,
                                fps=args.fps, compression=args.compression,
-                               speed_factor=args.speedup,
+                               preset=args.preset, speed_factor=args.speedup,
                                force_fringe=args.force_fringe)
     except Exception as e:
         import traceback

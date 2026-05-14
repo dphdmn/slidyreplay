@@ -1158,53 +1158,58 @@ def _get_best_encoder() -> str:
     return 'libx264'
 
 
-def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18):
+def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18, preset: str = ""):
     """Spawn ffmpeg with best available encoder reading rawvideo from stdin.
-    Tries hevc_nvenc > h264_nvenc > libx264 veryfast."""
+    Tries hevc_nvenc > h264_nvenc > libx264 veryfast.
+    preset: encoder-specific preset name (e.g. 'p7', 'p4', 'p1' for NVENC,
+            'veryfast', 'medium', 'slow' for libx264). Empty = auto-pick default."""
     encoder = _get_best_encoder()
 
     if encoder == 'hevc_nvenc':
+        p = preset if preset else 'p4'
         cq = compression + 11
         cmd = [
             'ffmpeg', '-y', '-hide_banner',
             '-f', 'rawvideo', '-pix_fmt', 'rgb24',
             '-s', f'{width}x{height}', '-r', str(fps), '-i', '-',
-            '-c:v', 'hevc_nvenc', '-preset', 'p7', '-cq', str(cq),
+            '-c:v', 'hevc_nvenc', '-preset', p, '-cq', str(cq),
             '-profile:v', 'main', '-pix_fmt', 'yuv420p',
             '-fps_mode', 'cfr', '-movflags', '+faststart',
             output_path,
         ]
-        log.info(f"_create_ffmpeg_pipe (hevc_nvenc): cmd={' '.join(cmd)}")
+        log.info(f"_create_ffmpeg_pipe (hevc_nvenc, preset={p}): cmd={' '.join(cmd)}")
     elif encoder == 'h264_nvenc':
+        p = preset if preset else 'p4'
         cq = compression + 12
         cmd = [
             'ffmpeg', '-y', '-hide_banner',
             '-f', 'rawvideo', '-pix_fmt', 'rgb24',
             '-s', f'{width}x{height}', '-r', str(fps), '-i', '-',
-            '-c:v', 'h264_nvenc', '-preset', 'p7', '-cq', str(cq),
+            '-c:v', 'h264_nvenc', '-preset', p, '-cq', str(cq),
             '-profile:v', 'high', '-pix_fmt', 'yuv420p',
             '-fps_mode', 'cfr', '-movflags', '+faststart',
             output_path,
         ]
-        log.info(f"_create_ffmpeg_pipe (h264_nvenc): cmd={' '.join(cmd)}")
+        log.info(f"_create_ffmpeg_pipe (h264_nvenc, preset={p}): cmd={' '.join(cmd)}")
     else:
+        p = preset if preset else 'veryfast'
         cmd = [
             'ffmpeg', '-y',
             '-f', 'rawvideo', '-pix_fmt', 'rgb24',
             '-s', f'{width}x{height}', '-r', str(fps), '-i', '-',
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', str(compression),
+            '-c:v', 'libx264', '-preset', p, '-crf', str(compression),
             '-profile:v', 'high', '-level', '4.1', '-pix_fmt', 'yuv420p',
             '-fps_mode', 'cfr', '-movflags', '+faststart',
             output_path,
         ]
-        log.info(f"_create_ffmpeg_pipe (libx264 veryfast): cmd={' '.join(cmd)}")
+        log.info(f"_create_ffmpeg_pipe (libx264, preset={p}): cmd={' '.join(cmd)}")
 
     return subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 
-def _create_ffmpeg_pipe_gpu(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18):
+def _create_ffmpeg_pipe_gpu(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18, preset: str = ""):
     """Spawn ffmpeg with best encoder (same as _create_ffmpeg_pipe)."""
-    return _create_ffmpeg_pipe(output_path, width, height, fps, compression)
+    return _create_ffmpeg_pipe(output_path, width, height, fps, compression, preset)
 
 
 def generate_frames(
@@ -1228,6 +1233,7 @@ def generate_frames(
     output_path: str = None,
     fps: int = 60,
     compression: int = 18,
+    preset: str = "",
     gpu_renderer: Optional['GPURenderer'] = None,
     speed_factor: float = 1.0,
     opts: RenderOptions = RenderOptions(),
@@ -1671,7 +1677,7 @@ def generate_frames(
 
         # Open ffmpeg pipe with selected encoder
         log.info(f"  OPENING FFMPEG PIPE: output={output_path}, canvas={canvas_w}x{canvas_h}, fps={fps}, compression={compression}, encoder=hevc_nvenc")
-        enc_proc = _create_ffmpeg_pipe_gpu(output_path, canvas_w, canvas_h, fps=fps, compression=compression)
+        enc_proc = _create_ffmpeg_pipe_gpu(output_path, canvas_w, canvas_h, fps=fps, compression=compression, preset=preset)
         writer = _PipeWriter(enc_proc)
         unique_params = [frame_params[i] for i in states_needed]
         _t_stage3 = time_module.time()
@@ -1744,7 +1750,7 @@ def generate_frames(
 
     # Open ffmpeg pipe early so render + encode overlap
     log.info(f"  CPU FFMPEG PIPE: output={output_path}, total_frames={total_video_frames}, compression={compression}")
-    ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w_cpu, canvas_h_cpu, fps=fps, compression=compression)
+    ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w_cpu, canvas_h_cpu, fps=fps, compression=compression, preset=preset)
     writer = _PipeWriter(ffmpeg_proc)
 
     _render_prog_step = max(1, num_needed // 100)
@@ -1863,10 +1869,11 @@ class ReplayVideoGenerator:
         cancel_check=None,
         fps: int = 60,
         compression: int = 18,
+        preset: str = "",
         gpu_renderer=None,
         opts: RenderOptions = RenderOptions(),
     ):
-        log.info(f"generate_simple_replay: output={output_path}, force_fringe={force_fringe}, fps={fps}, compression={compression}, quality={quality}, use_gpu={use_gpu}")
+        log.info(f"generate_simple_replay: output={output_path}, force_fringe={force_fringe}, fps={fps}, compression={compression}, preset='{preset}', quality={quality}, use_gpu={use_gpu}")
         log.info(f"  tps={tps}, time={time}, scramble_len={len(scramble) if scramble else 0}, size={size}")
         if tps is not None and time is not None:
             raise ValueError("Provide either tps or time, not both")
@@ -2030,6 +2037,7 @@ class ReplayVideoGenerator:
             output_path=output_path,
             fps=fps,
             compression=compression,
+            preset=preset,
             gpu_renderer=gpu_renderer,
             speed_factor=speed_factor,
             opts=opts,
