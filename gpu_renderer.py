@@ -392,15 +392,17 @@ class GPURenderer:
         # Pre-allocate pinned memory buffers + CUDA stream for async GPU→CPU download (3B-b)
         _safe_margin = 384 * 1024 * 1024
         _max_batch_n = max(1, min(n, max(1, (vram_ceiling - reserved_permanent - _safe_margin) // (ch * cw * 3 * 4))))
+        _N_BUFS = 6
         _pinned_bufs = [
-            torch.empty(_max_batch_n, ch, cw, 3, dtype=torch.uint8, pin_memory=True),
-            torch.empty(_max_batch_n, ch, cw, 3, dtype=torch.uint8, pin_memory=True),
+            torch.empty(1, ch, cw, 3, dtype=torch.uint8, pin_memory=True)
+            for _ in range(_N_BUFS)
         ]
-        _buf_free_events = [threading.Event(), threading.Event()]
-        _buf_free_events[0].set()
-        _buf_free_events[1].set()
+        _buf_free_events = [threading.Event() for _ in range(_N_BUFS)]
+        for _e in _buf_free_events:
+            _e.set()
         _dl_stream = torch.cuda.Stream()
         _dl_buf_idx = 0
+        _prev_buf_idx = None
         _dl_prev_event = None
         _dl_prev_uint8 = None
         _dl_prev_n = 0
@@ -887,15 +889,15 @@ class GPURenderer:
                 uint8_gpu = canvas.mul(255.0).clamp_(0, 255).to(torch.uint8)
 
                 # Grow pinned buffers if batch size exceeds pre-allocated capacity (defensive)
-                if batch_n > _max_batch_n:
+                if batch_n > 1:
                     _max_batch_n = batch_n
                     _pinned_bufs = [
-                        torch.empty(_max_batch_n, ch, cw, 3, dtype=torch.uint8, pin_memory=True),
-                        torch.empty(_max_batch_n, ch, cw, 3, dtype=torch.uint8, pin_memory=True),
+                        torch.empty(batch_n, ch, cw, 3, dtype=torch.uint8, pin_memory=True)
+                        for _ in range(_N_BUFS)
                     ]
-                    _buf_free_events = [threading.Event(), threading.Event()]
-                    _buf_free_events[0].set()
-                    _buf_free_events[1].set()
+                    _buf_free_events = [threading.Event() for _ in range(_N_BUFS)]
+                    for _e in _buf_free_events:
+                        _e.set()
 
                 if frame_handler:
                     # Async download via pinned memory + CUDA stream (3B-b)
@@ -919,11 +921,11 @@ class GPURenderer:
 
                     # Process PREVIOUS batch's frames from the other pinned buffer
                     # (overlaps with THIS batch's DMA transfer)
-                    if _dl_prev_event is not None:
+                    if _dl_prev_event is not None and _prev_buf_idx is not None:
                         _dl_prev_event.synchronize()
-                        _prev_buf = _pinned_bufs[1 - _dl_buf_idx]
+                        _prev_buf = _pinned_bufs[_prev_buf_idx]
                         for i in range(_dl_prev_n):
-                            frame_handler(_prev_buf[i].numpy(), _dl_prev_start + i, n, _buf_free_events[1 - _dl_buf_idx])
+                            frame_handler(_prev_buf[i].numpy(), _dl_prev_start + i, n, _buf_free_events[_prev_buf_idx])
                             if progress_callback:
                                 progress_callback(_dl_prev_start + i + 1, n, gpu_stats=dict(self._stats))
                         if _dl_prev_uint8 is not None:
@@ -934,7 +936,8 @@ class GPURenderer:
                     _dl_prev_event = _dl_event
                     _dl_prev_n = batch_n
                     _dl_prev_start = batch_start
-                    _dl_buf_idx = 1 - _dl_buf_idx
+                    _prev_buf_idx = _dl_buf_idx
+                    _dl_buf_idx = (_dl_buf_idx + 1) % _N_BUFS
                 else:
                     # Sync download (no handler → no overlap possible)
                     batch_u8 = uint8_gpu.cpu().numpy()

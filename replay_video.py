@@ -1096,7 +1096,7 @@ class _PipeWriter:
     (maxsize), providing natural backpressure against the encoder.
     """
 
-    def __init__(self, proc, maxsize=5):
+    def __init__(self, proc, maxsize=6):
         self._proc = proc
         self._queue = queue.Queue(maxsize=maxsize)
         self._stop = threading.Event()
