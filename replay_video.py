@@ -14,6 +14,7 @@ import base64
 import zlib
 import subprocess
 import sys
+import tempfile
 import time as time_module
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -436,25 +437,24 @@ def render_frame(
         panel_x, panel_y, panel_w, panel_h = compute_panel_rect(grid_x, puzzle_w, canvas_w, grid_y, canvas_h)
 
         if panel_w > 0 and panel_h > 0:
+            blended_bg = tuple(
+                int(a * PANEL_ALPHA + b * (1 - PANEL_ALPHA))
+                for a, b in zip(PANEL_BG, BG_COLOR)
+            )
             panel_bbox = (panel_x, panel_y, panel_x + panel_w, panel_y + panel_h)
-            panel_img = Image.new('RGBA', (canvas_w, canvas_h), (0, 0, 0, 0))
-            pdraw = ImageDraw.Draw(panel_img)
-            pdraw.rectangle(panel_bbox, fill=(*PANEL_BG, int(255 * PANEL_ALPHA)))
-            panel_overlay = Image.new('RGBA', (canvas_w, canvas_h), (0, 0, 0, 0))
-            pdraw2 = ImageDraw.Draw(panel_overlay)
-            pdraw2.rectangle(panel_bbox, outline=CYAN, width=1)
-            canvas = Image.alpha_composite(canvas.convert('RGBA'), panel_img)
-            canvas = Image.alpha_composite(canvas, panel_overlay)
+            draw.rectangle(panel_bbox, fill=blended_bg)
+            draw.rectangle(panel_bbox, outline=CYAN, width=1)
 
             if stats_arr is not None:
                 stats_img = Image.fromarray(stats_arr)
+                canvas.paste(stats_img, (panel_x, panel_y), stats_img)
             elif static_stats_base is not None and static_stats_layout is not None:
-                stats_img = _apply_stats_dynamic(stats_data, panel_w, static_stats_base, static_stats_layout)
+                _apply_stats_dynamic(stats_data, panel_w, static_stats_base, static_stats_layout, canvas, panel_x, panel_y)
             else:
                 stats_img = _render_stats_full(stats_data, is_movetimes_accurate, panel_w)
-            canvas.paste(stats_img, (panel_x, panel_y), stats_img)
+                canvas.paste(stats_img, (panel_x, panel_y), stats_img)
 
-    return canvas.convert('RGB')
+    return canvas
 
 
 # ─── Timing Calculation (ported from replayGeneration.js) ──────────
@@ -880,11 +880,12 @@ _cache_stats_surfaces: Dict = {}
 
 
 
-def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info):
-    """Overlay dynamic values and stage highlight via cached PIL text surfaces."""
+def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info, canvas, panel_x, panel_y):
+    """Paste dynamic values and stage highlight directly onto canvas."""
+    canvas.paste(static_base, (panel_x, panel_y), static_base)
+
     if stats_data is None:
-        return static_base.copy()
-    result = static_base.copy()
+        return
 
     px = layout_info["px"]
     inner_w = layout_info["inner_w"]
@@ -909,7 +910,7 @@ def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info):
             s_arr[:,:,:3] = fill
             surface = Image.fromarray(s_arr, 'RGBA')
             _cache_stats_surfaces[key] = surface
-        result.paste(surface, (x, y), surface)
+        canvas.paste(surface, (panel_x + x, panel_y + y), surface)
 
     def draw_value(value, fill, y_pos):
         if not value:
@@ -947,8 +948,6 @@ def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info):
         else:
             line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
         overlay_surface(line, gs_lf, CYAN, px, stage_y_positions[cur_stage])
-
-    return result
 
 
 def prerender_tile_layers(width, height, tile_size, font_size, opts, all_fringe_schemes, grid_states):
@@ -1068,6 +1067,22 @@ def _render_chunk(chunk_indices, frame_params):
         images.append(img)
         prev = img
     return images
+
+
+def _render_chunk_mmap(chunk_indices, chunk_params, mmap_path, mmap_shape, mmap_dtype):
+    mm = np.memmap(mmap_path, dtype=mmap_dtype, mode='r+', shape=mmap_shape)
+    prev = None
+    valid = _get_render_frame_args()
+    for idx in chunk_indices:
+        p = chunk_params[idx]
+        kw = {k: v for k, v in p.items() if k in valid}
+        if prev is not None:
+            kw["prev_canvas"] = prev
+        img = render_frame(**kw)
+        mm[idx] = np.array(img)
+        prev = img
+    mm.flush()
+    del mm
 
 
 def _close_pipe(proc: subprocess.Popen) -> None:
@@ -1675,51 +1690,73 @@ def generate_frames(
     try:
         if parallel and len(chunks) > 1:
             workers = min(os.cpu_count() or 4, len(chunks))
-            state_images = [None] * (sol_len + 1)
-            pool = shared_pool if shared_pool is not None else ProcessPoolExecutor(max_workers=workers)
-            try:
-                fut_to_chunk = {}
-                for chunk in chunks:
-                    fut = pool.submit(_render_chunk, chunk, frame_params)
-                    fut_to_chunk[fut] = chunk
 
-                _render_prog_count = 0
-                remaining = set(fut_to_chunk.keys())
-                while remaining:
-                    if cancel_check and cancel_check():
-                        raise CancelError()
-                    done_set, _ = wait(remaining, timeout=0.2, return_when=FIRST_COMPLETED)
-                    for fut in done_set:
-                        chunk_indices = fut_to_chunk[fut]
-                        chunk_results = fut.result()
-                        for idx, img in zip(chunk_indices, chunk_results):
-                            state_images[idx] = img
-                            _render_prog_count += 1
+            # Shared memory-mapped file avoids pickle IPC overhead for frame images
+            mmap_fd, mmap_path = tempfile.mkstemp(suffix='.render')
+            os.close(mmap_fd)
+            _mmap_cleanup = True
+            try:
+                num_states = sol_len + 1
+                mmap_shape = (num_states, canvas_h_cpu, canvas_w_cpu, 3)
+                mmap_dtype = np.uint8
+
+                # Initialize memmap with zeros
+                mm = np.memmap(mmap_path, dtype=mmap_dtype, mode='w+', shape=mmap_shape)
+                del mm
+
+                pool = shared_pool if shared_pool is not None else ProcessPoolExecutor(max_workers=workers)
+                try:
+                    fut_to_chunk = {}
+                    for chunk in chunks:
+                        chunk_params = {idx: frame_params[idx] for idx in chunk}
+                        fut = pool.submit(_render_chunk_mmap, chunk, chunk_params, mmap_path, mmap_shape, mmap_dtype)
+                        fut_to_chunk[fut] = chunk
+
+                    _render_prog_count = 0
+                    remaining = set(fut_to_chunk.keys())
+                    while remaining:
+                        if cancel_check and cancel_check():
+                            raise CancelError()
+                        done_set, _ = wait(remaining, timeout=0.2, return_when=FIRST_COMPLETED)
+                        for fut in done_set:
+                            chunk_indices = fut_to_chunk[fut]
+                            fut.result()
+                            _render_prog_count += len(chunk_indices)
                             if progress_callback and (_render_prog_count % _render_prog_step == 0 or _render_prog_count == num_needed):
-                                progress_callback(_render_prog_count, num_needed, desc="Render" if _render_prog_count == _render_prog_step else None)
-                        remaining.remove(fut)
+                                progress_callback(_render_prog_count, num_needed, desc="Render")
+                            remaining.remove(fut)
+                finally:
+                    if shared_pool is None:
+                        pool.shutdown()
+
+                log.info(f"  CPU RENDER DONE: canvas={canvas_w_cpu}x{canvas_h_cpu}")
+                log_ram("CPU: after render (all frames in memmap)")
+
+                # Write frames in video order to ffmpeg pipe (NVENC is fast)
+                _encode_prog_step = max(1, total_video_frames // 100)
+                _encode_prog_count = 0
+                written = 0
+                try:
+                    mm = np.memmap(mmap_path, dtype=mmap_dtype, mode='r', shape=mmap_shape)
+                    try:
+                        for state_idx in frame_state:
+                            ffmpeg_proc.stdin.write(mm[state_idx].data)
+                            written += 1
+                            _encode_prog_count += 1
+                            if progress_callback and (_encode_prog_count % _encode_prog_step == 0 or written == total_video_frames):
+                                progress_callback(written, total_video_frames, desc="Encode" if _encode_prog_count == _encode_prog_step else None)
+                    finally:
+                        del mm
+                finally:
+                    pass
+
+                log.info(f"  CPU FFMPEG DONE: {written} frames written, returncode pending")
             finally:
-                if shared_pool is None:
-                    pool.shutdown()
-
-            log.info(f"  CPU RENDER DONE: canvas={canvas_w_cpu}x{canvas_h_cpu}")
-            log_ram("CPU: after render (all frames in mem)")
-
-            # Write frames in video order to ffmpeg pipe (NVENC is fast)
-            _encode_prog_step = max(1, total_video_frames // 100)
-            _encode_prog_count = 0
-            written = 0
-            try:
-                for state_idx in frame_state:
-                    ffmpeg_proc.stdin.write(state_images[state_idx].tobytes())
-                    written += 1
-                    _encode_prog_count += 1
-                    if progress_callback and (_encode_prog_count % _encode_prog_step == 0 or written == total_video_frames):
-                        progress_callback(written, total_video_frames, desc="Encode" if _encode_prog_count == _encode_prog_step else None)
-            finally:
-                state_images = None
-
-            log.info(f"  CPU FFMPEG DONE: {written} frames written, returncode pending")
+                if _mmap_cleanup:
+                    try:
+                        os.unlink(mmap_path)
+                    except OSError:
+                        pass
         else:
             # Serial path: write each frame to pipe immediately after rendering
             written = 0
