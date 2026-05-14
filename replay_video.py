@@ -1103,9 +1103,9 @@ class _PipeWriter:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
-    def write(self, data, count=1):
+    def write(self, data, count=1, free_event=None):
         """Queue a frame write (data repeats count times)."""
-        self._queue.put((data, count))
+        self._queue.put((data, count, free_event))
 
     def close(self):
         """Flush all queued writes then close the pipe."""
@@ -1117,13 +1117,15 @@ class _PipeWriter:
     def _run(self):
         while not self._stop.is_set():
             try:
-                data, count = self._queue.get(timeout=0.2)
+                data, count, free_event = self._queue.get(timeout=0.2)
                 try:
                     for _ in range(count):
                         self._proc.stdin.write(data)
                 except Exception:
                     pass
                 finally:
+                    if free_event is not None:
+                        free_event.set()
                     self._queue.task_done()
             except queue.Empty:
                 pass
@@ -1563,18 +1565,15 @@ def generate_frames(
                 sd, tt = _build_stats_data(frame_idx, cur_time_ms, current_md, frame_idx)
 
             current_matrix = mc_flat.reshape(h, w).copy()
-            if not use_gpu:
-                current_state_sig = id(state)
-                if prev_delta_matrix is None:
-                    delta_mask = np.ones((h, w), dtype=bool)
-                else:
-                    delta_mask = (current_matrix != prev_delta_matrix)
-                    if current_state_sig != prev_state_sig:
-                        delta_mask[:] = True
-                prev_delta_matrix = current_matrix
-                prev_state_sig = current_state_sig
+            current_state_sig = id(state)
+            if prev_delta_matrix is None:
+                delta_mask = np.ones((h, w), dtype=bool)
             else:
-                delta_mask = None
+                delta_mask = (current_matrix != prev_delta_matrix)
+                if current_state_sig != prev_state_sig:
+                    delta_mask[:] = True
+            prev_delta_matrix = current_matrix
+            prev_state_sig = current_state_sig
 
             frame_params[frame_idx] = dict(
                 matrix=current_matrix,
@@ -1681,13 +1680,13 @@ def generate_frames(
         log.info(f"  GPU RENDER START: {len(unique_params)} unique frames to render")
         log_ram("before GPU render")
 
-        def handler(img, idx_in_unique, total):
+        def handler(img, idx_in_unique, total, free_event=None):
             count = state_to_count[states_needed[idx_in_unique]]
             if isinstance(img, np.ndarray):
                 data = memoryview(img)
             else:
                 data = img.tobytes()
-            writer.write(data, count)
+            writer.write(data, count, free_event)
 
         _gpu_render_step = max(1, len(unique_params) // 100)
         _gpu_render_count = 0

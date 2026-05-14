@@ -2,6 +2,7 @@ from __future__ import annotations
 import math
 import json
 import os
+import threading
 import time as _time_module
 
 import numpy as np
@@ -395,12 +396,18 @@ class GPURenderer:
             torch.empty(_max_batch_n, ch, cw, 3, dtype=torch.uint8, pin_memory=True),
             torch.empty(_max_batch_n, ch, cw, 3, dtype=torch.uint8, pin_memory=True),
         ]
+        _buf_free_events = [threading.Event(), threading.Event()]
+        _buf_free_events[0].set()
+        _buf_free_events[1].set()
         _dl_stream = torch.cuda.Stream()
         _dl_buf_idx = 0
         _dl_prev_event = None
         _dl_prev_uint8 = None
         _dl_prev_n = 0
         _dl_prev_start = 0
+
+        # 666 delta rendering state
+        _prev_canvas = None
 
         with torch.inference_mode():
             _batch_t0 = _time_module.time()
@@ -445,6 +452,11 @@ class GPURenderer:
 
                 batch_end = min(batch_start + batch_size, n)
                 batch_n = batch_end - batch_start
+
+                # 666: force batch_size=1 for delta rendering
+                batch_size = 1
+                batch_end = batch_start + 1
+                batch_n = 1
 
                 self._stats["batch_size"] = batch_size
                 self._stats["batch_mem_mb"] = (ch * cw * 3 * 4 * batch_size) // (1024 * 1024)
@@ -558,8 +570,33 @@ class GPURenderer:
                         canvas[:, py:py + ph_p, px:px + pw_p] * (1 - panel_bg_a)
                     )
 
-                # ── Tile rendering ──
-                if use_composite:
+                # ── 666: Delta patch (copy prev canvas, update only changed tiles) ──
+                _delta_applied = False
+                if use_composite and _prev_canvas is not None:
+                    _dm = np.asarray(batch_params[0].get("delta_mask"))
+                    if _dm is not None and _dm.any() and not _dm.all():
+                        canvas[0].copy_(_prev_canvas)
+                        _changed_rows, _changed_cols = np.where(_dm)
+                        for _k in range(len(_changed_rows)):
+                            _r, _c = _changed_rows[_k], _changed_cols[_k]
+                            _ti = composite_idx[0, _r, _c]
+                            _t = self._composite_atlas[_ti, :, :, :3].float() / 255.0
+                            _sy = gy + _r * ts
+                            _sx = gx + _c * ts
+                            canvas[0, _sy:_sy + ts, _sx:_sx + ts] = _t
+                        _delta_applied = True
+
+                    # Clear overlay areas from prev_canvas ghosting
+                    if timer_bg is not None and th > 0 and tw > 0:
+                        canvas[0, ty1:ty2, tx1:tx2] = timer_bg.view(th, tw, 3)
+                    if panel_bg_rgb is not None and self.panel_h > 0 and self.panel_w > 0:
+                        canvas[0, py:py + self.panel_h, px:px + self.panel_w] = (
+                            panel_bg_rgb * panel_bg_a +
+                            canvas[0, py:py + self.panel_h, px:px + self.panel_w] * (1 - panel_bg_a)
+                        )
+
+                # ── Tile rendering (skipped when delta applied) ──
+                if use_composite and not _delta_applied:
                     for row_start in range(0, h, chunk_rows):
                         row_end = min(row_start + chunk_rows, h)
                         n_rows = row_end - row_start
@@ -569,7 +606,7 @@ class GPURenderer:
                         canvas_y = gy + row_start * ts
                         canvas[:, canvas_y:canvas_y + n_rows * ts, gx:gx + pw] = tile_chunk_out
                         del tile_chunk, tile_rgb, tile_chunk_out
-                elif use_atlas:
+                elif use_atlas and not _delta_applied:
                     for row_start in range(0, h, chunk_rows):
                         row_end = min(row_start + chunk_rows, h)
                         n_rows = row_end - row_start
@@ -592,7 +629,7 @@ class GPURenderer:
                         canvas_y = gy + row_start * ts
                         canvas[:, canvas_y:canvas_y + n_rows * ts, gx:gx + pw] = tile_chunk
                         del base_chunk, tile_rgb, tile_chunk
-                else:
+                elif not _delta_applied:
                     for row_start in range(0, h, chunk_rows):
                         row_end = min(row_start + chunk_rows, h)
                         n_rows = row_end - row_start
@@ -856,16 +893,22 @@ class GPURenderer:
                         torch.empty(_max_batch_n, ch, cw, 3, dtype=torch.uint8, pin_memory=True),
                         torch.empty(_max_batch_n, ch, cw, 3, dtype=torch.uint8, pin_memory=True),
                     ]
+                    _buf_free_events = [threading.Event(), threading.Event()]
+                    _buf_free_events[0].set()
+                    _buf_free_events[1].set()
 
                 if frame_handler:
                     # Async download via pinned memory + CUDA stream (3B-b)
                     _default_stream = torch.cuda.current_stream(dev)
+                    _buf_free_events[_dl_buf_idx].wait()
+                    _buf_free_events[_dl_buf_idx].clear()
                     with torch.cuda.stream(_dl_stream):
                         _dl_stream.wait_stream(_default_stream)
                         _pinned_bufs[_dl_buf_idx][:batch_n].copy_(uint8_gpu, non_blocking=True)
                     _dl_event = _dl_stream.record_event()
 
-                    # Free GPU tensors (keep uint8_gpu alive until DMA completes)
+                    # Save canvas for next frame's delta, then free GPU tensors
+                    _prev_canvas = canvas[0].clone()
                     del canvas, mats
                     if use_composite:
                         del composite_idx
@@ -880,7 +923,7 @@ class GPURenderer:
                         _dl_prev_event.synchronize()
                         _prev_buf = _pinned_bufs[1 - _dl_buf_idx]
                         for i in range(_dl_prev_n):
-                            frame_handler(_prev_buf[i].numpy(), _dl_prev_start + i, n)
+                            frame_handler(_prev_buf[i].numpy(), _dl_prev_start + i, n, _buf_free_events[1 - _dl_buf_idx])
                             if progress_callback:
                                 progress_callback(_dl_prev_start + i + 1, n, gpu_stats=dict(self._stats))
                         if _dl_prev_uint8 is not None:
@@ -895,6 +938,7 @@ class GPURenderer:
                 else:
                     # Sync download (no handler → no overlap possible)
                     batch_u8 = uint8_gpu.cpu().numpy()
+                    _prev_canvas = canvas[0].clone()
                     del uint8_gpu, canvas, mats
                     if use_composite:
                         del composite_idx
