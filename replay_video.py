@@ -616,7 +616,7 @@ def _render_stats_full(stats_data, is_movetimes_accurate, panel_w):
     lv_line("Cubic est: ", ce if ce else '---', data_font, WHITE)
 
     # Row 4: Playback speed
-    lv_line("Playback speed: ", stats_data.get('speed_playback', '1.00×'), data_font, WHITE)
+    lv_line("Playback speed: ", stats_data.get('speed_playback', '1.00x'), data_font, WHITE)
 
     # Row 5: Predicted moves
     lv_line("Predicted moves: ", stats_data.get('predicted_moves', ''), data_font, CYAN)
@@ -744,7 +744,7 @@ def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_sta
     lv_line("Cubic est: ", ce if ce else '---', data_font, WHITE)
 
     # Row 4: Playback speed [static, WHITE]
-    lv_line("Playback speed: ", stats_data.get('speed_playback', '1.00×'), data_font, WHITE)
+    lv_line("Playback speed: ", stats_data.get('speed_playback', '1.00x'), data_font, WHITE)
 
     # Row 5: Predicted moves [dynamic label in static base]
     add(px, y, "Predicted moves: ", CYAN, data_font)
@@ -1495,7 +1495,7 @@ def generate_frames(
             "tps_all": f"{total_tps:.3f}",
             "predicted_moves": predicted_moves,
             "cubic_estimate": None,
-            "speed_playback": f"{speed_factor:.2f}×" if speed_factor != 1.0 else "1.00×",
+            "speed_playback": f"{speed_factor:.2f}x" if speed_factor != 1.0 else "1.00x",
         }
         move_idx = frame_idx - 1 if frame_idx > 0 else 0
         cur_stage_idx = max(0, sum(1 for s in filtered_stages if s <= move_idx) - 1)

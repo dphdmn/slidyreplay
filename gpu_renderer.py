@@ -716,7 +716,7 @@ class GPURenderer:
                             _layout_px, _y_predicted - 3*_row_h, _layout_inner_w)
                         _pl(_sb, "Cubic est: ", _stats0.get("cubic_estimate","---"), _data_atlas,
                             _layout_px, _y_predicted - 2*_row_h, _layout_inner_w)
-                        _pl(_sb, "Playback speed: ", _stats0.get("speed_playback","1.00×"), _data_atlas,
+                        _pl(_sb, "Playback speed: ", _stats0.get("speed_playback","1.00x"), _data_atlas,
                             _layout_px, _y_predicted - 1*_row_h, _layout_inner_w)
                         # Predicted moves label (CYAN)
                         _pt(_sb, "Predicted moves: ", _data_atlas, _layout_px, _y_predicted, _cyan_rgb_sb)
