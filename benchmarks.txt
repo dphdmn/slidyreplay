@@ -1,115 +1,38 @@
+benchmarks 14.05 after cpu optimizations (before gpu fixes)
 ============================================================
-  Puzzle: 20x20
+  OVERALL BENCHMARK SUMMARY
 ============================================================
-  20x20 CPU... [[ReplayVideoGenerator] GPU OFF (CPU fallback)]
-    Process SpawnProcess-3:
-    Process SpawnProcess-5:
-    Traceback (most recent call last):
-      File "C:\Python313\Lib\multiprocessing\process.py", line 313, in _bootstrap
-        self.run()
-        ~~~~~~~~^^
-      File "C:\Python313\Lib\multiprocessing\process.py", line 108, in run
-        self._target(*self._args, **self._kwargs)
-        ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-      File "C:\Python313\Lib\concurrent\futures\process.py", line 242, in _process_worker
-        call_item = call_queue.get(block=True)
-      File "C:\Python313\Lib\multiprocessing\queues.py", line 101, in get
-        res = self._recv_bytes()
-      File "C:\Python313\Lib\multiprocessing\connection.py", line 216, in recv_bytes
-        buf = self._recv_bytes(maxlength)
-      File "C:\Python313\Lib\multiprocessing\connection.py", line 334, in _recv_bytes
-        return self._get_more_data(ov, maxsize)
-               ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
-      File "C:\Python313\Lib\multiprocessing\connection.py", line 356, in _get_more_data
-        ov, err = _winapi.ReadFile(self._handle, left, overlapped=True)
-                  ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    MemoryError
-    Traceback (most recent call last):
-      File "C:\Python313\Lib\multiprocessing\process.py", line 313, in _bootstrap
-        self.run()
-        ~~~~~~~~^^
-      File "C:\Python313\Lib\multiprocessing\process.py", line 108, in run
-        self._target(*self._args, **self._kwargs)
-        ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-      File "C:\Python313\Lib\concurrent\futures\process.py", line 242, in _process_worker
-        call_item = call_queue.get(block=True)
-      File "C:\Python313\Lib\multiprocessing\queues.py", line 101, in get
-        res = self._recv_bytes()
-      File "C:\Python313\Lib\multiprocessing\connection.py", line 216, in recv_bytes
-        buf = self._recv_bytes(maxlength)
-      File "C:\Python313\Lib\multiprocessing\connection.py", line 334, in _recv_bytes
-        return self._get_more_data(ov, maxsize)
-               ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
-      File "C:\Python313\Lib\multiprocessing\connection.py", line 356, in _get_more_data
-        ov, err = _winapi.ReadFile(self._handle, left, overlapped=True)
-                  ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    MemoryError
-    Process SpawnProcess-2:
-    Traceback (most recent call last):
-      File "C:\Python313\Lib\multiprocessing\process.py", line 313, in _bootstrap
-        self.run()
-        ~~~~~~~~^^
-      File "C:\Python313\Lib\multiprocessing\process.py", line 108, in run
-        self._target(*self._args, **self._kwargs)
-        ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-      File "C:\Python313\Lib\concurrent\futures\process.py", line 242, in _process_worker
-        call_item = call_queue.get(block=True)
-      File "C:\Python313\Lib\multiprocessing\queues.py", line 120, in get
-        return _ForkingPickler.loads(res)
-               ~~~~~~~~~~~~~~~~~~~~~^^^^^
-    _pickle.UnpicklingError: invalid load key, '\x01'.
-    concurrent.futures.process._RemoteTraceback:
-    """
-    Traceback (most recent call last):
-      File "C:\Python313\Lib\multiprocessing\queues.py", line 262, in _feed
-        obj = _ForkingPickler.dumps(obj)
-      File "C:\Python313\Lib\multiprocessing\reduction.py", line 51, in dumps
-        cls(buf, protocol).dump(obj)
-        ~~~~~~~~~~~~~~~~~~~~~~~^^^^^
-    MemoryError
-    """
+  Puzzle     Moves   Unique       CPU      GPU  Speedup GPU Info
+  ---------- ------- ------- -------- -------- -------- ------------------------------
+  4x4        26      25          0.6s     0.9s     0.7x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  5x5        98      95          1.0s     1.2s     0.8x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  6x6        213     208         1.8s     2.0s     0.9x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  7x7        425     401         3.2s     3.3s     1.0x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  8x8        707     652         6.0s     5.9s     1.0x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  9x9        1251    1079        9.2s     9.5s     1.0x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  10x10      1569    1362       11.1s    10.1s     1.1x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  12x12      2883    2470       20.4s    22.4s     0.9x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  16x16      7132    5692       65.3s    72.6s     0.9x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  20x20      14203   11177     131.7s   146.3s     0.9x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+============================================================
+============================================================
+  OVERALL BENCHMARK SUMMARY (no-layout)
+============================================================
+  Puzzle     Moves   Unique       CPU      GPU  Speedup GPU Info
+  ---------- ------- ------- -------- -------- -------- ------------------------------
+  4x4        26      25          0.5s     0.6s     0.8x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  5x5        98      95          0.6s     0.8s     0.8x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  6x6        213     208         0.9s     1.2s     0.8x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  7x7        425     401         1.6s     1.9s     0.8x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  8x8        707     652         2.7s     3.2s     0.8x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  9x9        1251    1079        4.6s     5.4s     0.8x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  10x10      1569    1362        4.8s     6.0s     0.8x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  12x12      2883    2470       10.7s    13.0s     0.8x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  16x16      7132    5692       41.9s    47.4s     0.9x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+  20x20      14203   11177      87.4s   111.3s     0.8x [ReplayVideoGenerator] GPU ON (NVIDIA GeForce GTX 1660 SUPER)
+============================================================
 
-    The above exception was the direct cause of the following exception:
-
-    Traceback (most recent call last):
-      File "C:\coding\slidyreplay\main.py", line 1177, in run_single
-        gen.generate_simple_replay(
-        ~~~~~~~~~~~~~~~~~~~~~~~~~~^
-            solution=solution, output_path=output,
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-            show_progress=True, use_gpu=use_gpu,
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-            fps=kwargs.pop("fps", 60), opts=opts, **kwargs
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        )
-        ^
-      File "C:\coding\slidyreplay\replay_video.py", line 2010, in generate_simple_replay
-        frames, frame_state_map = generate_frames(
-                                  ~~~~~~~~~~~~~~~^
-            matrix=matrix,
-            ^^^^^^^^^^^^^^
-        ...<23 lines>...
-            expanded_solution=solution_expanded,
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        )
-        ^
-      File "C:\coding\slidyreplay\replay_video.py", line 1696, in generate_frames
-        chunk_results = fut.result()
-      File "C:\Python313\Lib\concurrent\futures\_base.py", line 449, in result
-        return self.__get_result()
-               ~~~~~~~~~~~~~~~~~^^
-      File "C:\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
-        raise self._exception
-      File "C:\Python313\Lib\multiprocessing\queues.py", line 262, in _feed
-        obj = _ForkingPickler.dumps(obj)
-      File "C:\Python313\Lib\multiprocessing\reduction.py", line 51, in dumps
-        cls(buf, protocol).dump(obj)
-        ~~~~~~~~~~~~~~~~~~~~~~~^^^^^
-    MemoryError
-
-    [CRITICAL ERROR]
-FAILED
-
+benchmarsk 13.05
 ============================================================
   OVERALL BENCHMARK SUMMARY
 ============================================================

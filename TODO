@@ -17,6 +17,8 @@
 - Force lbl
 - faster encoder
 - x is missing in speedup
+- no-stats version to remove panel but keep timer
+- more tile size potions
 
 Anyway two major optimization ideas:
 1) Rendering only tiles that changed.
