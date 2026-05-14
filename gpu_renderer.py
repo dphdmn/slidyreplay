@@ -374,9 +374,8 @@ class GPURenderer:
 
         # Pre-allocate pinned memory buffers + CUDA stream for async GPU→CPU download (3B-b)
         _N_BUFS = 6
-        _MAX_BATCH_SLOTS = 4  # Plan D: batch size for sequential delta
         _pinned_bufs = [
-            torch.empty(_MAX_BATCH_SLOTS, ch, cw, 3, dtype=torch.uint8, pin_memory=True)
+            torch.empty(1, ch, cw, 3, dtype=torch.uint8, pin_memory=True)
             for _ in range(_N_BUFS)
         ]
         _buf_free_events = [threading.Event() for _ in range(_N_BUFS)]
@@ -413,94 +412,78 @@ class GPURenderer:
                 if cancel_check and cancel_check():
                     raise CancelError()
 
-                remaining = n - batch_start
-                batch_size = min(_MAX_BATCH_SLOTS, remaining)
-                # Split batch at delta-incompatible boundaries (grid stage transitions)
-                _boundary = batch_start + batch_size
-                for _j in range(batch_start + 1, batch_start + batch_size):
-                    _p = frame_params_list[_j]
-                    if _p.get("changed_tiles") is None:
-                        _boundary = _j
-                        break
-                batch_end = _boundary
-                batch_n = batch_end - batch_start
+                batch_end = batch_start + 1
+                batch_n = 1
 
                 self._batch_counter += 1
                 self._stats["batch_idx"] = self._batch_counter
 
                 # ── Upload batch data ──
-                batch_params = frame_params_list[batch_start:batch_end]
-                if batch_params:
-                    p_opts = batch_params[0].get("opts")
-                    if not isinstance(p_opts, RenderOptions):
-                        raise TypeError(f"batch_params[0]['opts'] must be RenderOptions, got {type(p_opts)}")
-                    if p_opts != self.opts:
-                        raise ValueError(
-                            f"Item opts={p_opts} != renderer opts={self.opts}. "
-                            "All items in a render batch must use identical RenderOptions."
-                        )
-                mats_np = np.stack([p["matrix"] for p in batch_params], axis=0)
-                mats = torch.from_numpy(mats_np).to(dev, non_blocking=True)
+                p = frame_params_list[batch_start]
+                p_opts = p.get("opts")
+                if not isinstance(p_opts, RenderOptions):
+                    raise TypeError(f"batch_params['opts'] must be RenderOptions, got {type(p_opts)}")
+                if p_opts != self.opts:
+                    raise ValueError(
+                        f"Item opts={p_opts} != renderer opts={self.opts}. "
+                        "All items must use identical RenderOptions."
+                    )
+                mats = torch.from_numpy(np.asarray(p["matrix"])[None, :, :]).to(dev, non_blocking=True)
 
                 use_composite = hasattr(self, '_composite_atlas') and self._composite_atlas is not None
                 use_atlas = not use_composite and self._base_atlas is not None
 
-                # Determine if ALL frames in batch can use delta path
-                _can_delta = use_composite and _prev_canvas is not None
-                if _can_delta:
-                    for _p in batch_params:
-                        _ct = _p.get("changed_tiles")
-                        if _ct is None or len(_ct) == 0:
-                            _can_delta = False
-                            break
+                # Check if this frame can use delta path
+                _ct = p.get("changed_tiles")
+                _can_delta = use_composite and _prev_canvas is not None and _ct is not None and len(_ct) > 0
 
                 composite_idx = None
                 base_idx = bar_idx = None
                 if use_composite and not _can_delta:
-                    composite_idx_np = np.zeros((batch_n, h, w), dtype=np.int32)
-                    for i, p in enumerate(batch_params):
-                        state_sig = id(p["grid_state"])
-                        mats_p = np.asarray(p["matrix"])
-                        if state_sig not in self._composite_lookup_cpu:
-                            self._composite_lookup_cpu[state_sig] = self._composite_lookup[state_sig].cpu().numpy()
-                        lookup_np = self._composite_lookup_cpu[state_sig]
-                        composite_idx_np[i] = lookup_np[mats_p]
+                    state_sig = id(p["grid_state"])
+                    if state_sig not in self._composite_lookup_cpu:
+                        self._composite_lookup_cpu[state_sig] = self._composite_lookup[state_sig].cpu().numpy()
+                    lookup_np = self._composite_lookup_cpu[state_sig]
+                    mats_p = np.asarray(p["matrix"])
+                    composite_idx_np = lookup_np[mats_p][None, :, :]
                     composite_idx = torch.from_numpy(composite_idx_np).to(dev, non_blocking=True)
                 elif use_atlas and not _can_delta:
-                    base_idx_np = np.zeros((batch_n, h, w), dtype=np.int32)
-                    bar_idx_np = np.full((batch_n, h, w), -1, dtype=np.int32)
-                    for i, p in enumerate(batch_params):
-                        state_sig = id(p["grid_state"])
-                        mats_p = np.asarray(p["matrix"])
-                        if state_sig in self._base_lookup:
-                            base_lookup_np = self._base_lookup[state_sig].cpu().numpy()
-                            bar_lookup_np = self._bar_lookup[state_sig].cpu().numpy()
-                            base_idx_np[i] = base_lookup_np[mats_p]
-                            bar_idx_np[i] = bar_lookup_np[mats_p]
-                    base_idx = torch.from_numpy(base_idx_np).to(dev, non_blocking=True)
-                    bar_idx = torch.from_numpy(bar_idx_np).to(dev, non_blocking=True)
+                    state_sig = id(p["grid_state"])
+                    mats_p = np.asarray(p["matrix"])
+                    if state_sig in self._base_lookup:
+                        base_lookup_np = self._base_lookup[state_sig].cpu().numpy()
+                        bar_lookup_np = self._bar_lookup[state_sig].cpu().numpy()
+                        base_idx_np = base_lookup_np[mats_p][None, :, :]
+                        bar_idx_np = bar_lookup_np[mats_p][None, :, :]
+                        base_idx = torch.from_numpy(base_idx_np).to(dev, non_blocking=True)
+                        bar_idx = torch.from_numpy(bar_idx_np).to(dev, non_blocking=True)
+                    else:
+                        base_idx = torch.full((1, h, w), 0, device=dev, dtype=torch.int32)
+                        bar_idx = torch.full((1, h, w), -1, device=dev, dtype=torch.int32)
                 else:
                     if batch_has_colors:
-                        main_np = np.full((batch_n, h, w, 3), TILE_BG, dtype=np.float32)
-                        sec_np = np.zeros((batch_n, h, w, 3), dtype=np.float32)
-                        has_sec_np = np.zeros((batch_n, h, w), dtype=np.float32)
-                        for i, p in enumerate(batch_params):
-                            cm = p.get("colors_main")
-                            if cm is not None:
-                                main_np[i] = cm.reshape(h, w, 3)
-                                cs = p.get("colors_sec")
-                                if cs is not None:
-                                    sec_np[i] = cs.reshape(h, w, 3)
-                                csm = p.get("colors_sec_mask")
-                                if csm is not None:
-                                    has_sec_np[i] = csm.reshape(h, w).astype(np.float32)
+                        cm = p.get("colors_main")
+                        if cm is not None:
+                            main_np = cm.reshape(1, h, w, 3).astype(np.float32)
+                        else:
+                            main_np = np.full((1, h, w, 3), TILE_BG, dtype=np.float32)
+                        cs = p.get("colors_sec")
+                        if cs is not None:
+                            sec_np = cs.reshape(1, h, w, 3).astype(np.float32)
+                        else:
+                            sec_np = np.zeros((1, h, w, 3), dtype=np.float32)
+                        csm = p.get("colors_sec_mask")
+                        if csm is not None:
+                            has_sec_np = csm.reshape(1, h, w).astype(np.float32)
+                        else:
+                            has_sec_np = np.zeros((1, h, w), dtype=np.float32)
                         cols = torch.from_numpy(main_np).to(dev, non_blocking=True) / 255.0
                         sec = torch.from_numpy(sec_np).to(dev, non_blocking=True) / 255.0
-                        has_sec = torch.from_numpy(has_sec_np).to(dev, non_blocking=True).view(batch_n, h, w, 1, 1, 1)
+                        has_sec = torch.from_numpy(has_sec_np).to(dev, non_blocking=True).view(1, h, w, 1, 1, 1)
                     else:
-                        cols = tile_bg_t.view(1, 1, 1, 3).expand(batch_n, h, w, 3)
-                        sec = torch.zeros(batch_n, h, w, 3, device=dev, dtype=torch.float32)
-                        has_sec = torch.zeros(batch_n, h, w, 1, 1, 1, device=dev, dtype=torch.float32)
+                        cols = tile_bg_t.view(1, 1, 1, 3)
+                        sec = torch.zeros(1, h, w, 3, device=dev, dtype=torch.float32)
+                        has_sec = torch.zeros(1, h, w, 1, 1, 1, device=dev, dtype=torch.float32)
 
                 _prof_setup = _prof_setup + _tick() - _pt_setup
 
@@ -517,38 +500,32 @@ class GPURenderer:
                         canvas[:, py:py + ph_p, px:px + pw_p] * (1 - panel_bg_a)
                     )
 
-                # ── Delta patch: sequential within batch ──
+                # ── Delta patch (copy prev canvas, update only changed tiles) ──
                 _delta_applied = False
                 if _can_delta:
-                    for i in range(batch_n):
-                        _p = batch_params[i]
-                        _ct = _p["changed_tiles"]
-                        if i == 0:
-                            canvas[i].copy_(_prev_canvas)
-                        else:
-                            canvas[i].copy_(canvas[i - 1])
-                        # Clear overlay areas from prev_canvas ghosting
-                        if timer_bg is not None and th > 0 and tw > 0:
-                            canvas[i, ty1:ty2, tx1:tx2] = timer_bg.view(th, tw, 3)
-                        if panel_bg_rgb is not None and self.panel_h > 0 and self.panel_w > 0:
-                            canvas[i, py:py + self.panel_h, px:px + self.panel_w] = (
-                                panel_bg_rgb * panel_bg_a +
-                                canvas[i, py:py + self.panel_h, px:px + self.panel_w] * (1 - panel_bg_a)
-                            )
-                        if len(_ct) > 0:
-                            state_sig = id(_p["grid_state"])
-                            if state_sig not in self._composite_lookup_cpu:
-                                self._composite_lookup_cpu[state_sig] = self._composite_lookup[state_sig].cpu().numpy()
-                            lookup_np = self._composite_lookup_cpu[state_sig]
-                            mats_p = np.asarray(_p["matrix"])
-                            ti_np = lookup_np[mats_p[_ct[:, 0], _ct[:, 1]]]
-                            ti_t = torch.from_numpy(ti_np).to(dev)
-                            _t_batch = self._composite_atlas[ti_t, :, :, :3].float() / 255.0
-                            for _k in range(len(_ct)):
-                                _r, _c = _ct[_k]
-                                _sy, _sx = gy + _r * ts, gx + _c * ts
-                                canvas[i, _sy:_sy + ts, _sx:_sx + ts] = _t_batch[_k]
-                            del _t_batch, ti_t
+                    canvas[0].copy_(_prev_canvas)
+                    # Clear overlay areas from prev_canvas ghosting
+                    if timer_bg is not None and th > 0 and tw > 0:
+                        canvas[0, ty1:ty2, tx1:tx2] = timer_bg.view(th, tw, 3)
+                    if panel_bg_rgb is not None and self.panel_h > 0 and self.panel_w > 0:
+                        canvas[0, py:py + self.panel_h, px:px + self.panel_w] = (
+                            panel_bg_rgb * panel_bg_a +
+                            canvas[0, py:py + self.panel_h, px:px + self.panel_w] * (1 - panel_bg_a)
+                        )
+                    if len(_ct) > 0:
+                        state_sig = id(p["grid_state"])
+                        if state_sig not in self._composite_lookup_cpu:
+                            self._composite_lookup_cpu[state_sig] = self._composite_lookup[state_sig].cpu().numpy()
+                        lookup_np = self._composite_lookup_cpu[state_sig]
+                        mats_p = np.asarray(p["matrix"])
+                        ti_np = lookup_np[mats_p[_ct[:, 0], _ct[:, 1]]]
+                        ti_t = torch.from_numpy(ti_np).to(dev)
+                        _t_batch = self._composite_atlas[ti_t, :, :, :3].float() / 255.0
+                        for _k in range(len(_ct)):
+                            _r, _c = _ct[_k]
+                            _sy, _sx = gy + _r * ts, gx + _c * ts
+                            canvas[0, _sy:_sy + ts, _sx:_sx + ts] = _t_batch[_k]
+                        del _t_batch, ti_t
                     _delta_applied = True
 
                 # ── Tile rendering (skipped when delta applied) ──
@@ -773,12 +750,7 @@ class GPURenderer:
                     if _dh > 0 and _dw > 0:
                         _base_rgb = _static_base_gpu[:_dh, :_dw, :3]
                         _base_a = _static_base_gpu[:_dh, :_dw, 3:4]
-                        if batch_n == 1:
-                            canvas[0, py:py + _dh, px:px + _dw] = _base_rgb * _base_a + canvas[0, py:py + _dh, px:px + _dw] * (1 - _base_a)
-                        else:
-                            _base_rgb_e = _base_rgb.unsqueeze(0).expand(batch_n, -1, -1, -1).contiguous()
-                            _base_a_e = _base_a.unsqueeze(0).expand(batch_n, -1, -1, -1).contiguous()
-                            canvas[:, py:py + _dh, px:px + _dw] = _base_rgb_e * _base_a_e + canvas[:, py:py + _dh, px:px + _dw] * (1 - _base_a_e)
+                        canvas[0, py:py + _dh, px:px + _dw] = _base_rgb * _base_a + canvas[0, py:py + _dh, px:px + _dw] * (1 - _base_a)
 
                     _overlay_text_cache = {}
                     def _compose_text(text, atlas):
@@ -809,16 +781,11 @@ class GPURenderer:
                             dst = canvas_i[y:y + th_c, x:x + tw_c, :]
                             dst[:, :, :3] = _cyan_rgb.view(1, 1, 3) * sa + dst[:, :, :3] * (1 - sa)
 
-                    for _i in range(batch_n):
-                        _p = frame_params_list[batch_start + _i]
+                    _blend_cyan(canvas[0], p["timer_text"], _timer_atlas,
+                                tx1, ty1, tx2, ty2, center_x=True, center_y=True)
 
-                        # Timer (GPU font atlas, no PIL)
-                        _blend_cyan(canvas[_i], _p["timer_text"], _timer_atlas,
-                                    tx1, ty1, tx2, ty2, center_x=True, center_y=True)
-
-                        _sd = _p.get("stats_data")
-                        if _sd is None:
-                            continue
+                    _sd = p.get("stats_data")
+                    if _sd is not None:
 
                         # Dynamic values (data font atlas, right-aligned, CYAN)
                         for _key, _y_val in [("predicted_moves", _y_predicted), ("md_cur", _y_md_cur), ("mmd_cur", _y_mmd_cur)]:
@@ -826,7 +793,7 @@ class GPURenderer:
                             if not _text:
                                 continue
                             _tw = _compose_text(_text, _data_atlas)[1]
-                            _blend_cyan(canvas[_i], _text, _data_atlas,
+                            _blend_cyan(canvas[0], _text, _data_atlas,
                                         px + _layout_px + _layout_inner_w - _tw, py + _y_val,
                                         cw, ch)
 
@@ -838,29 +805,27 @@ class GPURenderer:
                                 _line_s = f"{_cums_s:>{_stage_w1}} | {_splits_s:>{_stage_w2}} {_mvtpss_s:<{_stage_w3}} | {_label_s:<{_stage_w4}}"
                             else:
                                 _line_s = f"{_cums_s:>{_stage_w1}} | {_splits_s:<{_stage_w2}}  | {_label_s:<{_stage_w4}}"
-                            _blend_cyan(canvas[_i], _line_s, _gs_atlas,
+                            _blend_cyan(canvas[0], _line_s, _gs_atlas,
                                         px + _layout_px, py + _stage_y_positions[_cur_stage],
                                         cw, ch)
                 else:
                     first_stats_arr = frame_params_list[batch_start].get("stats_arr")
                     if first_stats_arr is not None:
                         s_h, s_w = first_stats_arr.shape[:2]
-                        snp = np.stack([frame_params_list[batch_start + i]["stats_arr"] for i in range(batch_n)], axis=0)
-                        stats_t = torch.from_numpy(snp).to(dev, non_blocking=True).float() / 255.0
+                        stats_t = torch.from_numpy(first_stats_arr[None, :, :, :]).to(dev, non_blocking=True).float() / 255.0
                         dh = min(s_h, ch - py)
                         dw = min(s_w, cw - px)
                         if dh > 0 and dw > 0:
-                            canvas[:, py:py + dh, px:px + dw] = (
-                                stats_t[:, :dh, :dw, :3] * stats_t[:, :dh, :dw, 3:] +
-                                canvas[:, py:py + dh, px:px + dw] * (1 - stats_t[:, :dh, :dw, 3:])
+                            canvas[0, py:py + dh, px:px + dw] = (
+                                stats_t[0, :dh, :dw, :3] * stats_t[0, :dh, :dw, 3:] +
+                                canvas[0, py:py + dh, px:px + dw] * (1 - stats_t[0, :dh, :dw, 3:])
                             )
-                    for _i in range(batch_n):
-                        ta = frame_params_list[batch_start + _i].get("timer_arr")
-                        if ta is not None:
-                            tt = torch.from_numpy(ta).to(dev, non_blocking=True).float() / 255.0
-                            dx = max(tx1, tx1 + ((tx2 - tx1) - tt.shape[1]) // 2)
-                            dy = max(ty1, ty1 + ((ty2 - ty1) - tt.shape[0]) // 2)
-                            self._blend_rgba_inplace(canvas[_i], tt, dx, dy)
+                    ta = frame_params_list[batch_start].get("timer_arr")
+                    if ta is not None:
+                        tt = torch.from_numpy(ta).to(dev, non_blocking=True).float() / 255.0
+                        dx = max(tx1, tx1 + ((tx2 - tx1) - tt.shape[1]) // 2)
+                        dy = max(ty1, ty1 + ((ty2 - ty1) - tt.shape[0]) // 2)
+                        self._blend_rgba_inplace(canvas[0], tt, dx, dy)
 
                 _prof_overlays += _tick() - _pt0; _pt0 = _tick()
 
@@ -875,11 +840,11 @@ class GPURenderer:
                     _buf_free_events[_dl_buf_idx].clear()
                     with torch.cuda.stream(_dl_stream):
                         _dl_stream.wait_stream(_default_stream)
-                        _pinned_bufs[_dl_buf_idx][:batch_n].copy_(uint8_gpu, non_blocking=True)
+                        _pinned_bufs[_dl_buf_idx].copy_(uint8_gpu, non_blocking=True)
                     _dl_event = _dl_stream.record_event()
 
-                    # Save canvas for next frame's delta (last frame in batch), then free GPU tensors
-                    _prev_canvas = canvas[batch_n - 1].clone()
+                    # Save canvas for next frame's delta, then free GPU tensors
+                    _prev_canvas = canvas[0].clone()
                     del canvas, mats
                     if composite_idx is not None:
                         del composite_idx
@@ -888,15 +853,14 @@ class GPURenderer:
                     elif batch_has_colors:
                         del cols, sec, has_sec
 
-                    # Process PREVIOUS batch's frames from the other pinned buffer
+                    # Process PREVIOUS batch's frame from the other pinned buffer
                     # (overlaps with THIS batch's DMA transfer)
                     if _dl_prev_event is not None and _prev_buf_idx is not None:
                         _dl_prev_event.synchronize()
                         _prev_buf = _pinned_bufs[_prev_buf_idx]
-                        for i in range(_dl_prev_n):
-                            frame_handler(_prev_buf[i].numpy(), _dl_prev_start + i, n, _buf_free_events[_prev_buf_idx])
-                            if progress_callback:
-                                progress_callback(_dl_prev_start + i + 1, n, gpu_stats=dict(self._stats))
+                        frame_handler(_prev_buf[0].numpy(), _dl_prev_start, n, _buf_free_events[_prev_buf_idx])
+                        if progress_callback:
+                            progress_callback(_dl_prev_start + 1, n, gpu_stats=dict(self._stats))
                         if _dl_prev_uint8 is not None:
                             del _dl_prev_uint8
 
@@ -911,7 +875,7 @@ class GPURenderer:
                 else:
                     # Sync download (no handler → no overlap possible)
                     batch_u8 = uint8_gpu.cpu().numpy()
-                    _prev_canvas = canvas[batch_n - 1].clone()
+                    _prev_canvas = canvas[0].clone()
                     del uint8_gpu, canvas, mats
                     if composite_idx is not None:
                         del composite_idx
@@ -919,10 +883,9 @@ class GPURenderer:
                         del base_idx, bar_idx
                     elif batch_has_colors:
                         del cols, sec, has_sec
-                    for i in range(batch_n):
-                        frames.append(Image.fromarray(batch_u8[i]))
-                        if progress_callback:
-                            progress_callback(batch_start + i + 1, n, gpu_stats=dict(self._stats))
+                    frames.append(Image.fromarray(batch_u8[0]))
+                    if progress_callback:
+                        progress_callback(batch_start + 1, n, gpu_stats=dict(self._stats))
 
                 log.info(f"  BATCH[{self._batch_counter}] DONE: "
                          f"sz={batch_n}, "
@@ -931,14 +894,13 @@ class GPURenderer:
 
                 batch_start = batch_end
 
-        # Process last batch's frames (async path)
+        # Process last batch's frame (async path)
         if _dl_prev_event is not None and frame_handler is not None:
             _dl_prev_event.synchronize()
             _prev_buf = _pinned_bufs[1 - _dl_buf_idx]
-            for i in range(_dl_prev_n):
-                frame_handler(_prev_buf[i].numpy(), _dl_prev_start + i, n)
-                if progress_callback is not None:
-                    progress_callback(_dl_prev_start + i + 1, n, gpu_stats=dict(self._stats))
+            frame_handler(_prev_buf[0].numpy(), _dl_prev_start, n)
+            if progress_callback is not None:
+                progress_callback(_dl_prev_start + 1, n, gpu_stats=dict(self._stats))
             if _dl_prev_uint8 is not None:
                 del _dl_prev_uint8
 
