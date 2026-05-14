@@ -388,6 +388,20 @@ class GPURenderer:
         reserved_permanent = torch.cuda.memory_reserved(dev)
         log.info(f"render_frames: {n} frames, canvas={cw}x{ch}, chunk_rows={chunk_rows}, reserved_static={reserved_permanent // (1024*1024)}MB, target_used_mem={target_used_mem // (1024*1024)}MB")
 
+        # Pre-allocate pinned memory buffers + CUDA stream for async GPU→CPU download (3B-b)
+        _safe_margin = 384 * 1024 * 1024
+        _max_batch_n = max(1, min(n, max(1, (vram_ceiling - reserved_permanent - _safe_margin) // (ch * cw * 3 * 4))))
+        _pinned_bufs = [
+            torch.empty(_max_batch_n, ch, cw, 3, dtype=torch.uint8, pin_memory=True),
+            torch.empty(_max_batch_n, ch, cw, 3, dtype=torch.uint8, pin_memory=True),
+        ]
+        _dl_stream = torch.cuda.Stream()
+        _dl_buf_idx = 0
+        _dl_prev_event = None
+        _dl_prev_uint8 = None
+        _dl_prev_n = 0
+        _dl_prev_start = 0
+
         with torch.inference_mode():
             _batch_t0 = _time_module.time()
             while batch_start < n:
@@ -833,24 +847,67 @@ class GPURenderer:
                             self._blend_rgba_inplace(canvas[_i], tt, dx, dy)
 
                 # ── GPU → CPU (uint8) ──
-                batch_u8 = canvas.mul(255.0).clamp_(0, 255).to(torch.uint8).cpu().numpy()
-                for i in range(batch_n):
-                    if frame_handler:
-                        frame_handler(batch_u8[i], batch_start + i, n)
-                    else:
-                        frames.append(Image.fromarray(batch_u8[i]))
-                    if progress_callback:
-                        progress_callback(batch_start + i + 1, n, gpu_stats=dict(self._stats))
+                uint8_gpu = canvas.mul(255.0).clamp_(0, 255).to(torch.uint8)
 
-                # ── Free batch tensors + flush CUDA cache ──
-                del canvas, mats
-                if use_composite:
-                    del composite_idx
-                elif use_atlas:
-                    del base_idx, bar_idx
-                elif batch_has_colors:
-                    del cols, sec, has_sec
-                torch.cuda.synchronize(dev)
+                # Grow pinned buffers if batch size exceeds pre-allocated capacity (defensive)
+                if batch_n > _max_batch_n:
+                    _max_batch_n = batch_n
+                    _pinned_bufs = [
+                        torch.empty(_max_batch_n, ch, cw, 3, dtype=torch.uint8, pin_memory=True),
+                        torch.empty(_max_batch_n, ch, cw, 3, dtype=torch.uint8, pin_memory=True),
+                    ]
+
+                if frame_handler:
+                    # Async download via pinned memory + CUDA stream (3B-b)
+                    _default_stream = torch.cuda.current_stream(dev)
+                    with torch.cuda.stream(_dl_stream):
+                        _dl_stream.wait_stream(_default_stream)
+                        _pinned_bufs[_dl_buf_idx][:batch_n].copy_(uint8_gpu, non_blocking=True)
+                    _dl_event = _dl_stream.record_event()
+
+                    # Free GPU tensors (keep uint8_gpu alive until DMA completes)
+                    del canvas, mats
+                    if use_composite:
+                        del composite_idx
+                    elif use_atlas:
+                        del base_idx, bar_idx
+                    elif batch_has_colors:
+                        del cols, sec, has_sec
+
+                    # Process PREVIOUS batch's frames from the other pinned buffer
+                    # (overlaps with THIS batch's DMA transfer)
+                    if _dl_prev_event is not None:
+                        _dl_prev_event.synchronize()
+                        _prev_buf = _pinned_bufs[1 - _dl_buf_idx]
+                        for i in range(_dl_prev_n):
+                            frame_handler(_prev_buf[i].numpy(), _dl_prev_start + i, n)
+                            if progress_callback:
+                                progress_callback(_dl_prev_start + i + 1, n, gpu_stats=dict(self._stats))
+                        if _dl_prev_uint8 is not None:
+                            del _dl_prev_uint8
+
+                    # Rotate for next batch
+                    _dl_prev_uint8 = uint8_gpu
+                    _dl_prev_event = _dl_event
+                    _dl_prev_n = batch_n
+                    _dl_prev_start = batch_start
+                    _dl_buf_idx = 1 - _dl_buf_idx
+                else:
+                    # Sync download (no handler → no overlap possible)
+                    batch_u8 = uint8_gpu.cpu().numpy()
+                    del uint8_gpu, canvas, mats
+                    if use_composite:
+                        del composite_idx
+                    elif use_atlas:
+                        del base_idx, bar_idx
+                    elif batch_has_colors:
+                        del cols, sec, has_sec
+                    for i in range(batch_n):
+                        frames.append(Image.fromarray(batch_u8[i]))
+                        if progress_callback:
+                            progress_callback(batch_start + i + 1, n, gpu_stats=dict(self._stats))
+
+                torch.cuda.current_stream(dev).synchronize()
                 torch.cuda.empty_cache()
                 peak_reserved = torch.cuda.max_memory_reserved(dev)
                 marginal = peak_reserved - reserved_before_render
@@ -874,6 +931,17 @@ class GPURenderer:
                 prev_batch_n = batch_n
                 batch_start = batch_end
 
+        # Process last batch's frames (async path)
+        if _dl_prev_event is not None and frame_handler is not None:
+            _dl_prev_event.synchronize()
+            _prev_buf = _pinned_bufs[1 - _dl_buf_idx]
+            for i in range(_dl_prev_n):
+                frame_handler(_prev_buf[i].numpy(), _dl_prev_start + i, n)
+                if progress_callback is not None:
+                    progress_callback(_dl_prev_start + i + 1, n, gpu_stats=dict(self._stats))
+            if _dl_prev_uint8 is not None:
+                del _dl_prev_uint8
+
         log.info(f"render_frames: DONE. total_batches={self._batch_counter}, frames_rendered={batch_start}")
         total_t = _time_module.time() - _batch_t0
         log.info(f"===== GPU RENDER SUMMARY =====")
@@ -892,6 +960,7 @@ class GPURenderer:
                 "_bar_fill", "_bar_border",
                 "_timer_bg", "_panel_bg", "_panel_bg_rgb", "_panel_bg_a",
                 "_base_atlas", "_bar_atlas", "_composite_atlas",
+                "_pinned_bufs", "_dl_stream",
             ]
             for attr in attrs:
                 t = getattr(self, attr, None)
