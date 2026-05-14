@@ -763,7 +763,7 @@ class GPURenderer:
 
                         # Stage highlight: CYAN from gs_lf atlas (same positioning as white static base)
                         _cur_stage = _sd.get("grid_current", 0)
-                        if _stage_raw_lines and _cur_stage < len(_stage_raw_lines):
+                        if _stage_raw_lines and _cur_stage < len(_stage_y_positions):
                             _cums_s, _splits_s, _mvtpss_s, _label_s = _stage_raw_lines[_cur_stage]
                             if '.' in _cums_s:
                                 _line_s = f"{_cums_s:>{_stage_w1}} | {_splits_s:>{_stage_w2}} {_mvtpss_s:<{_stage_w3}} | {_label_s:<{_stage_w4}}"
