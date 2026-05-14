@@ -21,7 +21,6 @@ from PIL import Image, ImageDraw, ImageFont
 from typing import List, Tuple, Optional, Union, Dict
 import bisect
 import threading
-from multiprocessing.shared_memory import SharedMemory
 from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
 from replay_generator import (
@@ -1039,69 +1038,6 @@ def _get_render_frame_args():
     return _RENDER_FRAME_ARGS
 
 
-def _build_chunks(states_needed):
-    if not states_needed:
-        return []
-    chunks = []
-    cur = [states_needed[0]]
-    for i in range(1, len(states_needed)):
-        if states_needed[i] == states_needed[i - 1] + 1:
-            cur.append(states_needed[i])
-        else:
-            chunks.append(cur)
-            cur = [states_needed[i]]
-    if cur:
-        chunks.append(cur)
-    return chunks
-
-
-def _render_chunk(chunk_indices, frame_params):
-    images = []
-    prev = None
-    valid = _get_render_frame_args()
-    for idx in chunk_indices:
-        p = frame_params[idx]
-        kw = {k: v for k, v in p.items() if k in valid}
-        if prev is not None:
-            kw["prev_canvas"] = prev
-        img = render_frame(**kw)
-        images.append(img)
-        prev = img
-    return images
-
-
-def _render_chunk_mmap(chunk_indices, chunk_params, mmap_path, mmap_shape, mmap_dtype):
-    mm = np.memmap(mmap_path, dtype=mmap_dtype, mode='r+', shape=mmap_shape)
-    prev = None
-    valid = _get_render_frame_args()
-    for idx in chunk_indices:
-        p = chunk_params[idx]
-        kw = {k: v for k, v in p.items() if k in valid}
-        if prev is not None:
-            kw["prev_canvas"] = prev
-        img = render_frame(**kw)
-        mm[idx] = np.array(img)
-        prev = img
-    mm.flush()
-    del mm
-
-
-def _render_chunk_shm(chunk_indices, chunk_params, shm_name, mmap_shape, mmap_dtype, state_to_midx):
-    shm = SharedMemory(name=shm_name)
-    arr = np.ndarray(mmap_shape, dtype=mmap_dtype, buffer=shm.buf)
-    prev = None
-    valid = _get_render_frame_args()
-    for idx in chunk_indices:
-        p = chunk_params[idx]
-        kw = {k: v for k, v in p.items() if k in valid}
-        if prev is not None:
-            kw["prev_canvas"] = prev
-        img = render_frame(**kw)
-        arr[state_to_midx[idx]] = np.array(img)
-        prev = img
-    shm.close()
-
-
 def _close_pipe(proc: subprocess.Popen) -> None:
     try:
         proc.stdin.close()
@@ -1196,13 +1132,11 @@ def generate_frames(
     cumulative_data: Optional[dict] = None,
     progress_callback=None,
     quality: float = 1.0,
-    parallel: bool = True,
     use_gpu: bool = True,
     cancel_check=None,
     output_path: str = None,
     fps: int = 60,
     compression: int = 18,
-    shared_pool: Optional[ProcessPoolExecutor] = None,
     gpu_renderer: Optional['GPURenderer'] = None,
     speed_factor: float = 1.0,
     opts: RenderOptions = RenderOptions(),
@@ -1703,128 +1637,30 @@ def generate_frames(
     ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w_cpu, canvas_h_cpu, fps=fps, compression=compression)
 
     _render_prog_step = max(1, num_needed // 100)
-    chunks = _build_chunks(states_needed)
     try:
-        _use_parallel_mmap = parallel and len(chunks) > 1
-        if _use_parallel_mmap:
-            workers = min(os.cpu_count() or 4, len(chunks))
-            state_to_midx = {idx: pos for pos, idx in enumerate(states_needed)}
-            mmap_shape = (num_needed, canvas_h_cpu, canvas_w_cpu, 3)
-            mmap_dtype = np.uint8
-            total_bytes = num_needed * canvas_h_cpu * canvas_w_cpu * 3
+        written = 0
+        prev_canvas = None
+        for seq_idx, i in enumerate(states_needed):
+            if cancel_check and cancel_check():
+                raise CancelError()
+            p = frame_params[i]
+            kw = {k: v for k, v in p.items() if k in _get_render_frame_args()}
+            if prev_canvas is not None:
+                kw["prev_canvas"] = prev_canvas
+            img = render_frame(**kw)
+            prev_canvas = img
 
-            # Try SharedMemory (RAM/page file). If it fails (too large / no space),
-            # fall through to serial path which uses O(1) memory.
-            shm = None
-            try:
-                shm = SharedMemory(create=True, size=total_bytes)
-                log.info(f"  SharedMemory: name={shm.name}, size={total_bytes} ({num_needed}x{canvas_w_cpu}x{canvas_h_cpu}x3)")
-            except (OSError, ValueError) as e:
-                log.warning(f"  SharedMemory failed ({e}) — too large for {num_needed} states, using serial path")
-                _use_parallel_mmap = False
+            count = state_to_count[i]
+            data = img.tobytes()
+            for _ in range(count):
+                ffmpeg_proc.stdin.write(data)
+                written += 1
 
-        if _use_parallel_mmap:
-            try:
-                pool = shared_pool if shared_pool is not None else ProcessPoolExecutor(max_workers=workers)
-                try:
-                    fut_to_chunk = {}
-                    for chunk in chunks:
-                        chunk_params = {idx: frame_params[idx] for idx in chunk}
-                        fut = pool.submit(_render_chunk_shm, chunk, chunk_params, shm.name, mmap_shape, mmap_dtype, state_to_midx)
-                        fut_to_chunk[fut] = chunk
+            _render_prog_count = seq_idx + 1
+            if progress_callback and (_render_prog_count % _render_prog_step == 0 or _render_prog_count == num_needed):
+                progress_callback(_render_prog_count, num_needed, desc="Render" if _render_prog_count == _render_prog_step else None)
 
-                    arr_shared = np.ndarray(mmap_shape, dtype=mmap_dtype, buffer=shm.buf)
-                    try:
-                        _render_prog_count = 0
-                        _encode_prog_step = max(1, total_video_frames // 100)
-                        _encode_prog_count = 0
-                        _ready_states = set()
-                        _write_cursor = 0
-                        _written = 0
-                        _last_prog_out = -1
-
-                        def _report_overall():
-                            nonlocal _last_prog_out
-                            render_done = _render_prog_count >= num_needed
-                            if not render_done:
-                                frac = _render_prog_count / num_needed if num_needed > 0 else 1.0
-                                label = "Render"
-                            else:
-
-                                frac = _written / total_video_frames if total_video_frames > 0 else 1.0
-                                label = "Encode"
-                            intra = int(round(frac * 100))
-                            intra = max(0, min(100, intra))
-                            if intra != _last_prog_out:
-                                _last_prog_out = intra
-                                if progress_callback:
-                                    progress_callback(intra, 100, desc=label)
-
-                        remaining = set(fut_to_chunk.keys())
-                        while remaining:
-                            if cancel_check and cancel_check():
-                                raise CancelError()
-                            done_set, _ = wait(remaining, timeout=0.2, return_when=FIRST_COMPLETED)
-                            for fut in done_set:
-                                chunk_indices = fut_to_chunk[fut]
-                                fut.result()
-                                _ready_states.update(chunk_indices)
-                                _render_prog_count += len(chunk_indices)
-                                _report_overall()
-                                remaining.remove(fut)
-
-                            while _write_cursor < len(frame_state) and frame_state[_write_cursor] in _ready_states:
-                                ffmpeg_proc.stdin.write(arr_shared[state_to_midx[frame_state[_write_cursor]]].data)
-                                _written += 1
-                                _write_cursor += 1
-                                _encode_prog_count += 1
-                                if _encode_prog_count % _encode_prog_step == 0 or _written == total_video_frames:
-                                    _report_overall()
-
-                        while _write_cursor < len(frame_state):
-                            ffmpeg_proc.stdin.write(arr_shared[state_to_midx[frame_state[_write_cursor]]].data)
-                            _written += 1
-                            _write_cursor += 1
-                            _encode_prog_count += 1
-                            if _encode_prog_count % _encode_prog_step == 0 or _written == total_video_frames:
-                                _report_overall()
-                    finally:
-                        del arr_shared
-                finally:
-                    if shared_pool is None:
-                        pool.shutdown()
-
-                log.info(f"  CPU RENDER+ENCODE DONE: canvas={canvas_w_cpu}x{canvas_h_cpu}")
-            finally:
-                if shm is not None:
-                    shm.close()
-                    shm.unlink()
-        else:
-            # Serial path: write each frame to pipe immediately after rendering
-            written = 0
-            prev_canvas = None
-            for seq_idx, i in enumerate(states_needed):
-                if cancel_check and cancel_check():
-                    raise CancelError()
-                p = frame_params[i]
-                kw = {k: v for k, v in p.items() if k in _get_render_frame_args()}
-                if prev_canvas is not None:
-                    kw["prev_canvas"] = prev_canvas
-                img = render_frame(**kw)
-                prev_canvas = img
-
-                # Write this frame N times to ffmpeg pipe immediately (overlap render + encode)
-                count = state_to_count[i]
-                data = img.tobytes()
-                for _ in range(count):
-                    ffmpeg_proc.stdin.write(data)
-                    written += 1
-
-                _render_prog_count = seq_idx + 1
-                if progress_callback and (_render_prog_count % _render_prog_step == 0 or _render_prog_count == num_needed):
-                    progress_callback(_render_prog_count, num_needed, desc="Render" if _render_prog_count == _render_prog_step else None)
-
-            log.info(f"  CPU RENDER+ENCODE DONE: {written} frames written, canvas={canvas_w_cpu}x{canvas_h_cpu}")
+        log.info(f"  CPU RENDER+ENCODE DONE: {written} frames written, canvas={canvas_w_cpu}x{canvas_h_cpu}")
     finally:
         _close_pipe(ffmpeg_proc)
     log_ram("CPU: after ffmpeg pipe")
@@ -1884,7 +1720,6 @@ def _batch_cpu_worker(item: dict) -> dict:
         solution=item["solution"],
         output_path=item["output_path"],
         use_gpu=False,
-        parallel=False,
         show_progress=False,
         opts=opts,
         **kwargs,
@@ -1918,7 +1753,6 @@ class ReplayVideoGenerator:
         cancel_check=None,
         fps: int = 60,
         compression: int = 18,
-        parallel: bool = True,
         gpu_renderer=None,
         opts: RenderOptions = RenderOptions(),
     ):
@@ -2081,7 +1915,6 @@ class ReplayVideoGenerator:
             cumulative_data=None,
             progress_callback=prog,
             quality=quality,
-            parallel=parallel,
             use_gpu=use_gpu,
             cancel_check=cancel_check,
             output_path=output_path,

@@ -1,92 +1,92 @@
 # CPU Rendering Speed Optimization
 
 ## Goal
-Make CPU rendering (with `--no-gpu`) approach GPU rendering speed for the 10×10 puzzle test case.
+Make CPU rendering (with `--no-gpu`) approach GPU rendering speed.
 
-## Final Results (10×10, 1569 moves, quality=1.0)
+## Test Cases
+- 10×10: 1569 moves, 1362 unique / 3167 total frames, 960×696 canvas, 2.0 MB/frame
+- 16×16: 7132 moves, 5692 unique / 12923 total frames
+- 20×20: 14203 moves, 11177 unique / 23562 total frames, 1380×1116 canvas, 4.6 MB/frame
 
-| Mode | Total | Render | Encode | vs Baseline |
-|------|-------|--------|--------|-------------|
-| **GPU** (hevc_nvenc) | **11.5s** | ~5s (CUDA) | ~6s (overlapped) | — |
-| **CPU (current)** | **12.1s** | ~7.6s | ~7.3s (overlapped) | **16s faster (57%)** |
-| CPU (original) | 28.1s | ~18s | ~15.5s (sw) | baseline |
-| CPU (NVENC only) | ~25s | ~18s | ~7s (hwe) | +3s |
-| CPU (+ panel optimizations) | ~23s | ~15.6s | ~7s | +5s |
-| CPU (+ memmap IPC) | ~15s | ~7.7s | ~7.3s | +13s |
+## Baseline Results (current committed code)
 
-## Changes Implemented
+| Size | Total | Notes |
+|------|-------|-------|
+| **10×10** | **10.7s** | CPU slightly faster than GPU (11.5s) |
+| **16×16** | **77.0s** | SharedMemory succeeded (5700×2.0MB = ~11GB) |
+| **20×20** | N/A | SharedMemory fails (11177×4.6MB = 51GB), falls to serial |
 
-### Change 1: Unified ffmpeg pipe with hardware encoder (NVENC)
-- **Files**: `replay_video.py:_create_ffmpeg_pipe(), _get_best_encoder()`
-- Auto-detects `hevc_nvenc` > `h264_nvenc` > `libx264 veryfast`
-- Both GPU and CPU paths use the same pipe function
-- **Saved**: ~3s (encode dropped from 15.5s → 7s)
+## Current Architecture (committed)
 
-### Change 2: Eliminated panel alpha compositing
-- **File**: `replay_video.py:render_frame()` lines 438-456
-- Replaced 2 full-canvas RGBA `Image.new()` + 2 `Image.alpha_composite()` + 1 `convert('RGBA')` + 1 `convert('RGB')` = 5 allocations per frame → pre-blended `draw.rectangle()` calls (in-place, no allocations)
-- **Saved**: ~1.5s (fewer allocations and pixel-blend operations)
+### Single-shot parallel (SharedMemory)
+When all states fit in shared memory:
+1. Pre-allocate `SharedMemory(size=num_needed * frame_bytes)`
+2. Workers (`ProcessPoolExecutor`) call `_render_chunk_shm()` — renders frames into the shared buffer
+3. Main process reads from the same buffer via `np.ndarray()` and writes to ffmpeg pipe
+4. Overlapped: as chunks complete, frames are written to pipe immediately
 
-### Change 3: Eliminated `static_base.copy()` in stats panel
-- **File**: `replay_video.py:_apply_stats_dynamic()`
-- Modified to paste directly onto canvas instead of copying static_base to intermediate RGBA and returning
-- **Saved**: ~1s (avoided panel-sized copy per frame)
+### Serial fallback
+When SharedMemory allocation fails (too large):
+1. Render each unique state one-at-a-time
+2. Write each frame N times to ffmpeg pipe immediately (overlap render + encode)
+3. O(1) memory — only current frame in RAM
 
-### Change 4: Memory-mapped frame data (eliminate IPC pickle overhead)
-- **File**: `replay_video.py:_render_chunk_mmap()`, parallel path in `generate_frames()`
-- Added `_render_chunk_mmap()` function that writes PIL- rendered frames to a numpy memmap file
-- Workers write directly to file-backed shared memory instead of returning PIL Images via pickle
-- Main process reads from the same memmap during encode
-- Added `import tempfile` for temp file creation
-- **Saved**: ~8s (render dropped from 15.6s → 7.7s — IPC pickle was the dominant bottleneck)
+### No batched parallel path exists in current committed code
+The refactored batched parallel path (ProcessPoolExecutor + SharedMemory per batch) was reverted.
 
-### Change 5: Overlapped render + encode via streaming encode
-- **File**: `replay_video.py:generate_frames()` parallel loop
-- Opens read-only memmap in main process *while* workers still render
-- After each chunk completes, writes any newly-ready frames to ffmpeg pipe immediately (in video order via `_write_cursor`)
-- Encode interleaves with remaining render work, hiding most of the 7.3s encode time
-- **Saved**: ~3s (total dropped from 15s → 12s)
+## Key Bottlenecks Identified
 
-### Minor optimization: memoryview writes
-- **File**: `replay_video.py:generate_frames()` encode loop
-- Replaced `mm[state_idx].tobytes()` → `mm[state_idx].data` to avoid copying pixel data before pipe write
-- **Saved**: negligible (~0.06s)
+### 1. SharedMemory uses page file
+On Windows, `SharedMemory` uses the system paging file. For 20×20:
+- 11177 states × 4.6MB = 51GB needed
+- `OSError: [WinError 1455] The paging file is too small`
+- Falls to serial path, which is slow (~159s estimated)
 
-## What We Tried and Rejected
+### 2. Serial path is too slow for large puzzles
+Each state rendered sequentially. For 20×20 with ~57ms/state, 11177×57ms = 637s of render.
 
-- **Background writer thread**: Writer thread competed for CPU → render slowed 2×. REVERTED.
-- **Pre-composed tile sprites**: Combined base+number+bar into single RGBA → more PIL ops, not fewer. REVERTED.
-- **In-place prev_canvas mutation (no copy)**: Would break stored state references in the images list. NOT FEASIBLE without architecture change.
-- `**_render_chunk returns bytes`**: Moving `tobytes()` to workers didn't help — the real bottleneck was pickle IPC for return values, not the conversion itself.
+### 3. Pipe write bandwidth
+23562 frames × 4.6MB = 108GB through ffmpeg stdin pipe. At ~700MB/s (NVENC encode rate), encode takes ~154s.
 
-## Key Technical Insights
+### 4. GIL contention with threads
+ThreadPoolExecutor for parallel rendering doesn't give real parallelism due to Python GIL. PIL/numpy C extensions release GIL, but Python-level loop overhead causes contention.
 
-1. **Pickle IPC was the bottleneck**: Workers returning 2MB PIL Images via ProcessPoolExecutor required ~2.7GB of pickle serialization. Memmap eliminated this entirely, cutting render time in half.
-2. **Alpha compositing is expensive**: 5 full-canvas allocations + 2 pixel-blend operations per frame for the panel. Pre-blending the panel color with BG_COLOR eliminated all of them.
-3. **Overlap is free with memmap**: Memmap allows simultaneous read/write from different processes. Reading frames for encode while workers render more frames provides free parallelization.
-4. **NVENC encode is pipe-bound**: 3167 × 2MB = 6.3GB through a pipe takes ~7s regardless of encoder speed.
+### 5. File-backed memmap IO
+Using `np.memmap` backed by disk files avoids page file but adds disk I/O overhead (especially on Windows with sequential file creation/deletion per batch).
 
-## Bottleneck Analysis (Final)
+### 6. ProcessPoolExecutor pool creation overhead
+Creating/destroying ProcessPoolExecutor for each batch is expensive (~1-2s per batch).
 
-Current breakdown of the 12.1s CPU total:
-- **Frame param prep + pickle**: ~1s
-- **Rendering** (8 workers, ~170 frames each): ~7.6s
-  - `prev_canvas.copy()` per frame: ~0.3ms × 1362 = 0.4s
-  - Tile pasting (3 per changed tile × avg 2 changed): 6 pastes × 0.2ms × 1362 = 1.6s
-  - `np.array(img)` for memmap write: ~2ms × 1362 = 2.7s
-  - Panel overlay + stats paste: ~1ms × 1362 = 1.4s
-  - Timer bar rendering: ~0.5ms × 1362 = 0.7s
-  - Worker overhead (pickle params, process management): ~0.8s
-- **Encode** (overlapped, mostly hidden): ~7.3s becomes ~0.5s visible tail
+## Previous Optimizations Attempted (all reverted)
 
-## Remaining Improvement Ideas
+| Change | 10×10 Effect | 20×20 Effect | Reverted? |
+|--------|-------------|-------------|-----------|
+| Pool reuse across batches | — | -20s (207→187s) | Yes |
+| SHM reuse across batches | — | -5s (187→182s) | Yes |
+| ThreadPoolExecutor (GIL contention) | — | slower | Yes |
+| RAM buffer (numpy zeros) | — | ~same (182s) | Yes |
+| File-backed memmap per batch | — | slower | Yes |
+| NVENC p1 preset | — | -8s (180→172s) | Yes |
 
-1. **Dedup repeated states in encode**: Currently we write each frame individually, including duplicates. Could pre-concatenate runs of the same state into single large writes. Small gain.
+## Next Steps
 
-2. **Render directly into memmap (no PIL)**: Eliminate PIL Image creation + `np.array(img)` copy per frame by writing tile data directly into numpy arrays. Would save ~2.7s but requires major refactor.
+### Option A: Batched parallel with ProcessPoolExecutor + SharedMemory per batch
+Already tested: 20×20 ran in ~187s (after pool reuse). Falls to serial if SHM fails per-batch too.
 
-3. **Use `np.ndarray` as canvas instead of PIL Image**: Replace `ImageDraw`, `canvas.paste()`, etc. with numpy array operations. Avoids PIL entirely for the CPU path. High effort, potentially large gain.
+### Option B: Pre-allocate large file on disk, use as memmap
+26.5GB free on C:\. 20×20 needs 51GB total. Batched approach would use e.g. 4GB files. Tested slower due to Windows file I/O overhead.
 
-4. **Reduce canvas resolution for CPU path**: Quality parameter could be lowered when `--no-gpu` is set. Smaller canvas = less data to render, copy, and encode.
+### Option C: Reduce canvas resolution for CPU path
+Scale down frames before writing to pipe. Reduces both render and encode time. Quality trade-off.
 
-5. **Pre-compute tile composite sprites**: Pre-compose the most common (base+number+bar) combinations into single opaque sprites to reduce 6 pastes → 2 pastes per delta frame. Would save ~1s.
+### Option D: Fix serial path performance
+The serial path is the fallback for 20×20. If we can make serial go from ~159s to ~90s, that might be acceptable.
+
+### Option E: Write unique states only (skip duplicates)
+Instead of writing each video frame (23562), write each unique state (11177) with frame duration metadata. Requires ffmpeg VFR support.
+
+## System Specs
+- CPU: 6 cores (12 logical)
+- RAM: 16 GB (10.6 GB available)
+- GPU: NVIDIA (hevc_nvenc available)
+- Disk: C: 26.5 GB free, F: 13.4 GB free
