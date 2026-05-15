@@ -11,13 +11,30 @@ from concurrent.futures import ThreadPoolExecutor
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 
-from replay_video import ReplayVideoGenerator, CancelError
+from replay_video import ReplayVideoGenerator, CancelError, _quick_infer_size
 from sliding_puzzles import parse_replay_url
-from replay_generator import expand_solution, parse_scramble_guess
+
 from geometry import RenderOptions
 from debug_log import get_logger, init_logfile
 
 log = get_logger()
+
+
+def _count_moves(solution: str) -> int:
+    """Count individual moves without expanding the full string."""
+    total = 0
+    i = 0
+    while i < len(solution):
+        if solution[i] in 'RULD':
+            i += 1
+            num = 0
+            while i < len(solution) and solution[i].isdigit():
+                num = num * 10 + int(solution[i])
+                i += 1
+            total += num if num else 1
+        else:
+            i += 1
+    return total
 
 if getattr(sys, 'frozen', False):
     base = sys._MEIPASS
@@ -106,7 +123,7 @@ def _open(path, status_callback=None):
 
 
 def _generate_filename(solution, tps, time_v, movetimes, size_arg=None, index=0, speed_factor=1.0, scramble=None):
-    moves = len(expand_solution(solution))
+    moves = _count_moves(solution)
     if tps and tps > 0:
         display_tps = tps
     else:
@@ -134,11 +151,8 @@ def _generate_filename(solution, tps, time_v, movetimes, size_arg=None, index=0,
         h = len(rows)
         w = len(rows[0].split()) if rows else 0
     else:
-        try:
-            matrix = parse_scramble_guess(solution)
-            w, h = len(matrix[0]), len(matrix)
-        except Exception:
-            w, h = "?", "?"
+        size = _quick_infer_size(solution, scramble)
+        w, h = size if size else ("?", "?")
     parts = [f"{w}x{h}"]
     if time_s:
         parts.append(f"{time_s:.3f}")
@@ -602,10 +616,14 @@ class ReplayGUI(tb.Window):
                 return
             if raw.startswith(("http://", "https://")):
                 solution, tps, scramble, movetimes = parse_replay_url(raw)
-                time_s = movetimes[-1] / 1000.0 if isinstance(movetimes, list) and movetimes[-1] > 0 else 0
-                matrix = parse_scramble_guess(scramble) if scramble else parse_scramble_guess(solution)
-                size_str = f"{len(matrix[0])}x{len(matrix)}"
-                moves = len(expand_solution(solution))
+                moves = _count_moves(solution)
+                if isinstance(movetimes, list) and movetimes[-1] > 0:
+                    time_s = movetimes[-1] / 1000.0
+                    tps = moves / time_s
+                else:
+                    time_s = 0
+                size = _quick_infer_size(solution, scramble)
+                size_str = f"{size[0]}x{size[1]}" if size else "?"
                 accurate = isinstance(movetimes, list) and len(movetimes) > 1
                 if time_s and tps:
                     meta = f"{size_str} | {time_s:.3f} ({moves} / {tps:.3f})"
@@ -617,9 +635,9 @@ class ReplayGUI(tb.Window):
                     meta += " | movetimes accurate"
             else:
                 solution = raw
-                moves = len(expand_solution(solution))
-                matrix = parse_scramble_guess(solution)
-                size_str = f"{len(matrix[0])}x{len(matrix)}"
+                moves = _count_moves(solution)
+                size = _quick_infer_size(solution)
+                size_str = f"{size[0]}x{size[1]}" if size else "?"
                 meta = f"{size_str} | {moves} moves"
             self.file_meta_var.set(meta)
         except Exception as e:
@@ -754,7 +772,7 @@ class ReplayGUI(tb.Window):
 
             if mode == "url":
                 solution, tps, scramble, movetimes = parse_replay_url(input_str)
-                sol_len = len(expand_solution(solution))
+                sol_len = _count_moves(solution)
                 log.info(f"_process_item[{idx}]: parsed URL -> sol_len={sol_len}, tps={tps}, scramble={'yes' if scramble else 'no'}, movetimes_type={type(movetimes).__name__}")
                 if isinstance(movetimes, list):
                     log.info(f"_process_item[{idx}]: movetimes len={len(movetimes)}, first={movetimes[0]}, last={movetimes[-1]}")
@@ -769,7 +787,7 @@ class ReplayGUI(tb.Window):
                     log.info(f"_process_item[{idx}]: set movetimes (len={len(movetimes)})")
             else:
                 solution = input_str
-                sol_len = len(expand_solution(solution))
+                sol_len = _count_moves(solution)
                 log.info(f"_process_item[{idx}]: manual mode, sol_len={sol_len}")
                 tps_s = self.tps_var.get().strip()
                 tps = float(tps_s) if tps_s else None

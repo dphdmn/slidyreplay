@@ -1724,14 +1724,25 @@ def _quick_infer_size(solution: str, scramble: Optional[str] = None, size=None) 
         except Exception:
             pass
     try:
-        from replay_generator import parse_scramble_guess, expand_solution
+        from replay_generator import parse_scramble_guess
         matrix = parse_scramble_guess(solution)
         if matrix:
             return (len(matrix[0]), len(matrix))
     except Exception:
         pass
     try:
-        sol_len = len(expand_solution(solution))
+        sol_len = 0
+        i = 0
+        while i < len(solution):
+            if solution[i] in 'RULD':
+                i += 1
+                num = 0
+                while i < len(solution) and solution[i].isdigit():
+                    num = num * 10 + int(solution[i])
+                    i += 1
+                sol_len += num if num else 1
+            else:
+                i += 1
         side = math.isqrt(sol_len)
         if side * side == sol_len:
             return (side, side)
@@ -1837,10 +1848,10 @@ class ReplayVideoGenerator:
 
         if time is not None:
             tps_val = sol_len / time
-        elif tps is not None:
-            tps_val = tps
         elif real_tps is not None:
             tps_val = real_tps
+        elif tps is not None:
+            tps_val = tps
         else:
             tps_val = 15
 
