@@ -1308,10 +1308,6 @@ def generate_frames(
     tile_sprites = prerender_tile_layers(w, h, tile_size, font_size, opts, all_fringe_schemes, grid_states)
     log.info(f"  tile_sprites: {len(tile_sprites.base_sprites)} bases, {len(tile_sprites.number_texts)} numbers, {len(tile_sprites.bar_sprites)} bars")
 
-    composite_images, composite_lookup = build_composite_atlas(
-        tile_sprites, w, h, font_size, opts, grid_states, all_fringe_schemes
-    )
-
     all_md = calculate_manhattan_distance(matrix)
     current_md = all_md
     zp = find_zero(matrix, w, h)
@@ -1337,23 +1333,40 @@ def generate_frames(
             cum += d
             move_times.append(cum)
 
-    starts = [0.0]
-    for mt in move_times:
-        starts.append(preview_ms + mt)
-    starts.append(preview_ms + move_times[-1] + final_ms)
+    total_frames = max(1, int(round((preview_ms + move_times[-1] + final_ms) / frame_time_ms)))
 
-    total_frames = max(1, int(round(starts[-1] / frame_time_ms)))
-
-    frame_state = []
+    frame_state = np.zeros(total_frames, dtype=np.int32)
+    mi = 0
     for j in range(total_frames):
         t = j * frame_time_ms
-        idx = bisect.bisect_right(starts, t) - 1
-        frame_state.append(max(0, min(idx, sol_len)))
+        while mi < sol_len and preview_ms + move_times[mi] <= t:
+            mi += 1
+        frame_state[j] = mi
 
-    states_needed = sorted(set(frame_state))
+    unique_vals = np.unique(frame_state)
+    states_needed = [int(x) for x in unique_vals]
     states_needed_set = set(states_needed)
     _t_frame_state_end = time_module.time()
     log.info(f"  frame_state: total_frames={total_frames}, unique_states={len(states_needed)}, frame_time_ms={frame_time_ms:.3f} (took {_t_frame_state_end - _t_stage1:.3f}s)")
+
+    # Build composites only for grid states that will actually be rendered
+    grid_keys_for_needed = _sorted_grid_keys[:-1]
+    needed_state_ids = {id(grid_states[0])}
+    for i, gk in enumerate(grid_keys_for_needed):
+        if gk == 0:
+            continue
+        next_gk = grid_keys_for_needed[i + 1] if i + 1 < len(grid_keys_for_needed) else sol_len + 1
+        first_fn = gk + 1
+        last_fn_exclusive = next_gk + 1
+        idx = bisect.bisect_left(states_needed, first_fn)
+        if idx < len(states_needed) and states_needed[idx] < last_fn_exclusive:
+            needed_state_ids.add(id(grid_states[gk]))
+
+    filtered_grid_states = {k: v for k, v in grid_states.items()
+                            if not isinstance(k, (int, float)) or id(v) in needed_state_ids}
+    composite_images, composite_lookup = build_composite_atlas(
+        tile_sprites, w, h, font_size, opts, filtered_grid_states, all_fringe_schemes
+    )
 
     # Optional GPU acceleration for tile grid rendering
     puzzle_w_est = w * tile_size
@@ -1388,7 +1401,7 @@ def generate_frames(
     mc_flat = np.array(matrix, dtype=np.int32).flatten()
     zp_idx = zp[0] * w + zp[1]
 
-    frame_params = [None] * (sol_len + 1)
+    frame_params = {}
     num_needed = len(states_needed)
     _t_last = _t_stage1
 
@@ -1536,7 +1549,7 @@ def generate_frames(
     _t_fp = time_module.time()
     log.info(f"  frame_params loop: {_t_fp - _t_stage1:.3f}s total, {num_needed} states built")
 
-    log.info(f"  render decision: use_gpu={use_gpu}, total_video_frames={len(frame_state)}, unique_states={len(states_needed)} ({len(states_needed)*100//len(frame_state) if frame_state else 0}%%)")
+    log.info(f"  render decision: use_gpu={use_gpu}, total_video_frames={len(frame_state)}, unique_states={len(states_needed)} ({len(states_needed)*100//len(frame_state) if len(frame_state) > 0 else 0}%%)")
 
     # Pre-compute static stats base + layout for static/dynamic split (both paths)
     if not opts.grid_only:
@@ -1638,7 +1651,7 @@ def generate_frames(
         log.info(f"  GPU PATH COMPLETE: returning {len(frame_state)} frame_state entries")
         log_ram("after GPU render")
 
-        return [], frame_state
+        return [], frame_state.tolist()
 
     # ── CPU path: render unique states, pipe via frame mapping ──
     log.info(f"  CPU PATH: {len(states_needed)} unique states to render, canvas={canvas_w_cpu}x{canvas_h_cpu}")
@@ -1697,7 +1710,7 @@ def generate_frames(
         writer.close()
     log_ram("CPU: after ffmpeg pipe")
 
-    return [], frame_state
+    return [], frame_state.tolist()
 
 
 # ─── Progress Display ──────────────────────────────────────────────
