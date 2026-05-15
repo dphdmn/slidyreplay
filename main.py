@@ -189,6 +189,7 @@ class ReplayGUI(tb.Window):
         self.quality_var = tk.DoubleVar(value=1.0)
         self.double_quality_var = tk.BooleanVar(value=False)
         self.compression_var = tk.IntVar(value=18)
+        self.slow_render_var = tk.BooleanVar(value=False)
         self.speed_factor_var = tk.StringVar(value="1.0")
 
         self.tps_var = tk.StringVar()
@@ -248,8 +249,25 @@ class ReplayGUI(tb.Window):
 
         r = 0
 
+        # ── OUTPUT ──
+        tb.Separator(settings, bootstyle="secondary").grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
+        r += 1
+        out_row = tb.Frame(settings)
+        out_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
+        out_row.grid_columnconfigure(1, weight=1)
+        tb.Label(out_row, text="Output folder", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.out_entry = tb.Entry(out_row, textvariable=self.out_folder_var)
+        self.out_entry.grid(row=0, column=1, sticky="ew", padx=(0, 4))
+        tb.Button(out_row, text="Browse...", command=self._browse_output,
+                  bootstyle="secondary-outline", width=9).grid(row=0, column=2)
+        r += 1
+
+        # ── VIDEO ──
+        tb.Separator(settings, bootstyle="secondary").grid(row=r, column=0, sticky="ew", pady=(6, 4), padx=12)
+        r += 1
+
         fps_row = tb.Frame(settings)
-        fps_row.grid(row=r, column=0, sticky="ew", pady=(0, 10), padx=12)
+        fps_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
         fps_row.grid_columnconfigure(1, weight=1)
         tb.Label(fps_row, text="FPS", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
         self.fps_scale = tb.Scale(fps_row, from_=5, to=240,
@@ -266,76 +284,12 @@ class ReplayGUI(tb.Window):
         self.fps_var.trace_add("write", _snap_fps)
         r += 1
 
-        # ── Checkboxes row: GPU + Force fringe + Double quality ──
-        self._gpu_available = False
-        self._gpu_name = ""
-        try:
-            import torch
-            self._gpu_available = torch.cuda.is_available()
-            if self._gpu_available:
-                self._gpu_name = torch.cuda.get_device_name(0)
-        except ImportError:
-            pass
-        self.use_gpu_var = tk.BooleanVar(value=self._gpu_available)
-
-        chk_row = tb.Frame(settings)
-        chk_row.grid(row=r, column=0, sticky="ew", pady=(8, 8), padx=12)
-        chk_row.grid_columnconfigure(0, weight=1)
-        chk_row.grid_columnconfigure(2, weight=1)
-        chk_inner = tb.Frame(chk_row)
-        chk_inner.grid(row=0, column=1)
-        self.gpu_toggle = tb.Checkbutton(
-            chk_inner, text="GPU acceleration", variable=self.use_gpu_var,
-            bootstyle="round-toggle success"
-        )
-        self.gpu_toggle.pack(side="left", padx=(0, 24))
-        tb.Checkbutton(chk_inner, text="Force fringe", variable=self.force_fringe_var,
-                       bootstyle="round-toggle").pack(side="left", padx=(0, 24))
-        tb.Checkbutton(chk_inner, text="Double quality (2x)", variable=self.double_quality_var,
-                       bootstyle="round-toggle").pack(side="left")
-        def _on_dq_toggle(*_):
-            self.quality_var.set(2.0 if self.double_quality_var.get() else 1.0)
-            self._update_quality_warning()
-        self.double_quality_var.trace_add("write", _on_dq_toggle)
-        r += 1
-
-        # ── GPU info label (below checkboxes, like quality warning) ──
-        self.gpu_info_lbl = tb.Label(settings, font=(FONT_FAMILY, 9), anchor="w")
-        self.gpu_info_lbl.grid(row=r, column=0, sticky="ew", pady=(0, 8), padx=12)
-        if self._gpu_available:
-            self.gpu_info_lbl.config(text=f"GPU ON ({self._gpu_name})", bootstyle="success")
-        else:
-            self.gpu_info_lbl.config(text="Not available — install CUDA (see README)", bootstyle="secondary")
-
-        def _on_gpu_toggle():
-            if self.use_gpu_var.get():
-                if self._gpu_available:
-                    self.gpu_info_lbl.config(text=f"GPU ON ({self._gpu_name})", bootstyle="success")
-                else:
-                    self.gpu_info_lbl.config(text="GPU not available — install CUDA (see README)", bootstyle="secondary")
-            else:
-                self.gpu_info_lbl.config(text="GPU OFF (CPU)", bootstyle="secondary")
-        self.gpu_toggle.config(command=_on_gpu_toggle)
-        r += 1
-
-        self.quality_warning = tb.Label(settings, text="⚠ 2x quality increases VRAM usage significantly — may cause out-of-memory errors on GPU",
-                                         font=(FONT_FAMILY, 8), foreground="#ffa500", anchor="w")
-        self.quality_warning.grid(row=r, column=0, sticky="ew", pady=(0, 8), padx=12)
-        self.quality_warning.grid_remove()
-        r += 1
-
-        # ── Render Options checkboxes ──
-        r += 1
-        render_opts_row = tb.Frame(settings)
-        render_opts_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
-        tb.Checkbutton(render_opts_row, text="No layout", variable=self.no_layout_var,
-                       bootstyle="round-toggle").pack(side="left", padx=(0, 12))
-        tb.Checkbutton(render_opts_row, text="No border", variable=self.no_border_var,
-                       bootstyle="round-toggle").pack(side="left", padx=(0, 12))
-        tb.Checkbutton(render_opts_row, text="No sec border", variable=self.no_secondary_border_var,
-                       bootstyle="round-toggle").pack(side="left", padx=(0, 12))
-        tb.Checkbutton(render_opts_row, text="No numbers", variable=self.no_numbers_var,
-                       bootstyle="round-toggle").pack(side="left")
+        speed_row = tb.Frame(settings)
+        speed_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
+        speed_row.grid_columnconfigure(1, weight=1)
+        tb.Label(speed_row, text="Speed (×)", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.speed_entry = tb.Entry(speed_row, textvariable=self.speed_factor_var, width=10)
+        self.speed_entry.grid(row=0, column=1, sticky="w", padx=(0, 6))
         r += 1
 
         compression_row = tb.Frame(settings)
@@ -352,22 +306,98 @@ class ReplayGUI(tb.Window):
         self.compression_var.trace_add("write", _on_compression_change)
         r += 1
 
-        speed_row = tb.Frame(settings)
-        speed_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
-        speed_row.grid_columnconfigure(1, weight=1)
-        tb.Label(speed_row, text="Speed (×)", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
-        self.speed_entry = tb.Entry(speed_row, textvariable=self.speed_factor_var, width=10)
-        self.speed_entry.grid(row=0, column=1, sticky="w", padx=(0, 6))
+        # ── RENDERING ──
+        tb.Separator(settings, bootstyle="secondary").grid(row=r, column=0, sticky="ew", pady=(6, 4), padx=12)
         r += 1
 
-        out_row = tb.Frame(settings)
-        out_row.grid(row=r, column=0, sticky="ew", pady=(8, 8), padx=12)
-        out_row.grid_columnconfigure(1, weight=1)
-        tb.Label(out_row, text="Output folder", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
-        self.out_entry = tb.Entry(out_row, textvariable=self.out_folder_var)
-        self.out_entry.grid(row=0, column=1, sticky="ew", padx=(0, 4))
-        tb.Button(out_row, text="Browse...", command=self._browse_output,
-                  bootstyle="secondary-outline", width=9).grid(row=0, column=2)
+        self._gpu_available = False
+        self._gpu_name = ""
+        try:
+            import torch
+            self._gpu_available = torch.cuda.is_available()
+            if self._gpu_available:
+                self._gpu_name = torch.cuda.get_device_name(0)
+        except ImportError:
+            pass
+        self.use_gpu_var = tk.BooleanVar(value=self._gpu_available)
+
+        # GPU + toggles row
+        chk_row = tb.Frame(settings)
+        chk_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
+        self.gpu_toggle = tb.Checkbutton(
+            chk_row, text="GPU acceleration", variable=self.use_gpu_var,
+            bootstyle="round-toggle success"
+        )
+        self.gpu_toggle.pack(side="left", padx=(0, 12))
+        tb.Checkbutton(chk_row, text="Force fringe", variable=self.force_fringe_var,
+                       bootstyle="round-toggle").pack(side="left", padx=(0, 12))
+        tb.Checkbutton(chk_row, text="Double quality (2x)", variable=self.double_quality_var,
+                       bootstyle="round-toggle").pack(side="left")
+        def _on_dq_toggle(*_):
+            self.quality_var.set(2.0 if self.double_quality_var.get() else 1.0)
+            self._update_quality_warning()
+        self.double_quality_var.trace_add("write", _on_dq_toggle)
+        r += 1
+
+        # GPU info
+        self.gpu_info_lbl = tb.Label(settings, font=(FONT_FAMILY, 9), anchor="w")
+        self.gpu_info_lbl.grid(row=r, column=0, sticky="ew", pady=(0, 4), padx=12)
+        if self._gpu_available:
+            self.gpu_info_lbl.config(text=f"GPU ON ({self._gpu_name})", bootstyle="success")
+        else:
+            self.gpu_info_lbl.config(text="Not available — install CUDA (see README)", bootstyle="secondary")
+
+        # Quality warning
+        self.quality_warning = tb.Label(settings, text="⚠ 2x quality increases VRAM usage significantly — may cause out-of-memory errors on GPU",
+                                         font=(FONT_FAMILY, 8), foreground="#ffa500", anchor="w")
+        self.quality_warning.grid(row=r, column=0, sticky="ew", pady=(0, 4), padx=12)
+        self.quality_warning.grid_remove()
+
+        def _on_gpu_toggle():
+            if self.use_gpu_var.get():
+                if self._gpu_available:
+                    self.gpu_info_lbl.config(text=f"GPU ON ({self._gpu_name})", bootstyle="success")
+                else:
+                    self.gpu_info_lbl.config(text="GPU not available — install CUDA (see README)", bootstyle="secondary")
+            else:
+                self.gpu_info_lbl.config(text="GPU OFF (CPU)", bootstyle="secondary")
+                self.slow_render_var.set(True)
+            _update_slow_render_desc()
+        self.gpu_toggle.config(command=_on_gpu_toggle)
+        r += 1
+
+        # Slow render (single line: checkbox + inline description)
+        slow_row = tb.Frame(settings)
+        slow_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
+        self.slow_render_cb = tb.Checkbutton(slow_row, text="Slow render", variable=self.slow_render_var,
+                                              bootstyle="round-toggle")
+        self.slow_render_cb.pack(side="left")
+        self.slow_render_desc = tb.Label(slow_row, text="~33% smaller file, ~33% longer",
+                                          font=(FONT_FAMILY, 9), foreground="#888")
+        self.slow_render_desc.pack(side="left", padx=(8, 0))
+
+        def _update_slow_render_desc():
+            if not self.use_gpu_var.get():
+                self.slow_render_desc.config(text="auto-enabled for CPU (free smaller files)")
+            elif self.slow_render_var.get():
+                self.slow_render_desc.config(text="~33% smaller file, ~33% longer")
+            else:
+                self.slow_render_desc.config(text="")
+        self.slow_render_var.trace_add("write", lambda *_: _update_slow_render_desc())
+        self.after(10, _update_slow_render_desc)
+        r += 1
+
+        # Render toggles
+        render_opts_row = tb.Frame(settings)
+        render_opts_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
+        tb.Checkbutton(render_opts_row, text="No layout", variable=self.no_layout_var,
+                       bootstyle="round-toggle").pack(side="left", padx=(0, 10))
+        tb.Checkbutton(render_opts_row, text="No border", variable=self.no_border_var,
+                       bootstyle="round-toggle").pack(side="left", padx=(0, 10))
+        tb.Checkbutton(render_opts_row, text="No sec border", variable=self.no_secondary_border_var,
+                       bootstyle="round-toggle").pack(side="left", padx=(0, 10))
+        tb.Checkbutton(render_opts_row, text="No numbers", variable=self.no_numbers_var,
+                       bootstyle="round-toggle").pack(side="left")
         r += 1
 
         # ── Notebook (below settings) ──
@@ -716,6 +746,7 @@ class ReplayGUI(tb.Window):
                 "quality": self.quality_var.get(),
                 "fps": self.fps_var.get(),
                 "compression": self.compression_var.get(),
+                "slow_render": self.slow_render_var.get(),
                 "speed_factor": self._get_speed_factor(),
                 "opts": opts,
             }
@@ -815,6 +846,7 @@ class ReplayGUI(tb.Window):
                 "quality": self.quality_var.get(),
                 "fps": self.fps_var.get(),
                 "compression": self.compression_var.get(),
+                "slow_render": self.slow_render_var.get(),
                 "speed_factor": self._get_speed_factor(),
                 "opts": RenderOptions(
                     grid_only=self.no_layout_var.get(),
@@ -1098,7 +1130,8 @@ Examples:
     parser.add_argument("--output", "-o", default="replay.mp4", help="Output file path")
     parser.add_argument("--quality", type=float, default=1.0, help="Render quality (1.0-4.0)")
     parser.add_argument("--compression", type=int, default=18, help="Video encoder quality (10-40, lower = fewer artifacts but larger file, default: 18)")
-    parser.add_argument("--preset", type=str, default="", help="FFmpeg encoder preset (e.g. p7, p4, p1 for NVENC; veryfast, medium, slow for libx264; default: p7/veryfast)")
+    parser.add_argument("--slow-render", action="store_true", default=False, help="Slower encode, ~33% smaller file (p7 for NVENC, slow for libx264)")
+    parser.add_argument("--encoder-preset", type=str, default="", help=argparse.SUPPRESS)
     parser.add_argument("--fps", type=int, default=60, help="Output video frame rate (default: 60)")
     parser.add_argument("--no-gpu", action="store_true", default=None,
                         help="Disable GPU acceleration")
@@ -1163,6 +1196,8 @@ Examples:
     else:
         use_gpu = torch_avail
 
+    slow_render = args.slow_render or not use_gpu
+
     if use_gpu and torch_avail:
         try:
             gpu_str = f"GPU ON ({torch.cuda.get_device_name(0)})"
@@ -1216,7 +1251,7 @@ Examples:
                 output_path = f"{root}_{idx+1:03d}{ext}"
 
                 kwargs = dict(quality=args.quality, fps=args.fps, compression=args.compression,
-                              preset=args.preset, speed_factor=args.speedup, force_fringe=args.force_fringe)
+                              slow_render=slow_render, encoder_preset=args.encoder_preset, speed_factor=args.speedup, force_fringe=args.force_fringe)
                 try:
                     sol, tps, scramble, movetimes = parse_replay_url(val)
                     kwargs["tps"] = tps or args.tps
@@ -1261,16 +1296,16 @@ Examples:
                                tps=tps or args.tps, scramble=scramble,
                                movetimes=movetimes, quality=args.quality,
                                fps=args.fps, compression=args.compression,
-                               preset=args.preset, speed_factor=args.speedup,
-                               force_fringe=args.force_fringe)
+                               slow_render=slow_render, encoder_preset=args.encoder_preset,
+                               speed_factor=args.speedup, force_fringe=args.force_fringe)
                 else:
                     run_single(val, output_path, opts=opts,
                                tps=None if movetimes else args.tps, time=args.time,
                                scramble=args.scramble, size=args.size,
                                quality=args.quality, movetimes=movetimes,
                                fps=args.fps, compression=args.compression,
-                               preset=args.preset, speed_factor=args.speedup,
-                               force_fringe=args.force_fringe)
+                               slow_render=slow_render, encoder_preset=args.encoder_preset,
+                               speed_factor=args.speedup, force_fringe=args.force_fringe)
     except Exception as e:
         import traceback
         traceback.print_exc()

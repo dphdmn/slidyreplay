@@ -343,7 +343,7 @@ def render_frame(
     grid_x, grid_y = compute_grid_position(opts.grid_only)
 
     if prev_canvas is not None and changed_tiles is not None:
-        canvas = prev_canvas.copy()
+        canvas = prev_canvas
         canvas_w, canvas_h = canvas.size
         draw = ImageDraw.Draw(canvas)
     else:
@@ -523,10 +523,6 @@ def calculate_move_timings(solution: str, tps: float, width: int, height: int, s
 # ─── Frame Generation ──────────────────────────────────────────────
 
 def _render_one_frame(params: dict) -> Image.Image:
-    params.pop("colors", None)
-    params.pop("colors_main", None)
-    params.pop("colors_sec", None)
-    params.pop("colors_sec_mask", None)
     params.pop("timer_img", None)
     params.pop("stats_img", None)
     return render_frame(**params)
@@ -1158,15 +1154,16 @@ def _get_best_encoder() -> str:
     return 'libx264'
 
 
-def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18, preset: str = ""):
+def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18, slow_render: bool = False, encoder_preset: str = ""):
     """Spawn ffmpeg with best available encoder reading rawvideo from stdin.
-    Tries hevc_nvenc > h264_nvenc > libx264 veryfast.
-    preset: encoder-specific preset name (e.g. 'p7', 'p4', 'p1' for NVENC,
-            'veryfast', 'medium', 'slow' for libx264). Empty = auto-pick default."""
+    Tries hevc_nvenc > h264_nvenc > libx264.
+    slow_render=True: p7 for NVENC, slow for libx264 (smaller file, slower encode).
+    slow_render=False: p4 for NVENC, veryfast for libx264 (default).
+    encoder_preset: override preset name (for benchmarking). Takes priority over slow_render."""
     encoder = _get_best_encoder()
 
     if encoder == 'hevc_nvenc':
-        p = preset if preset else 'p4'
+        p = encoder_preset or ('p7' if slow_render else 'p4')
         cq = compression + 11
         cmd = [
             'ffmpeg', '-y', '-hide_banner',
@@ -1179,7 +1176,7 @@ def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60
         ]
         log.info(f"_create_ffmpeg_pipe (hevc_nvenc, preset={p}): cmd={' '.join(cmd)}")
     elif encoder == 'h264_nvenc':
-        p = preset if preset else 'p4'
+        p = encoder_preset or ('p7' if slow_render else 'p4')
         cq = compression + 12
         cmd = [
             'ffmpeg', '-y', '-hide_banner',
@@ -1192,7 +1189,7 @@ def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60
         ]
         log.info(f"_create_ffmpeg_pipe (h264_nvenc, preset={p}): cmd={' '.join(cmd)}")
     else:
-        p = preset if preset else 'veryfast'
+        p = encoder_preset or ('slow' if slow_render else 'veryfast')
         cmd = [
             'ffmpeg', '-y',
             '-f', 'rawvideo', '-pix_fmt', 'rgb24',
@@ -1207,9 +1204,9 @@ def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60
     return subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 
-def _create_ffmpeg_pipe_gpu(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18, preset: str = ""):
+def _create_ffmpeg_pipe_gpu(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18, slow_render: bool = False, encoder_preset: str = ""):
     """Spawn ffmpeg with best encoder (same as _create_ffmpeg_pipe)."""
-    return _create_ffmpeg_pipe(output_path, width, height, fps, compression, preset)
+    return _create_ffmpeg_pipe(output_path, width, height, fps, compression, slow_render, encoder_preset)
 
 
 def generate_frames(
@@ -1233,7 +1230,8 @@ def generate_frames(
     output_path: str = None,
     fps: int = 60,
     compression: int = 18,
-    preset: str = "",
+    slow_render: bool = False,
+    encoder_preset: str = "",
     gpu_renderer: Optional['GPURenderer'] = None,
     speed_factor: float = 1.0,
     opts: RenderOptions = RenderOptions(),
@@ -1382,58 +1380,7 @@ def generate_frames(
         import torch as _torch_snapshot
         log.info(f"  Python={sys.version.split()[0]}, torch={_torch_snapshot.__version__}, CUDA={_torch_snapshot.version.cuda}")
 
-    # ── Build tile color cache for every grid state lookup may need ──
-    _t_cache_start = time_module.time()
-    _tile_color_cache = {}
-    _tile_bg_np = np.array(TILE_BG, dtype=np.float32)
-    _all_nums = np.arange(1, h * w + 1, dtype=np.int32)
-    _all_rows = (_all_nums - 1) // w
-    _all_cols = (_all_nums - 1) % w
-    _tile_cache_keys = [k for k in _sorted_grid_keys if k != sol_len + 1]
-    for key in _tile_cache_keys:
-        cache_state = grid_states[key]
-        cache_key = id(cache_state)
-        if cache_key not in _tile_color_cache:
-            main = np.full((h * w, 3), _tile_bg_np, dtype=np.float32)
-            sec = np.zeros((h * w, 3), dtype=np.float32)
-            has_sec = np.zeros(h * w, dtype=bool)
-            if len(cache_state["mainColors"]) == 1:
-                mc = cache_state["mainColors"][0]
-                key_ = f"{mc['width']}x{mc['height']}"
-                scheme = all_fringe_schemes[key_]
-                local_r = _all_rows - mc["offsetH"]
-                local_c = _all_cols - mc["offsetW"]
-                mask = (local_r >= 0) & (local_r < mc["height"]) & (local_c >= 0) & (local_c < mc["width"])
-                main[mask] = scheme[local_r[mask], local_c[mask]].astype(np.float32)
-            else:
-                for cs in cache_state["mainColors"]:
-                    local_r = _all_rows - cs["offsetH"]
-                    local_c = _all_cols - cs["offsetW"]
-                    mask = (local_r >= 0) & (local_r < cs["height"]) & (local_c >= 0) & (local_c < cs["width"])
-                    if cs["type"] == CT_MAP["grids1"]:
-                        main[mask] = RED_GRIDS.astype(np.float32)
-                    elif cs["type"] == CT_MAP["grids2"]:
-                        main[mask] = BLUE_GRIDS.astype(np.float32)
-                for sc in cache_state["secondaryColors"]:
-                    local_r = _all_rows - sc["offsetH"]
-                    local_c = _all_cols - sc["offsetW"]
-                    mask = (local_r >= 0) & (local_r < sc["height"]) & (local_c >= 0) & (local_c < sc["width"])
-                    if sc["type"] == CT_MAP["fringe"]:
-                        key_ = f"{sc['width']}x{sc['height']}"
-                        scheme = all_fringe_schemes[key_]
-                        sec[mask] = scheme[local_r[mask], local_c[mask]].astype(np.float32)
-                    elif sc["type"] == CT_MAP["grids1"]:
-                        sec[mask] = RED_GRIDS.astype(np.float32)
-                    elif sc["type"] == CT_MAP["grids2"]:
-                        sec[mask] = BLUE_GRIDS.astype(np.float32)
-                    has_sec[mask] = True
-            _tile_color_cache[cache_key] = {
-                "main": main,
-                "sec": sec,
-                "has_sec": has_sec,
-            }
-
-    log.info(f"  tile color cache built: {len(_tile_color_cache)} unique states, took {time_module.time() - _t_cache_start:.3f}s")
+    # (tile color cache removed — was only consumed by dead CPU-only _build_tile_colors_np)
 
     # ── Stage 2: precompute data only for states that will be rendered ──
 
@@ -1444,22 +1391,6 @@ def generate_frames(
     frame_params = [None] * (sol_len + 1)
     num_needed = len(states_needed)
     _t_last = _t_stage1
-
-    # Helper to tile colors for a needed state via vectorized numpy
-    def _build_tile_colors_np(mc_flat, state):
-        cached = _tile_color_cache.get(id(state))
-        if cached is None:
-            cached = _tile_color_cache.get(id(grid_states[0]))
-        nonzero = mc_flat != 0
-        idx = mc_flat[nonzero] - 1
-        main_arr = np.full((h * w, 3), _tile_bg_np, dtype=np.float32)
-        sec_arr = np.zeros((h * w, 3), dtype=np.float32)
-        has_sec_arr = np.zeros(h * w, dtype=bool)
-        if np.any(nonzero):
-            main_arr[nonzero] = cached["main"][idx]
-            sec_arr[nonzero] = cached["sec"][idx]
-            has_sec_arr[nonzero] = cached["has_sec"][idx]
-        return main_arr, sec_arr, has_sec_arr
 
     # Helper to build stats_data for a needed state
     def _build_stats_data(frame_idx, cur_time_ms, current_md, current_moves):
@@ -1514,10 +1445,6 @@ def generate_frames(
 
     # Process state 0
     state0 = grid_states[0]
-    if not use_gpu:
-        main0, sec0, has_sec0 = _build_tile_colors_np(mc_flat, state0)
-    else:
-        main0 = sec0 = has_sec0 = None
     sd0, tt0 = _build_stats_data(0, 0, all_md, 0)
     frame_params[0] = dict(
         matrix=mc_flat.reshape(h, w).copy(),
@@ -1532,9 +1459,6 @@ def generate_frames(
         total_moves=sol_len,
         total_time_ms=round(total_time_ms),
         total_tps=total_tps,
-        colors_main=main0,
-        colors_sec=sec0,
-        colors_sec_mask=has_sec0,
         opts=opts,
         tile_sprites=tile_sprites,
         composite_atlas=composite_images,
@@ -1551,7 +1475,6 @@ def generate_frames(
             if frame_idx == 0:
                 state = state0
                 cur_time_ms = 0
-                main_c, sec_c, has_sec_c = main0, sec0, has_sec0
                 sd, tt = sd0, tt0
             else:
                 state = _fast_grid_state(grid_states, frame_idx - 1)
@@ -1561,10 +1484,6 @@ def generate_frames(
                 else:
                     _ft = original_fake_times if original_fake_times else fake_times
                     cur_time_ms = _ft[frame_idx - 1] if frame_idx - 1 < len(_ft) else 0
-                if not use_gpu:
-                    main_c, sec_c, has_sec_c = _build_tile_colors_np(mc_flat, state)
-                else:
-                    main_c = sec_c = has_sec_c = None
                 sd, tt = _build_stats_data(frame_idx, cur_time_ms, current_md, frame_idx)
 
             current_matrix = mc_flat.reshape(h, w).copy()
@@ -1593,9 +1512,6 @@ def generate_frames(
                 total_moves=sol_len,
                 total_time_ms=round(total_time_ms),
                 total_tps=total_tps,
-                colors_main=main_c,
-                colors_sec=sec_c,
-                colors_sec_mask=has_sec_c,
                 opts=opts,
                 tile_sprites=tile_sprites,
                 changed_tiles=changed_tiles,
@@ -1677,7 +1593,7 @@ def generate_frames(
 
         # Open ffmpeg pipe with selected encoder
         log.info(f"  OPENING FFMPEG PIPE: output={output_path}, canvas={canvas_w}x{canvas_h}, fps={fps}, compression={compression}, encoder=hevc_nvenc")
-        enc_proc = _create_ffmpeg_pipe_gpu(output_path, canvas_w, canvas_h, fps=fps, compression=compression, preset=preset)
+        enc_proc = _create_ffmpeg_pipe_gpu(output_path, canvas_w, canvas_h, fps=fps, compression=compression, slow_render=slow_render, encoder_preset=encoder_preset)
         writer = _PipeWriter(enc_proc)
         unique_params = [frame_params[i] for i in states_needed]
         _t_stage3 = time_module.time()
@@ -1750,7 +1666,7 @@ def generate_frames(
 
     # Open ffmpeg pipe early so render + encode overlap
     log.info(f"  CPU FFMPEG PIPE: output={output_path}, total_frames={total_video_frames}, compression={compression}")
-    ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w_cpu, canvas_h_cpu, fps=fps, compression=compression, preset=preset)
+    ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w_cpu, canvas_h_cpu, fps=fps, compression=compression, slow_render=slow_render, encoder_preset=encoder_preset)
     writer = _PipeWriter(ffmpeg_proc)
 
     _render_prog_step = max(1, num_needed // 100)
@@ -1869,11 +1785,12 @@ class ReplayVideoGenerator:
         cancel_check=None,
         fps: int = 60,
         compression: int = 18,
-        preset: str = "",
+        slow_render: bool = False,
+        encoder_preset: str = "",
         gpu_renderer=None,
         opts: RenderOptions = RenderOptions(),
     ):
-        log.info(f"generate_simple_replay: output={output_path}, force_fringe={force_fringe}, fps={fps}, compression={compression}, preset='{preset}', quality={quality}, use_gpu={use_gpu}")
+        log.info(f"generate_simple_replay: output={output_path}, force_fringe={force_fringe}, fps={fps}, compression={compression}, slow_render={slow_render}, quality={quality}, use_gpu={use_gpu}")
         log.info(f"  tps={tps}, time={time}, scramble_len={len(scramble) if scramble else 0}, size={size}")
         if tps is not None and time is not None:
             raise ValueError("Provide either tps or time, not both")
@@ -2037,7 +1954,8 @@ class ReplayVideoGenerator:
             output_path=output_path,
             fps=fps,
             compression=compression,
-            preset=preset,
+            slow_render=slow_render,
+            encoder_preset=encoder_preset,
             gpu_renderer=gpu_renderer,
             speed_factor=speed_factor,
             opts=opts,
