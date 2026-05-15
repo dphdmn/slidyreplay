@@ -16,43 +16,68 @@ Launches a dark-themed GUI with URL, File, and Manual input tabs, FPS slider, GP
 
 ```
 python main.py --solution R2D2L2U2 --size 3x3 --tps 10 -o replay.mp4
-python main.py --url "https://slidysim.github.io/?replay=..." -o replay.mp4
-python main.py --file input.txt -o replay.mp4
-python main.py --batch solutions.txt
+python main.py -u "https://slidysim.github.io/?replay=..." -o replay.mp4
+python main.py -f input.txt -o replay.mp4
+python main.py -b solutions.txt -q 2160
+python main.py --solution R2D2L2U2 --time 30 -c 28 --slow-render -o small.mp4
+python main.py --solution R2D2L2U2 --no-layout --no-numbers -o clean.mp4
+python main.py --solution R2D2L2U2 --upscale --encoder libx265 -o high_quality.mp4
+python main.py --solution R2D2L2U2 -q 720 -s 2.0 -o fast.mp4
 ```
 
 ## CLI Reference
 
-| Flag | Description |
-|------|-------------|
-| `--solution` / `-s` | Solution string |
-| `--url` / `-u` | Replay URL |
-| `--file` | File containing a replay URL or solution string |
-| `--tps` | Tiles per second (omit if using `--time`) |
-| `--time` | Total time in seconds (omit if using `--tps`) |
-| `--size` | Puzzle size (e.g. `3x3`, `10x10`) |
-| `--scramble` | Scramble string |
-| `--output` / `-o` | Output file (default: `replay.mp4`) |
-| `--quality` | Render quality (canvas height, min: 720) |
-| `--compression` | Video encoder quality 10–40, lower = fewer artifacts but larger file (default: 18) |
-| `--movetimes` | Comma-separated move timings in seconds (overrides `--tps`/`--time`) |
-| `--speedup` | Speed multiplier (e.g. 2.0 = 2× faster, 0.5 = half speed) (default: 1.0) |
-| `--force-fringe` | Force fringe colors (disable grids detection) |
-| `--fps` | Output framerate (default: 60) |
-| `--no-gpu` | Disable GPU acceleration (GPU is auto-detected by default) |
-| `--force-fringe` | Force fringe colors (disable grids detection) |
-| `--batch` | File with solutions/URLs (one per line) |
-| `--log` | Enable debug logging to `logs/debug_\<timestamp\>.log` |
-| `--no-layout` | Render only the puzzle grid — no timer bar, no stats panel |
-| `--no-border` | Suppress tile border outlines |
-| `--no-secondary-border` | Suppress secondary color bar borders |
-| `--no-numbers` | Suppress tile number text (improves compression) |
+| Category | Flag | Short | Description |
+|----------|------|-------|-------------|
+| **Input** | `--solution` | | Solution string |
+| | `--url` | `-u` | Replay URL |
+| | `--file` | `-f` | File containing a replay URL or solution string |
+| | `--batch` | `-b` | File with solutions/URLs (one per line) |
+| **Puzzle** | `--size` | | Puzzle size (e.g. `3x3`, `10x10`) |
+| | `--scramble` | | Scramble string |
+| **Timing** | `--tps` | | Tiles per second (omit if using `--time`) |
+| | `--time` | | Total time in seconds (omit if using `--tps`) |
+| | `--movetimes` | | Comma-separated move timings in seconds (overrides `--tps`/`--time`) |
+| | `--speedup` | `-s` | Speed multiplier (e.g. `2.0` = 2× faster, `0.5` = half speed) (default: 1.0) |
+| **Output** | `--output` | `-o` | Output file (default: `replay.mp4`) |
+| | `--quality` | `-q` | Render quality — canvas height (720, 1080, 1440, 2160) |
+| | `--fps` | | Output framerate (default: 60) |
+| **Encoder** | `--compression` | `-c` | Video encoder quality 10–40, lower = fewer artifacts but larger file (default: 18) |
+| | `--slow-render` | | Slower encode, ~33% smaller file (p7 for NVENC, slow for libx264). Auto-enabled on CPU. |
+| | `--encoder` | | Force video encoder (choices below). Auto-detected if not set. |
+| | `--upscale` | | Re-encode to 2K (2560×1440). Only applies when quality < 1440p. Keeps original too. |
+| **Render** | `--no-layout` | | Render only the puzzle grid — no timer bar, no stats panel |
+| | `--no-border` | | Suppress tile border outlines |
+| | `--no-secondary-border` | | Suppress secondary color bar borders |
+| | `--no-numbers` | | Suppress tile number text (improves compression) |
+| | `--force-fringe` | | Force fringe colors (disable grids detection) |
+| **Hardware** | `--no-gpu` | `-g` | Disable GPU acceleration (GPU is auto-detected by default) |
+| **Debug** | `--log` | `-l` | Enable debug logging to `logs/debug_\<timestamp\>.log` |
 
-Debug logging is **disabled by default**. Pass `--log` to enable:
+## Encoder Options
+
+Available encoders are auto-detected in priority order — the first supported encoder is used:
+
+| Priority | Encoder | GPU Required | Quality Flag |
+|----------|---------|-------------|-------------|
+| 1 | `hevc_nvenc` | NVIDIA | `-cq` (CRF-like, 21–51) |
+| 2 | `hevc_amf` | AMD | `-qp_p` (CQP, 18–48) |
+| 3 | `hevc_qsv` | Intel | `-global_quality` (CQP, 18–48) |
+| 4 | `libx265` | — | `-crf` (0–51) |
+| 5 | `h264_nvenc` | NVIDIA | `-cq` (CRF-like, 22–52) |
+| 6 | `h264_amf` | AMD | `-qp_p` (CQP, 18–48) |
+| 7 | `h264_qsv` | Intel | `-global_quality` (CQP, 18–48) |
+| 8 | `libx264` | — | `-crf` (0–51, default fallback) |
+
+- **`--compression`** (`-c`) maps to the encoder's quality flag with an offset to normalize across encoders (the value 10–40 is translated per-encoder).
+- **`--slow-render`** (`-R`) switches to a slower preset: `p7` for NVENC, `quality` for AMF, `veryslow` for QSV, `slow` for libx264/libx265. This typically reduces file size by ~33% at the cost of ~33% longer encode time.
+- **`--encoder`** (`-e`) overrides auto-detection to force a specific encoder. Useful when multiple GPUs are present or you want software encoding on a GPU-capable system.
+
+Debug logging is **disabled by default**. Pass `--log` (`-l`) to enable:
 
 ```
-python main.py --log                       # GUI with logging
-python main.py --solution R2D2L2U2 --log   # CLI with logging
+python main.py -l                               # GUI with logging
+python main.py --solution R2D2L2U2 -l          # CLI with logging
 ```
 
 Logs are written to `logs/debug_YYYYMMDD_HHMMSS.log`.
@@ -71,20 +96,18 @@ The GUI shows the GPU name when available, or "Not available — install CUDA" w
 
 **Settings:** quality=720, 60 FPS. 
 
-15.05 (v5.0) version benchmark results (Layout / No Layout):
-======================================================================
-      Puzzle      Moves     Unique    GPU Lay    GPU NoL    CPU Lay    CPU NoL
-  -----------------------------------------------------------------------------
-         4x4         26         25       0.9s       0.7s       0.8s       0.7s
-         5x5         98         95       1.1s       0.9s       1.2s       0.9s
-         6x6        213        208       1.5s       1.2s       1.7s       1.4s
-         7x7        425        401       2.2s       1.7s       2.9s       2.2s
-         8x8        707        652       3.0s       2.3s       4.5s       3.1s
-         9x9       1251       1079       4.8s       3.3s       7.6s       4.7s
-       10x10       1569       1362       6.9s       4.5s       9.7s       6.1s
-       12x12       2883       2470      11.2s       8.1s      16.5s      10.7s
-       16x16       7132       5692      20.7s      18.8s      39.4s      23.6s
-       20x20      14203      11177      43.6s      32.3s      78.0s      43.0s
+| Puzzle | Moves | Unique | GPU Layout | GPU No Layout | CPU Layout | CPU No Layout |
+|--------|------:|-------:|-----------:|--------------:|-----------:|--------------:|
+| 4×4 | 26 | 25 | 0.9s | 0.7s | 0.8s | 0.7s |
+| 5×5 | 98 | 95 | 1.1s | 0.9s | 1.2s | 0.9s |
+| 6×6 | 213 | 208 | 1.5s | 1.2s | 1.7s | 1.4s |
+| 7×7 | 425 | 401 | 2.2s | 1.7s | 2.9s | 2.2s |
+| 8×8 | 707 | 652 | 3.0s | 2.3s | 4.5s | 3.1s |
+| 9×9 | 1251 | 1079 | 4.8s | 3.3s | 7.6s | 4.7s |
+| 10×10 | 1569 | 1362 | 6.9s | 4.5s | 9.7s | 6.1s |
+| 12×12 | 2883 | 2470 | 11.2s | 8.1s | 16.5s | 10.7s |
+| 16×16 | 7132 | 5692 | 20.7s | 18.8s | 39.4s | 23.6s |
+| 20×20 | 14203 | 11177 | 43.6s | 32.3s | 78.0s | 43.0s |
 
 Run your own benchmarks with `python benchmark.py`.
 "Unique" = number of distinct puzzle states rendered (video may duplicate frames via frame mapping).
@@ -110,15 +133,18 @@ Run your own benchmarks with `python benchmark.py`.
 ### Benchmark script
 
 ```
-python benchmark.py         # all puzzles: small (CPU+GPU) + big (GPU only)
-python benchmark.py --small # small puzzles only (CPU+GPU)
-python benchmark.py --big   # big puzzles only (GPU only)
+python benchmark.py                 # all puzzles: small (CPU+GPU) + big (GPU only)
+python benchmark.py --gpu-only      # GPU only (both layout and no-layout)
+python benchmark.py --cpu-only      # CPU only
+python benchmark.py --layout        # layout only (both GPU and CPU)
+python benchmark.py --no-layout     # no-layout only
+python benchmark.py --quality-test  # test 10×10 at all quality presets
 ```
 
-All outputs saved to logs/ folder (for performance testing only).
+All outputs saved to `logs/<timestamp>/` folder.
 
 ## Build (Windows)
-Builds a standalone `dist\ReplayVideoGenerator.exe` (no-GPU version only):
+Builds a standalone `dist\slidyreplay.exe` (CPU-only):
 ```
 build_no_gpu.bat
 ```

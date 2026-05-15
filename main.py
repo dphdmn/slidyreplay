@@ -1165,33 +1165,33 @@ if __name__ == "__main__":
         epilog="""
 Examples:
   python main.py --solution R2D2L2U2 --size 3x3 --tps 10 -o replay.mp4
-  python main.py --url "https://slidysim.github.io/?replay=..." -o replay.mp4
-  python main.py --batch urls.txt
+  python main.py -u "https://slidysim.github.io/?replay=..." -o replay.mp4
+  python main.py -b urls.txt
   python main.py                    # launch GUI
         """
     )
-    parser.add_argument("--solution", "-s", help="Solution string (e.g. R2D2L2U2)")
+    parser.add_argument("--solution", help="Solution string (e.g. R2D2L2U2)")
     parser.add_argument("--url", "-u", help="Slidysim replay URL")
-    parser.add_argument("--file", help="File containing a replay URL or solution string (bypasses CLI length limit)")
+    parser.add_argument("--file", "-f", help="File containing a replay URL or solution string (bypasses CLI length limit)")
     parser.add_argument("--tps", type=float, help="Tiles per second")
     parser.add_argument("--time", type=float, help="Total time in seconds")
     parser.add_argument("--size", help="Puzzle size (e.g. 3x3, 5x5)")
     parser.add_argument("--scramble", help="Scramble string")
     parser.add_argument("--output", "-o", default="replay.mp4", help="Output file path")
-    parser.add_argument("--quality", type=int, default=1080, help="Target video quality (720, 1080, 1440, 2160)")
-    parser.add_argument("--compression", type=int, default=18, help="Video encoder quality (10-40, lower = fewer artifacts but larger file, default: 18)")
-    parser.add_argument("--slow-render", action="store_true", default=False, help="Slower encode, ~33% smaller file (p7 for NVENC, slow for libx264)")
+    parser.add_argument("--quality", "-q", type=int, default=1080, help="Target video quality (720, 1080, 1440, 2160)")
+    parser.add_argument("--compression", "-c", type=int, default=18, help="Video encoder quality (10-40, lower = fewer artifacts but larger file, default: 18)")
+    parser.add_argument("--slow-render", action="store_true", default=False, help="Slower encode, ~33%% smaller file (p7 for NVENC, slow for libx264)")
     parser.add_argument("--encoder-preset", type=str, default="", help=argparse.SUPPRESS)
     parser.add_argument("--fps", type=int, default=60, help="Output video frame rate (default: 60)")
-    parser.add_argument("--no-gpu", action="store_true", default=None,
+    parser.add_argument("--no-gpu", "-g", action="store_true", default=None,
                         help="Disable GPU acceleration")
-    parser.add_argument("--batch", help="File with solutions/URLs (one per line)")
+    parser.add_argument("--batch", "-b", help="File with solutions/URLs (one per line)")
     parser.add_argument("--movetimes", help="Comma-separated move timings (overrides --tps/--time)")
-    parser.add_argument("--speedup", type=float, default=1.0,
+    parser.add_argument("--speedup", "-s", type=float, default=1.0,
                         help="Speed multiplier (e.g. 2.0 = 2x faster video, 0.5 = half speed)")
     parser.add_argument("--force-fringe", action="store_true", default=False,
                         help="Force fringe colors (disable grids detection)")
-    parser.add_argument("--log", action="store_true", default=False,
+    parser.add_argument("--log", "-l", action="store_true", default=False,
                         help="Enable debug logging to file (logs/debug_<timestamp>.log)")
     parser.add_argument("--no-layout", action="store_true",
                         help="Only render the puzzle grid on dark background — no timer bar, no stats panel")
