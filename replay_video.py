@@ -1911,6 +1911,10 @@ class ReplayVideoGenerator:
         _t_analysis_end = time_module.time()
         log.info(f"  analysis total took {_t_analysis_end - _t_analysis_start:.3f}s, enableGridsStatus={grids_data.get('enableGridsStatus')}")
 
+        # Consume full analysis weight now (children send no progress)
+        if prog:
+            prog(_analysis_weight, _analysis_weight)
+
         # ── Stage: Timing ──
         _t_timing_start = time_module.time()
         if isinstance(movetimes, list) and len(movetimes) > 0:

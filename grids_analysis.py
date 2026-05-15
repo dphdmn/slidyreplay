@@ -186,6 +186,9 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
     gs_type = 0
     grids_started = -1
 
+    # Only send progress from top-level call (moves_offset == 0) to keep monotonic
+    _send_progress = progress_callback is not None and moves_offset == 0
+
     if sol_len <= 16:
         # Linear scan for tiny solutions
         for mi in range(sol_len):
@@ -194,7 +197,7 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
             dr, dc = _MOVE_DIRS[move]
             zp_idx += dr * width_initial + dc
             gs = _check_gs(mc_flat.reshape(height_initial, width_initial), *_gs_args)
-            if progress_callback:
+            if _send_progress:
                 with _lock:
                     progress_callback(moves_offset + mi, total_for_progress)
             if gs:
@@ -214,7 +217,7 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
             dr, dc = _MOVE_DIRS[move]
             zp_idx += dr * width_initial + dc
             gs = _check_gs(mc_flat.reshape(height_initial, width_initial), *_gs_args)
-            if progress_callback:
+            if _send_progress:
                 with _lock:
                     progress_callback(moves_offset + mi, total_for_progress)
             if gs:
@@ -223,12 +226,12 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
                 break
 
         if grids_started == -1:
-            # Gallop
+            # Gallop with delta checkpoints (positions only, no board copies)
             cur_pos = n_linear - 1
             lo_state = mc_flat.copy()
             lo_zp = zp_idx
             step = 4
-            snapshots = []  # (checkpoint_pos, state_copy, zp, step_used)
+            checkpoints = []  # (pos, step_len) — deltas from previous state
 
             while cur_pos + step < sol_len:
                 target = cur_pos + step
@@ -241,11 +244,11 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
                     dr, dc = _MOVE_DIRS[move]
                     zp_idx += dr * width_initial + dc
 
-                snapshots.append((cur_pos, snapshot.copy(), snapshot_zp, step))
+                checkpoints.append((cur_pos, step))
                 cur_pos = target
                 gs = _check_gs(mc_flat.reshape(height_initial, width_initial), *_gs_args)
 
-                if progress_callback:
+                if _send_progress:
                     with _lock:
                         progress_callback(moves_offset + cur_pos, total_for_progress)
 
@@ -270,7 +273,6 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
                             lo = mid
 
                     grids_started = snapshot_pos + hi
-                    # Restore state to grids_started
                     mc_flat[:] = snapshot
                     zp_idx = snapshot_zp
                     for i in range(1, hi + 1):
@@ -286,29 +288,44 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
                 lo_zp = zp_idx
                 step = min(step * 2, 256)
 
-        # New fallback – no full linear scan from 0
         if grids_started == -1:
-            # 1) Post‑last‑checkpoint scan: cur_pos → end
-            mc_flat[:] = lo_state
-            zp_idx = lo_zp
-            for mi in range(cur_pos + 1, sol_len):
+            # Fallback: replay forward scanning gaps between checkpoints + tail
+            mc_flat[:] = init_flat
+            zp_idx = init_zp
+
+            # Advance from position 0 to n_linear-1 (state where gallop starts)
+            for mi in range(n_linear):
                 move = solution[mi]
                 move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
                 dr, dc = _MOVE_DIRS[move]
                 zp_idx += dr * width_initial + dc
-                gs = _check_gs(mc_flat.reshape(height_initial, width_initial), *_gs_args)
-                if gs:
-                    grids_started = mi
-                    gs_type = gs
+            last_pos = n_linear - 1
+
+            for snap_pos, step_len in checkpoints:
+                for mi in range(last_pos + 1, snap_pos + 1):
+                    move = solution[mi]
+                    move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
+                    dr, dc = _MOVE_DIRS[move]
+                    zp_idx += dr * width_initial + dc
+                last_pos = snap_pos
+
+                end_scan = min(snap_pos + step_len, sol_len)
+                for mi in range(snap_pos + 1, end_scan):
+                    move = solution[mi]
+                    move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
+                    dr, dc = _MOVE_DIRS[move]
+                    zp_idx += dr * width_initial + dc
+                    last_pos = mi
+                    gs = _check_gs(mc_flat.reshape(height_initial, width_initial), *_gs_args)
+                    if gs:
+                        grids_started = mi
+                        gs_type = gs
+                        break
+                if grids_started != -1:
                     break
 
-        if grids_started == -1:
-            # 2) Reverse‑gap scan over earlier jumps (if any)
-            for snap_pos, snap_state, snap_zp, step_len in reversed(snapshots):
-                end_scan = min(snap_pos + step_len, sol_len)
-                mc_flat[:] = snap_state
-                zp_idx = snap_zp
-                for mi in range(snap_pos + 1, end_scan):
+            if grids_started == -1:
+                for mi in range(last_pos + 1, sol_len):
                     move = solution[mi]
                     move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
                     dr, dc = _MOVE_DIRS[move]
@@ -318,8 +335,6 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
                         grids_started = mi
                         gs_type = gs
                         break
-                if grids_started != -1:
-                    break
 
     with _lock:
         _timing["main_loop"] += time.time() - _t_loop
@@ -554,6 +569,7 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
 
 
 def analyse_grids_initial(matrix, solution, progress_callback=None):
+    _t0 = time.time()
     h = len(matrix)
     w = len(matrix[0])
     total_cells = w * h
@@ -562,8 +578,8 @@ def analyse_grids_initial(matrix, solution, progress_callback=None):
     _timing = {"main_loop": 0.0, "scan_fwd": 0.0, "get_parts": 0.0, "n_calls": 0}
     _lock = threading.Lock()
     result = analyse_grids(matrix, solution, w, h, w, h, 0, 0, 0, shape_cache={}, progress_callback=progress_callback, progress_total=len(solution), _timing=_timing, _lock=_lock, _row_of=_row_of, _col_of=_col_of)
-    total = _timing["main_loop"] + _timing["scan_fwd"] + _timing["get_parts"]
-    log.info(f"  analysis timing: main_loop={_timing['main_loop']:.3f}s, scan_fwd={_timing['scan_fwd']:.3f}s, get_parts={_timing['get_parts']:.3f}s, n_calls={_timing['n_calls']}, total={total:.3f}s")
+    elapsed = time.time() - _t0
+    log.info(f"  grids analysis: {_timing['n_calls']} calls, {elapsed:.3f}s wall clock")
     return result
 
 
