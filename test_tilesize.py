@@ -27,7 +27,7 @@ for sz in sizes:
             output_path=mp4,
             use_gpu=True,
             show_progress=False,
-            tps=30, fps=30,
+            tps=30, fps=30, quality=1440,
             size=(sz, sz),
             opts=RenderOptions(grid_only=True),
         )
