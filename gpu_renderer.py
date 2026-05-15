@@ -83,16 +83,18 @@ from geometry import (PADDING, HEADER_H, STATS_PANEL_WIDTH, INFO_H, TIMER_HEIGHT
     BG_COLOR, TILE_BG, TILE_TEXT_COLOR, TILE_BORDER_COLOR, NULL_COLOR,
     PANEL_BG, PANEL_ALPHA, TIMER_BG, ACCURATE_COLOR, INACCURATE_COLOR,
     WHITE, CYAN, GREEN, GRAY, LIGHT_GRAY,
-    TILE_BORDER_WIDTH, TILE_BORDER_RADIUS_RATIO, BASE_SIZE,
+    TILE_BORDER_WIDTH, TILE_BORDER_RADIUS_RATIO,
     compute_canvas_dimensions, RenderOptions,
-    get_font, render_number_texture, compute_tile_size, compute_font_size,
+    get_font, render_number_texture, compute_font_size,
     compute_grid_position, compute_panel_rect, compute_secondary_bar_rect,
     round_canvas_height)
 
 
 class GPURenderer:
-    def __init__(self, width: int, height: int, tile_size: int, quality: float = 1.0,
-                 min_canvas_h: int = None, opts: Optional[RenderOptions] = None):
+    def __init__(self, width: int, height: int, tile_size: int,
+                 pad: int = None, header_h: int = None, panel_w: int = None,
+                 canvas_w: int = None, canvas_h: int = None,
+                 opts: Optional[RenderOptions] = None):
         """
         GPU renderer with automatic optimal batching.
 
@@ -103,25 +105,28 @@ class GPURenderer:
         self.opts = opts or RenderOptions()
         self.w = width
         self.h = height
-        ts = compute_tile_size(tile_size, quality)
-        self.tile_size = ts
-        self.font_size = compute_font_size(width, height, ts)
-        self.pw = width * ts
-        self.ph = height * ts
+        self.pad = pad if pad is not None else PADDING
+        self.header_h = header_h if header_h is not None else HEADER_H
+        self.layout_panel_w = panel_w if panel_w is not None else STATS_PANEL_WIDTH
+        self.tile_size = tile_size
+        self.font_size = compute_font_size(width, height, tile_size)
+        self.pw = width * tile_size
+        self.ph = height * tile_size
 
-        puzzle_w = width * ts
-        puzzle_h = height * ts
-        self.canvas_w, self.canvas_h = compute_canvas_dimensions(
-            width, height, ts, grid_only=self.opts.grid_only
-        )
-        if not self.opts.grid_only and min_canvas_h is not None:
-            self.canvas_h = max(self.canvas_h, min_canvas_h)
-            self.canvas_h = round_canvas_height(self.canvas_h)
-        self.grid_x, self.grid_y = compute_grid_position(self.opts.grid_only)
+        puzzle_w = width * tile_size
+        puzzle_h = height * tile_size
+        if canvas_w is not None and canvas_h is not None:
+            self.canvas_w, self.canvas_h = canvas_w, canvas_h
+        else:
+            self.canvas_w, self.canvas_h = compute_canvas_dimensions(
+                width, height, tile_size, grid_only=self.opts.grid_only,
+                pad=self.pad, header_h=self.header_h, panel_w=self.layout_panel_w,
+            )
+        self.grid_x, self.grid_y = compute_grid_position(self.opts.grid_only, pad=self.pad, header_h=self.header_h)
         self.panel_x, self.panel_y, self.panel_w, self.panel_h = compute_panel_rect(
-            self.grid_x, puzzle_w, self.canvas_w, self.grid_y, self.canvas_h
+            self.grid_x, puzzle_w, self.canvas_w, self.grid_y, self.canvas_h, pad=self.pad
         )
-        self.timer_bbox = (0, 0, 0, 0) if self.opts.grid_only else (PADDING, PADDING, self.canvas_w - PADDING, PADDING + HEADER_H)
+        self.timer_bbox = (0, 0, 0, 0) if self.opts.grid_only else (0, 0, self.canvas_w, self.header_h)
 
         self._init_success = False
         self._device = None
@@ -145,7 +150,7 @@ class GPURenderer:
             "total_mem_mb": 0,
         }
         self._batch_counter = 0
-        log.info(f"GPURenderer.__init__: {width}x{height}, tile_size={ts}, canvas={self.canvas_w}x{self.canvas_h}, device={self._device}")
+        log.info(f"GPURenderer.__init__: {width}x{height}, tile_size={tile_size}, canvas={self.canvas_w}x{self.canvas_h}, device={self._device}")
         if self._stats["total_mem_mb"]:
             log.info(f"  GPU: {self._stats['gpu_name']}, total_mem={self._stats['total_mem_mb']}MB")
         if self._device is not None and self._device.type == "cuda":
@@ -157,32 +162,32 @@ class GPURenderer:
             cuda_dev = self._device
 
             # Tile mask (all ones) and its complement
-            mask = torch.ones(ts, ts, 1, device=cuda_dev, dtype=torch.float32)
+            mask = torch.ones(tile_size, tile_size, 1, device=cuda_dev, dtype=torch.float32)
             self._tile_mask = mask
             self._tile_mask_inv = 1.0 - mask
 
             # Tile border mask: 1 px border
-            border = torch.zeros(ts, ts, 1, device=cuda_dev, dtype=torch.float32)
+            border = torch.zeros(tile_size, tile_size, 1, device=cuda_dev, dtype=torch.float32)
             border[0, :] = 1
-            border[ts - 1, :] = 1
+            border[tile_size - 1, :] = 1
             border[:, 0] = 1
-            border[:, ts - 1] = 1
+            border[:, tile_size - 1] = 1
             self._border_mask = border
             self._border_mask_inv = 1.0 - border
 
             # Secondary colour bar masks
-            bx0, by0, bx1, by1 = compute_secondary_bar_rect(ts)
-            bar_fill = torch.zeros(ts, ts, 1, device=cuda_dev, dtype=torch.float32)
-            bar_border = torch.zeros(ts, ts, 1, device=cuda_dev, dtype=torch.float32)
+            bx0, by0, bx1, by1 = compute_secondary_bar_rect(tile_size)
+            bar_fill = torch.zeros(tile_size, tile_size, 1, device=cuda_dev, dtype=torch.float32)
+            bar_border = torch.zeros(tile_size, tile_size, 1, device=cuda_dev, dtype=torch.float32)
             bar_fill[by0:by1, bx0:bx1] = 1.0
             bar_border[by0:by1, bx0:bx1] = 1.0
             if by0 > 0:
                 bar_border[by0, bx0:bx1] = 1.0
-            if by1 < ts:
+            if by1 < tile_size:
                 bar_border[by1 - 1, bx0:bx1] = 1.0
             if bx0 > 0:
                 bar_border[by0:by1, bx0] = 1.0
-            if bx1 < ts:
+            if bx1 < tile_size:
                 bar_border[by0:by1, bx1 - 1] = 1.0
             if by1 - by0 > 2 and bx1 - bx0 > 2:
                 bar_border[by0 + 1:by1 - 1, bx0 + 1:bx1 - 1] = 0.0
@@ -206,10 +211,6 @@ class GPURenderer:
                 pdraw.rectangle(
                     (0, 0, self.panel_w - 1, self.panel_h - 1),
                     fill=(*PANEL_BG, int(255 * PANEL_ALPHA))
-                )
-                pdraw.rectangle(
-                    (0, 0, self.panel_w - 1, self.panel_h - 1),
-                    outline=CYAN, width=1
                 )
                 panel_arr = torch.from_numpy(np.array(panel_pil)).to(cuda_dev).float() / 255.0
                 self._panel_bg = panel_arr
@@ -433,10 +434,11 @@ class GPURenderer:
                         _layout_px = _layout["px"]
                         _layout_inner_w = _layout["inner_w"]
                         _row_h = _layout["row_h"]
-                        _y_predicted = _layout["y_predicted"]
-                        _y_md_cur = _layout["y_md_cur"]
-                        _y_mmd_cur = _layout["y_mmd_cur"]
+                        _y_predicted = 0
+                        _y_md_cur = 0
+                        _y_mmd_cur = 0
                         _stage_y_positions = _layout.get("stage_y_positions", [])
+                        _gs_x = _layout.get("gs_x", _layout_px)
                         _stage_raw_lines = _layout.get("stage_raw_lines", [])
                         _stage_w1 = _layout.get("stage_w1", 0)
                         _stage_w2 = _layout.get("stage_w2", 0)
@@ -459,7 +461,7 @@ class GPURenderer:
                         _gs_hf = _layout.get("gs_header_font")
                         _gs_hf_atlas = _load_or_build_atlas(
                             _gs_hf, "gshfont", list(range(32, 127)), dev) if _gs_hf else _acc_atlas
-                        _timer_font = get_font(36, bold=True, mono=True)
+                        _timer_font = get_font(max(12, self.header_h - 12), bold=True, mono=True)
                         _timer_atlas = _load_or_build_atlas(
                             _timer_font, "timerfont",
                             [32, 40, 41, 46, 47] + list(range(48, 58)) + [58], dev)
@@ -493,53 +495,73 @@ class GPURenderer:
                             tw = sum(atl.get(ord(c), atl[32]).shape[1] for c in val)
                             _pt(cv, val, atl, rxx - tw, yy, col)
 
-                        def _pl(cv, lbl, val, atl, xx, yy, iw):
-                            _pt(cv, lbl, atl, xx, yy, _white_rgb)
-                            _pv(cv, val, atl, xx + iw, yy, _white_rgb)
+                        def _pl_white(label, value, atl):
+                            nonlocal _y_sb
+                            _pt(_sb, label, atl, _layout_px, _y_sb, _white_rgb)
+                            if value:
+                                _pv(_sb, value, atl, _layout_px + _layout_inner_w, _y_sb, _white_rgb)
+                            _y_sb += _row_h
 
-                        _acc_h = _acc_atlas[32].shape[0]
                         _gs_hf_h = _gs_hf_atlas[32].shape[0]
+                        _y_sb = 10
 
-                        # "Stats" header (24px bold)
-                        _pt(_sb, "Stats", _header_atlas, _layout_px, 10, _cyan_rgb_sb)
-                        # Static lines (label + value, WHITE)
-                        _pl(_sb, "Time (total): ", _stats0.get("time_all","0.000"), _data_atlas,
-                            _layout_px, _y_predicted - 5*_row_h, _layout_inner_w)
-                        _pl(_sb, "Moves (total): ", _stats0.get("moves_all","0"), _data_atlas,
-                            _layout_px, _y_predicted - 4*_row_h, _layout_inner_w)
-                        _pl(_sb, "TPS (total): ", _stats0.get("tps_all","0.000"), _data_atlas,
-                            _layout_px, _y_predicted - 3*_row_h, _layout_inner_w)
-                        _pl(_sb, "Cubic est: ", _stats0.get("cubic_estimate","---"), _data_atlas,
-                            _layout_px, _y_predicted - 2*_row_h, _layout_inner_w)
-                        _pl(_sb, "Playback speed: ", _stats0.get("speed_playback","1.00x"), _data_atlas,
-                            _layout_px, _y_predicted - 1*_row_h, _layout_inner_w)
-                        # Predicted moves label (CYAN)
-                        _pt(_sb, "Predicted moves: ", _data_atlas, _layout_px, _y_predicted, _cyan_rgb_sb)
-                        # MD total (WHITE)
-                        _pl(_sb, "MD (total): ", _stats0.get("md_all","0"), _data_atlas,
-                            _layout_px, _y_predicted + _row_h, _layout_inner_w)
-                        # MD current label (CYAN)
-                        _pt(_sb, "MD (current): ", _data_atlas, _layout_px, _y_md_cur, _cyan_rgb_sb)
-                        # M/MD total (WHITE)
-                        _pl(_sb, "M/MD (total): ", _stats0.get("mmd_all","0.000"), _data_atlas,
-                            _layout_px, _y_md_cur + _row_h, _layout_inner_w)
-                        # M/MD current label (CYAN)
-                        _pt(_sb, "M/MD (current): ", _data_atlas, _layout_px, _y_mmd_cur, _cyan_rgb_sb)
-                        # Accuracy text
-                        _acc_yy = _y_mmd_cur + _row_h + 4
-                        _pt(_sb, "Movetimes accurate" if _is_acc else "NOT movetimes accurate",
-                            _acc_atlas, _layout_px, _acc_yy, _acc_rgb if _is_acc else _inacc_rgb)
-                        # Grid stages (WHITE, static only)
+                        # "Stats" header
+                        _pt(_sb, "Stats", _header_atlas, _layout_px, _y_sb, _cyan_rgb_sb)
+                        _y_sb += _header_atlas[32].shape[0] + 14
+
+                        # ── Render Info ──
+                        _pt(_sb, "Render Info", _gs_hf_atlas, _layout_px, _y_sb, _cyan_rgb_sb)
+                        _y_sb += _gs_hf_h + 8
+
+                        _render_info_data = [
+                            ("Quality: ", f"{_layout.get('quality', 1080)}p"),
+                            ("Canvas: ", _fp0.get("canvas_size", "")),
+                            ("Render: ", "GPU"),
+                            ("Codec: ", _fp0.get("codec_name", "")),
+                            ("Preset: ", _fp0.get("resolved_preset", "")),
+                            ("Tile: ", f"{self.tile_size}px" if self.tile_size else ""),
+                            ("FPS: ", str(_fp0.get("fps", 60))),
+                            ("Compression: ", str(_fp0.get("compression", 18))),
+                            ("Frames: ", str(_fp0.get("total_frames", 0))),
+                            ("Unique: ", str(_fp0.get("unique_frames", 0))),
+                            ("Speed: ", _stats0.get("speed_playback", "1.00x")),
+                        ]
+                        for _lbl, _val in _render_info_data:
+                            _pl_white(_lbl, _val, _data_atlas)
+                        _y_sb += 6
+
+                        # ── Puzzle Info ──
+                        _pt(_sb, "Puzzle Info", _gs_hf_atlas, _layout_px, _y_sb, _cyan_rgb_sb)
+                        _y_sb += _gs_hf_h + 8
+
+                        _puzzle_info_data = [
+                            ("Puzzle: ", _fp0.get("puzzle_size", "")),
+                            ("Time (total): ", _stats0.get("time_all","0.000")),
+                            ("Moves (total): ", _stats0.get("moves_all","0")),
+                            ("TPS (total): ", _stats0.get("tps_all","0.000")),
+                            ("Cubic est: ", _stats0.get("cubic_estimate","---")),
+                            ("MD (total): ", _stats0.get("md_all","0")),
+                            ("M/MD (total): ", _stats0.get("mmd_all","0.000")),
+                        ]
+                        for _lbl, _val in _puzzle_info_data:
+                            _pl_white(_lbl, _val, _data_atlas)
+                        _acc_text = "Movetimes accurate" if _is_acc else "NOT movetimes accurate"
+                        _pt(_sb, _acc_text, _acc_atlas, _layout_px, _y_sb,
+                            _acc_rgb if _is_acc else _inacc_rgb)
+                        _y_sb += _acc_atlas[32].shape[0] + 6
+                        _y_sb += 6
+
+                        # ── Grid stages ──
                         if _stage_raw_lines:
-                            _pt(_sb, "Grid stages", _gs_hf_atlas, _layout_px,
-                                _acc_yy + _acc_h + 6, _cyan_rgb_sb)
+                            _pt(_sb, "Grid stages", _gs_hf_atlas, _layout_px, _y_sb, _cyan_rgb_sb)
+                            _y_sb += _gs_hf_h + 14
                             for _i in range(len(_stage_raw_lines)):
                                 _cum_s, _split_s, _mvtps_s, _label = _stage_raw_lines[_i]
                                 if '.' in _cum_s:
                                     _gl = f"{_cum_s:>{_stage_w1}} | {_split_s:>{_stage_w2}} {_mvtps_s:<{_stage_w3}} | {_label:<{_stage_w4}}"
                                 else:
                                     _gl = f"{_cum_s:>{_stage_w1}} | {_split_s:<{_stage_w2}}  | {_label:<{_stage_w4}}"
-                                _pt(_sb, _gl, _gs_atlas, _layout_px, _stage_y_positions[_i], _white_rgb)
+                                _pt(_sb, _gl, _gs_atlas, _gs_x, _stage_y_positions[_i], _white_rgb)
 
                         _static_base_gpu = _sb
                         _sb_h, _sb_w = _static_base_gpu.shape[:2]
@@ -576,6 +598,8 @@ class GPURenderer:
                             x = x + ((cw_max - x) - tw) // 2
                         if center_y:
                             y = y + ((ch_max - y) - th) // 2
+                        x = max(x, 0)
+                        y = max(y, 0)
                         th_c = min(th, ch - y)
                         tw_c = min(tw, cw - x)
                         if th_c > 0 and tw_c > 0:
@@ -584,20 +608,18 @@ class GPURenderer:
                             dst[:, :, :3] = _cyan_rgb.view(1, 1, 3) * sa + dst[:, :, :3] * (1 - sa)
 
                     _blend_cyan(canvas[0], p["timer_text"], _timer_atlas,
-                                tx1, ty1, tx2, ty2, center_x=True, center_y=True)
+                                tx1, ty1, tx2, ty2, center_x=False, center_y=True)
 
                     _sd = p.get("stats_data")
                     if _sd is not None:
-
-                        # Dynamic values (data font atlas, right-aligned, CYAN)
-                        for _key, _y_val in [("predicted_moves", _y_predicted), ("md_cur", _y_md_cur), ("mmd_cur", _y_mmd_cur)]:
-                            _text = _sd.get(_key, "")
-                            if not _text:
-                                continue
-                            _tw = _compose_text(_text, _data_atlas)[1]
-                            _blend_cyan(canvas[0], _text, _data_atlas,
-                                        px + _layout_px + _layout_inner_w - _tw, py + _y_val,
-                                        cw, ch)
+                        # Right timer text: MD (predicted / MMD)
+                        _right_text = _sd.get("timer_right_text", "")
+                        if _right_text:
+                            _pad_timer = max(4, _layout.get("pad", 4))
+                            _tw_right = _compose_text(_right_text, _timer_atlas)[1]
+                            _rx_right = tx2 - _tw_right - _pad_timer
+                            _blend_cyan(canvas[0], _right_text, _timer_atlas,
+                                        _rx_right, ty1, tx2, ty2, center_y=True)
 
                         # Stage highlight: CYAN from gs_lf atlas (same positioning as white static base)
                         _cur_stage = _sd.get("grid_current", 0)
@@ -608,7 +630,7 @@ class GPURenderer:
                             else:
                                 _line_s = f"{_cums_s:>{_stage_w1}} | {_splits_s:<{_stage_w2}}  | {_label_s:<{_stage_w4}}"
                             _blend_cyan(canvas[0], _line_s, _gs_atlas,
-                                        px + _layout_px, py + _stage_y_positions[_cur_stage],
+                                        px + _gs_x, py + _stage_y_positions[_cur_stage],
                                         cw, ch)
                 else:
                     first_stats_arr = frame_params_list[batch_start].get("stats_arr")

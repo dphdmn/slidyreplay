@@ -50,7 +50,7 @@ def run_bench(label: str, filepath: str, extra_args: list, output_path: str) -> 
     cmd = [
         sys.executable, os.path.join(script_dir, "main.py"),
         "--file", filepath,
-        "--quality", "1.0",
+        "--quality", "720",
         "--output", output_path,
         "--log",
     ]
@@ -104,6 +104,7 @@ def main():
     parser.add_argument("--cpu-only", action="store_true", help="CPU only")
     parser.add_argument("--layout", action="store_true", help="Layout only")
     parser.add_argument("--no-layout", dest="no_layout", action="store_true", help="No-layout only")
+    parser.add_argument("--quality-test", action="store_true", help="Test 10x10 at all quality presets")
     args = parser.parse_args()
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -133,6 +134,62 @@ def main():
 
     gpu_info_once = ""
     summary_data = []
+
+    if args.quality_test:
+        # Find 10x10 replay file
+        target = "10x10"
+        filepath = None
+        for fname in replay_files:
+            if target in fname:
+                filepath = os.path.join(replay_dir, fname)
+                filename = fname
+                break
+        if filepath is None:
+            print(f"No {target} replay file found.")
+            sys.exit(1)
+
+        content = open(filepath, encoding="utf-8").read().strip()
+        puzzle_info = parse_puzzle_info(content)
+        print(f"\n{'=' * 60}")
+        print(f"  Quality test: {filename} ({puzzle_info['puzzle_size']}, {puzzle_info['moves']} moves)")
+        print(f"{'=' * 60}")
+
+        qualities = [720, 1080, 1440, 2160]
+        results = {}
+        for q in qualities:
+            out = os.path.join(logs_dir, f"{filename}_q{q}.mp4")
+            label = f"GPU Layout {q}p"
+            extra = ["--no-gpu"] if args.cpu_only else []
+            t, d = run_bench(label, filepath, extra + ["--quality", str(q)], out)
+            results[q] = t
+            if d and d.get("gpu_info") and not gpu_info_once:
+                gpu_info_once = d["gpu_info"]
+
+        print(f"\n{'=' * 60}")
+        if gpu_info_once:
+            print(f"  {gpu_info_once}")
+        print(f"  Quality benchmark: {filename}")
+        print(f"{'=' * 60}")
+        print(f"  {'Quality':>8} {'Time':>10}")
+        print(f"  {'-' * 20}")
+        for q in qualities:
+            t = results.get(q)
+            line = f"  {q:>4}p      {t:>7.1f}s" if t else f"  {q:>4}p      {'FAIL':>8}"
+            print(line)
+        print(f"{'=' * 60}")
+
+        log = {
+            "run_id": run_id,
+            "type": "quality_test",
+            "puzzle": filename,
+            "qualities": {str(q): results[q] for q in qualities},
+        }
+        log_path = os.path.join(logs_dir, "benchmark_log.json")
+        with open(log_path, "w") as f:
+            json.dump(log, f, indent=2)
+        print(f"\nRun summary saved to: {log_path}")
+        print(f"All outputs in: {logs_dir}")
+        sys.exit(0)
 
     for filename in replay_files:
         filepath = os.path.join(replay_dir, filename)

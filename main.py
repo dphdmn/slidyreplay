@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import filedialog, scrolledtext
+from tkinter import filedialog, scrolledtext, ttk
 import threading
 import time
 import os
@@ -183,8 +183,8 @@ class ReplayGUI(tb.Window):
 
         self.fps_var = tk.IntVar(value=60)
         self.force_fringe_var = tk.BooleanVar(value=False)
-        self.quality_var = tk.DoubleVar(value=1.0)
-        self.double_quality_var = tk.BooleanVar(value=False)
+        self.quality_preset_var = tk.StringVar(value="1080p")
+        self._quality_presets = {"720p": 720, "1080p": 1080, "1440p (2K)": 1440, "2160p (4K)": 2160}
         self.compression_var = tk.IntVar(value=18)
         self.slow_render_var = tk.BooleanVar(value=False)
         self.speed_factor_var = tk.StringVar(value="1.0")
@@ -328,12 +328,14 @@ class ReplayGUI(tb.Window):
         self.gpu_toggle.pack(side="left", padx=(0, 12))
         tb.Checkbutton(chk_row, text="Force fringe", variable=self.force_fringe_var,
                        bootstyle="round-toggle").pack(side="left", padx=(0, 12))
-        tb.Checkbutton(chk_row, text="Double quality (2x)", variable=self.double_quality_var,
-                       bootstyle="round-toggle").pack(side="left")
-        def _on_dq_toggle(*_):
-            self.quality_var.set(2.0 if self.double_quality_var.get() else 1.0)
+        tb.Label(chk_row, text="Quality:", font=(FONT_FAMILY, 9)).pack(side="left", padx=(0, 4))
+        quality_combo = ttk.Combobox(chk_row, textvariable=self.quality_preset_var,
+                                    values=list(self._quality_presets.keys()),
+                                    state="readonly", width=12)
+        quality_combo.pack(side="left")
+        def _on_quality_change(*_):
             self._update_quality_warning()
-        self.double_quality_var.trace_add("write", _on_dq_toggle)
+        self.quality_preset_var.trace_add("write", _on_quality_change)
         r += 1
 
         # GPU info
@@ -344,9 +346,8 @@ class ReplayGUI(tb.Window):
         else:
             self.gpu_info_lbl.config(text="Not available — install CUDA (see README)", bootstyle="secondary")
 
-        # Quality warning
-        self.quality_warning = tb.Label(settings, text="⚠ 2x quality increases VRAM usage significantly — may cause out-of-memory errors on GPU",
-                                         font=(FONT_FAMILY, 8), foreground="#ffa500", anchor="w")
+        # Quality RAM warning (atlas prerender uses significant RAM)
+        self.quality_warning = tb.Label(settings, text="", font=(FONT_FAMILY, 8), foreground="#ffa500", anchor="w")
         self.quality_warning.grid(row=r, column=0, sticky="ew", pady=(0, 4), padx=12)
         self.quality_warning.grid_remove()
 
@@ -549,8 +550,18 @@ class ReplayGUI(tb.Window):
         except ValueError:
             return 1.0
 
+    def _get_quality(self) -> int:
+        return self._quality_presets.get(self.quality_preset_var.get(), 1080)
+
     def _update_quality_warning(self):
-        if self.double_quality_var.get():
+        h = self._get_quality()
+        text = ""
+        if h >= 1440:
+            text = "⚠ 2K (1440p) uses high RAM during atlas prerender — may cause slowdown or OOM on large puzzles (>=50×50)"
+        if h >= 2160:
+            text = "⚠ 4K (2160p) uses very high RAM during atlas prerender — reduce puzzle size if out of memory"
+        if text:
+            self.quality_warning.config(text=text)
             self.quality_warning.grid()
         else:
             self.quality_warning.grid_remove()
@@ -744,7 +755,7 @@ class ReplayGUI(tb.Window):
             )
             params = {
                 "force_fringe": self.force_fringe_var.get(),
-                "quality": self.quality_var.get(),
+                "quality": self._get_quality(),
                 "fps": self.fps_var.get(),
                 "compression": self.compression_var.get(),
                 "slow_render": self.slow_render_var.get(),
@@ -844,7 +855,7 @@ class ReplayGUI(tb.Window):
         for idx, (mode, input_str) in enumerate(items):
             params = {
                 "force_fringe": self.force_fringe_var.get(),
-                "quality": self.quality_var.get(),
+                "quality": self._get_quality(),
                 "fps": self.fps_var.get(),
                 "compression": self.compression_var.get(),
                 "slow_render": self.slow_render_var.get(),
@@ -1129,7 +1140,7 @@ Examples:
     parser.add_argument("--size", help="Puzzle size (e.g. 3x3, 5x5)")
     parser.add_argument("--scramble", help="Scramble string")
     parser.add_argument("--output", "-o", default="replay.mp4", help="Output file path")
-    parser.add_argument("--quality", type=float, default=1.0, help="Render quality (1.0-4.0)")
+    parser.add_argument("--quality", type=int, default=1080, help="Target video quality (720, 1080, 1440, 2160)")
     parser.add_argument("--compression", type=int, default=18, help="Video encoder quality (10-40, lower = fewer artifacts but larger file, default: 18)")
     parser.add_argument("--slow-render", action="store_true", default=False, help="Slower encode, ~33% smaller file (p7 for NVENC, slow for libx264)")
     parser.add_argument("--encoder-preset", type=str, default="", help=argparse.SUPPRESS)
@@ -1166,6 +1177,9 @@ Examples:
 
     if args.speedup <= 0:
         parser.error("--speedup must be > 0")
+
+    if args.quality < 720:
+        parser.error("minimum quality is 720")
 
     movetimes = None
     if args.movetimes:

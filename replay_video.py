@@ -47,10 +47,10 @@ from geometry import (PADDING, HEADER_H, STATS_PANEL_WIDTH, INFO_H, TIMER_HEIGHT
     BG_COLOR, TILE_BG, TILE_TEXT_COLOR, TILE_BORDER_COLOR, NULL_COLOR,
     PANEL_BG, PANEL_ALPHA, TIMER_BG, ACCURATE_COLOR, INACCURATE_COLOR,
     WHITE, CYAN, GREEN, GRAY, LIGHT_GRAY,
-    TILE_BORDER_WIDTH, TILE_BORDER_RADIUS_RATIO, BASE_SIZE,
-    compute_canvas_dimensions, RenderOptions,
+    TILE_BORDER_WIDTH, TILE_BORDER_RADIUS_RATIO,
+    compute_canvas_dimensions, compute_layout, RenderOptions,
     get_font, render_number_texture, render_timer_text,
-    compute_tile_size, compute_font_size,
+    compute_font_size,
     compute_grid_position, compute_panel_rect, compute_secondary_bar_rect,
     round_canvas_height,
     TileSpriteCache, _solid_base, _bar_sprite, select_base, select_bar,
@@ -285,19 +285,6 @@ def format_time_str(ms: int) -> str:
 
 # ─── Puzzle Rendering ──────────────────────────────────────────────
 
-def pick_tile_size(width: int, height: int) -> int:
-    max_dim = max(width, height)
-    min_dim = min(width, height)
-    if max_dim >= 30:
-        return BASE_SIZE
-    elif max_dim >= 20:
-        return BASE_SIZE + 10
-    elif max_dim >= 10:
-        return BASE_SIZE + 14
-    else:
-        return min(BASE_SIZE * 40 // 11, max(BASE_SIZE * 28 // 11, BASE_SIZE * 140 // 11 // min_dim))
-
-
 def draw_filled_rect(draw, bbox, color):
     x1, y1, x2, y2 = bbox
     draw.rectangle(bbox, fill=color)
@@ -335,43 +322,76 @@ def render_frame(
     stats_arr: Optional[np.ndarray] = None,
     composite_atlas: Optional[List[Image.Image]] = None,
     composite_lookup: Optional[Dict] = None,
+    quality: int = 1080,
+    use_gpu: bool = True,
+    fps: int = 60,
+    compression: int = 18,
+    encoder_preset: str = "",
+    puzzle_size: str = "",
+    total_frames: int = 0,
+    codec_name: str = "",
+    resolved_preset: str = "",
+    canvas_size: str = "",
+    unique_frames: int = 0,
+    pad: int = None,
+    header_h: int = None,
+    panel_w: int = None,
+    canvas_w: int = None,
+    canvas_h: int = None,
 ) -> Image.Image:
     h = len(matrix)
     w = len(matrix[0])
+    if pad is None:
+        pad = PADDING
+    if header_h is None:
+        header_h = HEADER_H
+    if panel_w is None:
+        panel_w = STATS_PANEL_WIDTH
     puzzle_w = w * tile_size
     puzzle_h = h * tile_size
-    grid_x, grid_y = compute_grid_position(opts.grid_only)
+    grid_x, grid_y = compute_grid_position(opts.grid_only, pad=pad, header_h=header_h)
 
     if prev_canvas is not None and changed_tiles is not None:
         canvas = prev_canvas
         canvas_w, canvas_h = canvas.size
         draw = ImageDraw.Draw(canvas)
     else:
-        canvas_w, canvas_h = compute_canvas_dimensions(w, h, tile_size, grid_only=opts.grid_only)
-        if not opts.grid_only:
-            panel_w_est = canvas_w - (PADDING + puzzle_w + PADDING) - PADDING
-            stats_h = _compute_stats_full_height(
-                panel_w_est,
-                has_grid_stages=len(stats_data.get("grid_stages", [])) > 1
-            )
-            canvas_h = max(canvas_h, HEADER_H + PADDING + stats_h + PADDING)
-            canvas_h = round_canvas_height(canvas_h)
+        if canvas_w is None or canvas_h is None:
+            canvas_w, canvas_h = compute_canvas_dimensions(w, h, tile_size, grid_only=opts.grid_only, pad=pad, header_h=header_h, panel_w=panel_w)
+            if not opts.grid_only:
+                panel_w_est = canvas_w - puzzle_w - pad
+                stats_h = _compute_stats_full_height(
+                    panel_w_est,
+                    has_grid_stages=len(stats_data.get("grid_stages", [])) > 1,
+                    quality=quality,
+                )
+                canvas_h = max(canvas_h, header_h + stats_h)
+                canvas_h = round_canvas_height(canvas_h)
         canvas = Image.new('RGB', (canvas_w, canvas_h), BG_COLOR)
         draw = ImageDraw.Draw(canvas)
 
-    # ─── Timer Bar (centered, compact) ──────────────────────────
+    # ─── Timer Bar (left: time, right: MD/predicted/MMD) ─────────
     if not opts.grid_only:
-        timer_bg_bbox = (PADDING, PADDING, canvas_w - PADDING, PADDING + HEADER_H)
+        timer_bg_bbox = (0, 0, canvas_w, header_h)
         draw_filled_rect(draw, timer_bg_bbox, TIMER_BG)
+        tf = max(12, header_h - 12)
 
         if timer_arr is not None:
             timer_img = Image.fromarray(timer_arr)
         else:
-            timer_img = render_timer_text(timer_text)
+            timer_img = render_timer_text(timer_text, font_size=tf)
         tw, th = timer_img.size
-        tx = (canvas_w - tw) // 2
-        ty = PADDING + (HEADER_H - th) // 2
+        tx = pad
+        ty = (header_h - th) // 2
         canvas.paste(timer_img, (tx, ty), timer_img)
+
+        right_text = stats_data.get("timer_right_text", "") if stats_data else ""
+        if right_text:
+            right_img = render_timer_text(right_text, font_size=tf)
+            rtw, rth = right_img.size
+            rx = canvas_w - rtw - pad
+            ry = (header_h - rth) // 2
+            canvas.paste(right_img, (rx, ry), right_img)
 
     # ─── Puzzle Grid ──────────────────────────────────────────────
     if gpu_grid is not None:
@@ -438,7 +458,7 @@ def render_frame(
                 bg_color = tuple(bg_color.ravel()) if isinstance(bg_color, np.ndarray) else bg_color
                 draw_filled_rect(draw, sq_bbox, bg_color)
 
-                if tile_size > 1 and not opts.no_border:
+                if tile_size > 7 and not opts.no_border:
                     draw.rectangle(sq_bbox, outline=TILE_BORDER_COLOR, width=TILE_BORDER_WIDTH)
 
                 if sec_bg is not None:
@@ -463,7 +483,6 @@ def render_frame(
             )
             panel_bbox = (panel_x, panel_y, panel_x + panel_w, panel_y + panel_h)
             draw.rectangle(panel_bbox, fill=blended_bg)
-            draw.rectangle(panel_bbox, outline=CYAN, width=1)
 
             if stats_arr is not None:
                 stats_img = Image.fromarray(stats_arr)
@@ -471,7 +490,7 @@ def render_frame(
             elif static_stats_base is not None and static_stats_layout is not None:
                 _apply_stats_dynamic(stats_data, panel_w, static_stats_base, static_stats_layout, canvas, panel_x, panel_y)
             else:
-                stats_img = _render_stats_full(stats_data, is_movetimes_accurate, panel_w)
+                stats_img = _render_stats_full(stats_data, is_movetimes_accurate, panel_w, quality=quality, use_gpu=use_gpu, fps=fps, compression=compression, codec_name=codec_name, resolved_preset=resolved_preset, puzzle_size=puzzle_size, total_frames=total_frames, canvas_size=canvas_size, unique_frames=unique_frames, tile_size=tile_size)
                 canvas.paste(stats_img, (panel_x, panel_y), stats_img)
 
     return canvas
@@ -536,23 +555,25 @@ def _calc_render_batch_size(num_needed: int, workers: int) -> int:
     return max(1, min(20, num_needed // (workers * 2) + 1))
 
 
-def _make_stats_text(stats_data, is_movetimes_accurate, panel_w):
+def _make_stats_text(stats_data, is_movetimes_accurate, panel_w, quality=1080, use_gpu=True, fps=60, compression=18, codec_name="", resolved_preset="", puzzle_size="", total_frames=0, canvas_size="", unique_frames=0, tile_size=0):
     """Full render of stats panel (CPU path)."""
-    return _render_stats_full(stats_data, is_movetimes_accurate, panel_w)
+    return _render_stats_full(stats_data, is_movetimes_accurate, panel_w, quality=quality, use_gpu=use_gpu, fps=fps, compression=compression, codec_name=codec_name, resolved_preset=resolved_preset, puzzle_size=puzzle_size, total_frames=total_frames, canvas_size=canvas_size, unique_frames=unique_frames, tile_size=tile_size)
 
 
-def _stats_layout_info(panel_w):
-    """Compute layout constants for the stats panel."""
-    inner_w = panel_w - 20
-    px = 10
-    data_font = get_font(20, mono=True)
-    hf = get_font(24, bold=True)
-    gs_hf = get_font(18, bold=True)
-    gs_lf = get_font(13, mono=True)
-    acc_font = get_font(16, mono=True)
+def _stats_layout_info(panel_w, quality=1080):
+    """Compute layout constants for the stats panel, scaled to quality."""
+    scale = quality / 1080.0
+    px = max(4, round(10 * scale))
+    inner_w = panel_w - 2 * px
+    data_font = get_font(max(7, round(20 * scale)), mono=True, bold=True)
+    hf = get_font(max(9, round(24 * scale)), bold=True)
+    gs_hf = get_font(max(7, round(18 * scale)), bold=True)
+    gs_lf = get_font(max(6, round(13 * scale)), mono=True, bold=True)
+    acc_font = get_font(max(7, round(16 * scale)), mono=True, bold=True)
 
     data_line_h = data_font.getbbox("Xy")[3] - data_font.getbbox("Xy")[1] + 4
-    row_h = data_line_h + 8
+    row_pad = max(4, round(10 * scale))
+    row_h = data_line_h + row_pad
 
     labels = ["Time (total):", "Moves (total):", "TPS (total):", "Cubic est:",
               "Predicted moves:", "MD (total):", "MD (current):",
@@ -566,11 +587,11 @@ def _stats_layout_info(panel_w):
     }
 
 
-def _render_stats_full(stats_data, is_movetimes_accurate, panel_w):
-    """Render full stats panel - left-aligned labels, right-aligned values."""
+def _render_stats_full(stats_data, is_movetimes_accurate, panel_w, quality=1080, use_gpu=True, fps=60, compression=18, codec_name="", resolved_preset="", puzzle_size="", total_frames=0, canvas_size="", unique_frames=0, tile_size=0):
+    """Full stats panel with section headers (no dynamic overlays needed)."""
     if stats_data is None:
         return Image.new("RGBA", (panel_w, 1), (0, 0, 0, 0))
-    li = _stats_layout_info(panel_w)
+    li = _stats_layout_info(panel_w, quality)
     inner_w = li["inner_w"]; px = li["px"]
     data_font = li["data_font"]; hf = li["header_font"]
     gs_hf = li["gs_header_font"]; gs_lf = li["gs_data_font"]
@@ -580,63 +601,67 @@ def _render_stats_full(stats_data, is_movetimes_accurate, panel_w):
     def add(x, y, text, fill, font):
         lines.append((x, y, text, fill, font))
 
-    def lv_line(label, value, font, color):
+    def lv_line(label, value, color=WHITE):
         nonlocal y
-        add(px, y, label, color, font)
-        vb = font.getbbox(value)
-        vw = vb[2] - vb[0]
-        add(px + inner_w - vw, y, value, color, font)
+        add(px, y, label, color, data_font)
+        if value:
+            vb = data_font.getbbox(value)
+            vw = vb[2] - vb[0]
+            add(px + inner_w - vw, y, value, color, data_font)
         y += row_h
+
+    def section_header(text):
+        nonlocal y
+        hb = gs_hf.getbbox(text)
+        add(px, y, text, CYAN, gs_hf)
+        y += (hb[3] - hb[1]) + 8
 
     y = 10
 
-    # "Stats" header (left-aligned)
     hb = hf.getbbox("Stats")
     add(px, y, "Stats", CYAN, hf)
-    y += (hb[3] - hb[1]) + 16
+    y += (hb[3] - hb[1]) + 14
 
-    # Row 0: Time (total)
+    # ── Render Info ──
+    section_header("Render Info")
+    lv_line("Quality: ", f"{quality}p")
+    if canvas_size:
+        lv_line("Canvas: ", canvas_size)
+    lv_line("Render: ", "GPU" if use_gpu else "CPU")
+    if codec_name:
+        lv_line("Codec: ", codec_name)
+    if resolved_preset:
+        lv_line("Preset: ", resolved_preset)
+    if tile_size:
+        lv_line("Tile: ", f"{tile_size}px")
+    lv_line("FPS: ", str(fps))
+    lv_line("Compression: ", str(compression))
+    if total_frames:
+        lv_line("Frames: ", str(total_frames))
+    if unique_frames:
+        lv_line("Unique: ", str(unique_frames))
+    lv_line("Speed: ", stats_data.get("speed_playback", "1.00x"))
+    y += 6
+
+    # ── Puzzle Info ──
+    section_header("Puzzle Info")
+    if puzzle_size:
+        lv_line("Puzzle: ", puzzle_size)
+    lv_line("Time (total): ", stats_data.get("time_all", "0.000"))
+    lv_line("Moves (total): ", stats_data.get("moves_all", "0"))
+    lv_line("TPS (total): ", stats_data.get("tps_all", "0.000"))
     ce = stats_data.get("cubic_estimate")
-    lv_line("Time (total): ", stats_data.get('time_all', '0.000'), data_font, WHITE)
-
-    # Row 1: Moves (total)
-    lv_line("Moves (total): ", stats_data.get('moves_all', '0'), data_font, WHITE)
-
-    # Row 2: TPS (total)
-    lv_line("TPS (total): ", stats_data.get('tps_all', '0.000'), data_font, WHITE)
-
-    # Row 3: Cubic est
-    ce = stats_data.get("cubic_estimate")
-    lv_line("Cubic est: ", ce if ce else '---', data_font, WHITE)
-
-    # Row 4: Playback speed
-    lv_line("Playback speed: ", stats_data.get('speed_playback', '1.00x'), data_font, WHITE)
-
-    # Row 5: Predicted moves
-    lv_line("Predicted moves: ", stats_data.get('predicted_moves', ''), data_font, CYAN)
-
-    # Row 6: MD (total)
-    lv_line("MD (total): ", stats_data.get('md_all', '0'), data_font, WHITE)
-
-    # Row 6: MD (current)
-    lv_line("MD (current): ", stats_data.get('md_cur', '0'), data_font, CYAN)
-
-    # Row 7: M/MD (total)
-    lv_line("M/MD (total): ", stats_data.get('mmd_all', '0.000'), data_font, WHITE)
-
-    # Row 8: M/MD (current)
-    lv_line("M/MD (current): ", stats_data.get('mmd_cur', '0.000'), data_font, CYAN)
-
-    y += 4
-
-    # Movetimes accuracy (left-aligned)
+    lv_line("Cubic est: ", ce if ce else "---")
+    lv_line("MD (total): ", stats_data.get("md_all", "0"))
+    lv_line("M/MD (total): ", stats_data.get("mmd_all", "0.000"))
     acc_text = "Movetimes accurate" if is_movetimes_accurate else "NOT movetimes accurate"
     acc_color = ACCURATE_COLOR if is_movetimes_accurate else INACCURATE_COLOR
     ab = acc_font.getbbox(acc_text)
     add(px, y, acc_text, acc_color, acc_font)
     y += (ab[3] - ab[1]) + 6
+    y += 6
 
-    # Grid stages
+    # ── Grid stages ──
     stages = stats_data.get("grid_stages", [])
     cur_stage = stats_data.get("grid_current", 0)
     if len(stages) > 1:
@@ -646,27 +671,32 @@ def _render_stats_full(stats_data, is_movetimes_accurate, panel_w):
         raw_lines = []
         for st in stages:
             if st["cum_time"] > 0:
-                cum_s = format_time_str(st['cum_time'])
-                split_s = format_time_str(st['split_time'])
+                cum_s = format_time_str(st["cum_time"])
+                split_s = format_time_str(st["split_time"])
                 mvtps_s = f"({st['split_moves']}/{st['split_tps']:.1f})"
             else:
-                cum_s = str(st['cum_moves'])
+                cum_s = str(st["cum_moves"])
                 split_s = f"(+{st['split_moves']})"
                 mvtps_s = ""
-            raw_lines.append((cum_s, split_s, mvtps_s, st['label']))
+            raw_lines.append((cum_s, split_s, mvtps_s, st["label"]))
         if raw_lines:
             w1 = max(len(l[0]) for l in raw_lines)
             w2 = max(len(l[1]) for l in raw_lines)
             w3 = max(len(l[2]) for l in raw_lines) if any(l[2] for l in raw_lines) else 0
             w4 = max(len(l[3]) for l in raw_lines)
-        for i, (cum_s, split_s, mvtps_s, label) in enumerate(raw_lines):
-            if '.' in cum_s:
-                line = f"{cum_s:>{w1}} | {split_s:>{w2}} {mvtps_s:<{w3}} | {label:<{w4}}"
-            else:
-                line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
+            formatted = []
+            for cum_s, split_s, mvtps_s, label in raw_lines:
+                if '.' in cum_s:
+                    line = f"{cum_s:>{w1}} | {split_s:>{w2}} {mvtps_s:<{w3}} | {label:<{w4}}"
+                else:
+                    line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
+                formatted.append(line)
+            max_line_w = max(gs_lf.getbbox(l)[2] for l in formatted)
+            gs_x = max(6, (panel_w - max_line_w) // 2)
+        for i, line in enumerate(formatted):
             color = CYAN if i == cur_stage else WHITE
-            add(px, y, line, color, gs_lf)
-            y += (gs_lf.getbbox(line)[3] - gs_lf.getbbox(line)[1]) + 4
+            add(gs_x, y, line, color, gs_lf)
+            y += (gs_lf.getbbox(line)[3] - gs_lf.getbbox(line)[1]) + 8
 
     total_h = y + 30
     im = Image.new("RGBA", (panel_w, total_h), (0, 0, 0, 0))
@@ -676,30 +706,44 @@ def _render_stats_full(stats_data, is_movetimes_accurate, panel_w):
     return im
 
 
-def _compute_stats_full_height(panel_w, has_grid_stages=True):
-    """Estimate total height of the rendered stats panel."""
-    li = _stats_layout_info(panel_w)
+def _compute_stats_full_height(panel_w, has_grid_stages=True, quality=1080):
+    """Estimate total height of the rendered stats panel (new section layout)."""
+    li = _stats_layout_info(panel_w, quality)
     data_font = li["data_font"]; hf = li["header_font"]
     gs_hf = li["gs_header_font"]; gs_lf = li["gs_data_font"]
     acc_font = li["acc_font"]; row_h = li["row_h"]
 
     y = 10
-    y += (hf.getbbox("Stats")[3] - hf.getbbox("Stats")[1]) + 16
-    y += 10 * row_h
-    y += 4
+    y += (hf.getbbox("Stats")[3] - hf.getbbox("Stats")[1]) + 14
+
+    # Render Info: section header + 11 rows + gap
+    y += (gs_hf.getbbox("Render Info")[3] - gs_hf.getbbox("Render Info")[1]) + 8
+    y += 11 * row_h
+    y += 6
+
+    # Puzzle Info: section header + 8 rows + gap
+    y += (gs_hf.getbbox("Puzzle Info")[3] - gs_hf.getbbox("Puzzle Info")[1]) + 8
+    y += 8 * row_h
+
+    # Accuracy line (part of Puzzle Info, uses acc_font not row_h)
     y += (acc_font.getbbox("Movetimes accurate")[3] - acc_font.getbbox("Movetimes accurate")[1]) + 6
+    y += 6
+
     if has_grid_stages:
         y += (gs_hf.getbbox("Grid stages")[3] - gs_hf.getbbox("Grid stages")[1]) + 14
-        y += 4 * ((gs_lf.getbbox("Xy")[3] - gs_lf.getbbox("Xy")[1]) + 4)
+        y += 4 * ((gs_lf.getbbox("Xy")[3] - gs_lf.getbbox("Xy")[1]) + 8)
     y += 30
     return y
 
 
-def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_stages_list):
-    """Render static parts of stats panel (left-aligned labels, right-aligned values). Returns (image, layout_info)."""
+def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_stages_list,
+                            quality=1080, use_gpu=True, fps=60, compression=18,
+                            codec_name="", resolved_preset="", puzzle_size="",
+                            total_frames=0, canvas_size="", unique_frames=0, tile_size=0):
+    """Render static stats panel with section headers. Returns (image, layout_info)."""
     if stats_data is None:
         return Image.new("RGBA", (panel_w, 1), (0, 0, 0, 0)), {}
-    li = _stats_layout_info(panel_w)
+    li = _stats_layout_info(panel_w, quality)
     inner_w = li["inner_w"]; px = li["px"]
     data_font = li["data_font"]; hf = li["header_font"]
     gs_hf = li["gs_header_font"]; gs_lf = li["gs_data_font"]
@@ -709,97 +753,105 @@ def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_sta
     def add(x, y, text, fill, font):
         lines.append((x, y, text, fill, font))
 
-    def lv_line(label, value, font, color):
+    def lv_line(label, value, color=WHITE):
         nonlocal y
-        add(px, y, label, color, font)
-        vb = font.getbbox(value)
-        vw = vb[2] - vb[0]
-        add(px + inner_w - vw, y, value, color, font)
+        add(px, y, label, color, data_font)
+        if value:
+            vb = data_font.getbbox(value)
+            vw = vb[2] - vb[0]
+            add(px + inner_w - vw, y, value, color, data_font)
         y += row_h
+
+    def section_header(text):
+        nonlocal y
+        hb = gs_hf.getbbox(text)
+        add(px, y, text, CYAN, gs_hf)
+        y += (hb[3] - hb[1]) + 8
 
     y = 10
 
-    # "Stats" header (left-aligned)
+    # "Stats" page header
     hb = hf.getbbox("Stats")
     add(px, y, "Stats", CYAN, hf)
-    y += (hb[3] - hb[1]) + 16
+    y += (hb[3] - hb[1]) + 14
 
-    # Row 0: Time (total) [static, WHITE]
+    # ── Render Info ──
+    section_header("Render Info")
+    lv_line("Quality: ", f"{quality}p")
+    if canvas_size:
+        lv_line("Canvas: ", canvas_size)
+    render_dev = "GPU" if use_gpu else "CPU"
+    lv_line("Render: ", render_dev)
+    if codec_name:
+        lv_line("Codec: ", codec_name)
+    if resolved_preset:
+        lv_line("Preset: ", resolved_preset)
+    if tile_size:
+        lv_line("Tile: ", f"{tile_size}px")
+    lv_line("FPS: ", str(fps))
+    lv_line("Compression: ", str(compression))
+    if total_frames:
+        lv_line("Frames: ", str(total_frames))
+    if unique_frames:
+        lv_line("Unique: ", str(unique_frames))
+    lv_line("Speed: ", stats_data.get("speed_playback", "1.00x"))
+    y += 6
+
+    # ── Puzzle Info ──
+    section_header("Puzzle Info")
+    if puzzle_size:
+        lv_line("Puzzle: ", puzzle_size)
+    lv_line("Time (total): ", stats_data.get("time_all", "0.000"))
+    lv_line("Moves (total): ", stats_data.get("moves_all", "0"))
+    lv_line("TPS (total): ", stats_data.get("tps_all", "0.000"))
     ce = stats_data.get("cubic_estimate")
-    lv_line("Time (total): ", stats_data.get('time_all', '0.000'), data_font, WHITE)
-
-    # Row 1: Moves (total) [static, WHITE]
-    lv_line("Moves (total): ", stats_data.get('moves_all', '0'), data_font, WHITE)
-
-    # Row 2: TPS (total) [static, WHITE]
-    lv_line("TPS (total): ", stats_data.get('tps_all', '0.000'), data_font, WHITE)
-
-    # Row 3: Cubic est [static, WHITE]
-    lv_line("Cubic est: ", ce if ce else '---', data_font, WHITE)
-
-    # Row 4: Playback speed [static, WHITE]
-    lv_line("Playback speed: ", stats_data.get('speed_playback', '1.00x'), data_font, WHITE)
-
-    # Row 5: Predicted moves [dynamic label in static base]
-    add(px, y, "Predicted moves: ", CYAN, data_font)
-    y_predicted = y
-    y += row_h
-
-    # Row 5: MD (total) [static, WHITE]
-    lv_line("MD (total): ", stats_data.get('md_all', '0'), data_font, WHITE)
-
-    # Row 6: MD (current) [dynamic label in static base]
-    add(px, y, "MD (current): ", CYAN, data_font)
-    y_md_cur = y
-    y += row_h
-
-    # Row 7: M/MD (total) [static, WHITE]
-    lv_line("M/MD (total): ", stats_data.get('mmd_all', '0.000'), data_font, WHITE)
-
-    # Row 8: M/MD (current) [dynamic label in static base]
-    add(px, y, "M/MD (current): ", CYAN, data_font)
-    y_mmd_cur = y
-    y += row_h
-
-    y += 4
-
-    # Movetimes accuracy (left-aligned)
+    lv_line("Cubic est: ", ce if ce else "---")
+    lv_line("MD (total): ", stats_data.get("md_all", "0"))
+    lv_line("M/MD (total): ", stats_data.get("mmd_all", "0.000"))
     acc_text = "Movetimes accurate" if is_movetimes_accurate else "NOT movetimes accurate"
     acc_color = ACCURATE_COLOR if is_movetimes_accurate else INACCURATE_COLOR
     ab = acc_font.getbbox(acc_text)
     add(px, y, acc_text, acc_color, acc_font)
     y += (ab[3] - ab[1]) + 6
+    y += 6
 
-    # Grid stages (all white in static base)
+    # ── Grid stages ──
     stage_y_positions = []
+    gs_x = px
+    raw_lines = []
+    w1 = w2 = w3 = w4 = 0
     if len(grid_stages_list) > 1:
         gb = gs_hf.getbbox("Grid stages")
         add(px, y, "Grid stages", CYAN, gs_hf)
         y += (gb[3] - gb[1]) + 14
-        raw_lines = []
         for st in grid_stages_list:
             if st["cum_time"] > 0:
-                cum_s = format_time_str(st['cum_time'])
-                split_s = format_time_str(st['split_time'])
+                cum_s = format_time_str(st["cum_time"])
+                split_s = format_time_str(st["split_time"])
                 mvtps_s = f"({st['split_moves']}/{st['split_tps']:.1f})"
             else:
-                cum_s = str(st['cum_moves'])
+                cum_s = str(st["cum_moves"])
                 split_s = f"(+{st['split_moves']})"
                 mvtps_s = ""
-            raw_lines.append((cum_s, split_s, mvtps_s, st['label']))
+            raw_lines.append((cum_s, split_s, mvtps_s, st["label"]))
         if raw_lines:
             w1 = max(len(l[0]) for l in raw_lines)
             w2 = max(len(l[1]) for l in raw_lines)
             w3 = max(len(l[2]) for l in raw_lines) if any(l[2] for l in raw_lines) else 0
             w4 = max(len(l[3]) for l in raw_lines)
-        for i, (cum_s, split_s, mvtps_s, label) in enumerate(raw_lines):
-            if '.' in cum_s:
-                line = f"{cum_s:>{w1}} | {split_s:>{w2}} {mvtps_s:<{w3}} | {label:<{w4}}"
-            else:
-                line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
-            add(px, y, line, WHITE, gs_lf)
+            formatted = []
+            for cum_s, split_s, mvtps_s, label in raw_lines:
+                if '.' in cum_s:
+                    line = f"{cum_s:>{w1}} | {split_s:>{w2}} {mvtps_s:<{w3}} | {label:<{w4}}"
+                else:
+                    line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
+                formatted.append(line)
+            max_line_w = max(gs_lf.getbbox(l)[2] for l in formatted)
+            gs_x = max(6, (panel_w - max_line_w) // 2)
+        for i, line in enumerate(formatted):
+            add(gs_x, y, line, WHITE, gs_lf)
             stage_y_positions.append(y)
-            y += (gs_lf.getbbox(line)[3] - gs_lf.getbbox(line)[1]) + 4
+            y += (gs_lf.getbbox(line)[3] - gs_lf.getbbox(line)[1]) + 8
 
     total_h = y + 30
     im = Image.new("RGBA", (panel_w, total_h), (0, 0, 0, 0))
@@ -810,14 +862,11 @@ def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_sta
     stage_line_h = gs_lf.getbbox("Xy")[3] - gs_lf.getbbox("Xy")[1] + 4
 
     layout_info = {
-        "px": px, "inner_w": inner_w,
+        "px": px, "gs_x": gs_x, "inner_w": inner_w,
         "data_font": data_font, "row_h": row_h,
         "header_font": hf,
         "gs_header_font": gs_hf,
         "acc_font": acc_font,
-        "y_predicted": y_predicted,
-        "y_md_cur": y_md_cur,
-        "y_mmd_cur": y_mmd_cur,
         "stage_y_positions": stage_y_positions,
         "stage_line_h": stage_line_h,
         "total_h": total_h,
@@ -829,6 +878,7 @@ def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_sta
         "stage_w3": w3 if len(grid_stages_list) > 1 and raw_lines else 0,
         "stage_w4": w4 if len(grid_stages_list) > 1 and raw_lines else 0,
     }
+    return im, layout_info
     return im, layout_info
 # ─── Font Atlas Disk Cache for CPU path ───────────────────────
 _NP_CACHE_DIR = "render_cache"
@@ -897,19 +947,16 @@ _cache_stats_surfaces: Dict = {}
 
 
 def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info, canvas, panel_x, panel_y):
-    """Paste dynamic values and stage highlight directly onto canvas."""
+    """Paste static base and overlay current stage highlight."""
     canvas.paste(static_base, (panel_x, panel_y), static_base)
 
     if stats_data is None:
         return
 
     px = layout_info["px"]
-    inner_w = layout_info["inner_w"]
-    data_font = layout_info["data_font"]
     gs_lf = layout_info["gs_lf"]
 
     # Pre-build font atlases for disk cache (.npz files for GPU to share)
-    _get_np_font_atlas(data_font, "datafont")
     if gs_lf:
         _get_np_font_atlas(gs_lf, "gs_lf")
 
@@ -928,19 +975,11 @@ def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info, canvas, 
             _cache_stats_surfaces[key] = surface
         canvas.paste(surface, (panel_x + x, panel_y + y), surface)
 
-    def draw_value(value, fill, y_pos):
-        if not value:
-            return
-        b = data_font.getbbox(value)
-        overlay_surface(value, data_font, fill, px + inner_w - b[2], y_pos)
-
-    draw_value(stats_data.get("predicted_moves", ""), CYAN, layout_info["y_predicted"])
-    draw_value(stats_data.get("md_cur", "0"), CYAN, layout_info["y_md_cur"])
-    draw_value(stats_data.get("mmd_cur", "0.000"), CYAN, layout_info["y_mmd_cur"])
-
+    # Stage highlight only
     stages = stats_data.get("grid_stages", [])
     cur_stage = stats_data.get("grid_current", 0)
     stage_y_positions = layout_info["stage_y_positions"]
+    gs_x = layout_info.get("gs_x", px)
     if stages and cur_stage < len(stage_y_positions):
         raw_lines = []
         for st in stages:
@@ -963,7 +1002,7 @@ def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info, canvas, 
             line = f"{cum_s:>{w1}} | {split_s:>{w2}} {mvtps_s:<{w3}} | {label:<{w4}}"
         else:
             line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
-        overlay_surface(line, gs_lf, CYAN, px, stage_y_positions[cur_stage])
+        overlay_surface(line, gs_lf, CYAN, gs_x, stage_y_positions[cur_stage])
 
 
 def prerender_tile_layers(width, height, tile_size, font_size, opts, all_fringe_schemes, grid_states):
@@ -1224,7 +1263,7 @@ def generate_frames(
     custom_move_times: Optional[List[float]] = None,
     cumulative_data: Optional[dict] = None,
     progress_callback=None,
-    quality: float = 1.0,
+    quality: int = 1080,
     use_gpu: bool = True,
     cancel_check=None,
     output_path: str = None,
@@ -1237,7 +1276,6 @@ def generate_frames(
     opts: RenderOptions = RenderOptions(),
     expanded_solution: Optional[str] = None,
 ) -> Tuple[List[Image.Image], List[int]]:
-    quality = quality + 1.0
     expanded = expanded_solution if expanded_solution is not None else expand_solution(solution)
     sol_len = len(expanded)
     h = len(matrix)
@@ -1300,10 +1338,10 @@ def generate_frames(
         last_moves = cum_moves
 
     log.info(f"  grid_stages: n_stages={n_stages}, filtered_stages={filtered_stages}")
-    raw_tile = pick_tile_size(w, h)
-    tile_size = compute_tile_size(raw_tile, quality)
-    font_size = compute_font_size(w, h, tile_size)
-    log.info(f"  tile_size={tile_size}, raw_tile={raw_tile}, font_size={font_size}")
+    layout = compute_layout(quality, w, h, opts.grid_only)
+    tile_size = layout["tile_size"]
+    font_size = layout["font_size"]
+    log.info(f"  tile_size={tile_size}, pad={layout['pad']}, header_h={layout['header_h']}, panel_w={layout['panel_w']}, font_size={font_size}")
 
     tile_sprites = prerender_tile_layers(w, h, tile_size, font_size, opts, all_fringe_schemes, grid_states)
     log.info(f"  tile_sprites: {len(tile_sprites.base_sprites)} bases, {len(tile_sprites.number_texts)} numbers, {len(tile_sprites.bar_sprites)} bars")
@@ -1349,6 +1387,16 @@ def generate_frames(
     _t_frame_state_end = time_module.time()
     log.info(f"  frame_state: total_frames={total_frames}, unique_states={len(states_needed)}, frame_time_ms={frame_time_ms:.3f} (took {_t_frame_state_end - _t_stage1:.3f}s)")
 
+    # Resolve codec + encoder preset for stats display
+    _best_codec = _get_best_encoder()
+    _codec_name = _best_codec
+    if _best_codec in ('hevc_nvenc', 'h264_nvenc'):
+        _resolved_preset = encoder_preset or ('p7' if slow_render else 'p4')
+    else:
+        _resolved_preset = encoder_preset or ('slow' if slow_render else 'veryfast')
+    canvas_size = f"{layout['canvas_w']}x{layout['canvas_h']}"
+    unique_frames_count = len(states_needed)
+
     # Build composites only for grid states that will actually be rendered
     grid_keys_for_needed = _sorted_grid_keys[:-1]
     needed_state_ids = {id(grid_states[0])}
@@ -1371,18 +1419,11 @@ def generate_frames(
     # Optional GPU acceleration for tile grid rendering
     puzzle_w_est = w * tile_size
     if use_gpu:
-        if opts.grid_only:
-            min_canvas_h = None
-        else:
-            canvas_w_est = (puzzle_w_est + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
-            panel_w_est = canvas_w_est - (PADDING + puzzle_w_est + PADDING) - PADDING
-            stats_h_est = _compute_stats_full_height(panel_w_est, has_grid_stages=len(grid_stages_list) > 1)
-            min_canvas_h = HEADER_H + PADDING + stats_h_est + PADDING
         if gpu_renderer is not None:
             gpu = gpu_renderer
         else:
             from gpu_renderer import GPURenderer
-            gpu = GPURenderer(w, h, raw_tile, quality, min_canvas_h=min_canvas_h, opts=opts)
+            gpu = GPURenderer(w, h, tile_size, pad=layout["pad"], header_h=layout["header_h"], panel_w=layout["panel_w"], canvas_w=layout["canvas_w"], canvas_h=layout["canvas_h"], opts=opts)
         if gpu.available:
             gpu.upload_composite_atlas(composite_images, composite_lookup)
         use_gpu = use_gpu and gpu.available
@@ -1445,6 +1486,7 @@ def generate_frames(
             "predicted_moves": predicted_moves,
             "cubic_estimate": None,
             "speed_playback": f"{speed_factor:.2f}x" if speed_factor != 1.0 else "1.00x",
+            "timer_right_text": f"{moved_md} ({predicted_moves} / {mmd_display})",
         }
         move_idx = frame_idx - 1 if frame_idx > 0 else 0
         cur_stage_idx = max(0, sum(1 for s in filtered_stages if s <= move_idx) - 1)
@@ -1476,6 +1518,22 @@ def generate_frames(
         tile_sprites=tile_sprites,
         composite_atlas=composite_images,
         composite_lookup=composite_lookup,
+        quality=quality,
+        pad=layout["pad"],
+        header_h=layout["header_h"],
+        panel_w=layout["panel_w"],
+        canvas_w=layout["canvas_w"],
+        canvas_h=layout["canvas_h"],
+        use_gpu=use_gpu,
+        fps=fps,
+        compression=compression,
+        encoder_preset=encoder_preset,
+        codec_name=_codec_name,
+        resolved_preset=_resolved_preset,
+        canvas_size=canvas_size,
+        unique_frames=unique_frames_count,
+        puzzle_size=f"{w}x{h}",
+        total_frames=len(frame_state),
     )
 
     # Walk all states sequentially with O(1) in-place moves, build frame_params only for needed states
@@ -1530,6 +1588,22 @@ def generate_frames(
                 changed_tiles=changed_tiles,
                 composite_atlas=composite_images,
                 composite_lookup=composite_lookup,
+                quality=quality,
+                pad=layout["pad"],
+                header_h=layout["header_h"],
+                panel_w=layout["panel_w"],
+                canvas_w=layout["canvas_w"],
+                canvas_h=layout["canvas_h"],
+                use_gpu=use_gpu,
+                fps=fps,
+                compression=compression,
+                encoder_preset=encoder_preset,
+                codec_name=_codec_name,
+                resolved_preset=_resolved_preset,
+                canvas_size=canvas_size,
+                unique_frames=unique_frames_count,
+                puzzle_size=f"{w}x{h}",
+                total_frames=len(frame_state),
             )
 
             _prog_count += 1
@@ -1558,10 +1632,10 @@ def generate_frames(
         first_is_accurate = frame_params[first_needed]["is_movetimes_accurate"]
         grid_stages_list = first_stats.get("grid_stages", [])
         puzzle_w_pre = w * tile_size
-        canvas_w_pre = (puzzle_w_pre + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
-        panel_x_pre = PADDING + puzzle_w_pre + PADDING
-        panel_w_pre = canvas_w_pre - panel_x_pre - PADDING
-        static_base, static_layout = _make_stats_static_base(panel_w_pre, first_stats, first_is_accurate, grid_stages_list)
+        canvas_w_pre = (puzzle_w_pre + layout["panel_w"] + layout["pad"] + 1) // 2 * 2
+        panel_x_pre = puzzle_w_pre + layout["pad"]
+        panel_w_pre = canvas_w_pre - panel_x_pre
+        static_base, static_layout = _make_stats_static_base(panel_w_pre, first_stats, first_is_accurate, grid_stages_list, quality=quality, use_gpu=use_gpu, fps=fps, compression=compression, codec_name=_codec_name, resolved_preset=_resolved_preset, puzzle_size=f"{w}x{h}", total_frames=len(frame_state), canvas_size=canvas_size, unique_frames=unique_frames_count, tile_size=tile_size)
         for fp_idx in states_needed:
             frame_params[fp_idx]["static_stats_base"] = static_base
             frame_params[fp_idx]["static_stats_layout"] = static_layout
@@ -1572,16 +1646,8 @@ def generate_frames(
 
     log.info(f"====== STAGE 1 DONE: {time_module.time() - _t_stage1:.1f}s ======")
 
-    # Pre-compute canvas dimensions for CPU path (need before rendering to open pipe)
-    canvas_w_cpu, canvas_h_cpu = compute_canvas_dimensions(w, h, tile_size, grid_only=opts.grid_only)
-    if not opts.grid_only:
-        puzzle_w_tmp = w * tile_size
-        panel_w_tmp = canvas_w_cpu - (PADDING + puzzle_w_tmp + PADDING) - PADDING
-        first_stats = frame_params[states_needed[0]]["stats_data"]
-        grid_stages_tmp = first_stats.get("grid_stages", [])
-        stats_h_tmp = _compute_stats_full_height(panel_w_tmp, has_grid_stages=len(grid_stages_tmp) > 1)
-        canvas_h_cpu = max(canvas_h_cpu, HEADER_H + PADDING + stats_h_tmp + PADDING)
-        canvas_h_cpu = round_canvas_height(canvas_h_cpu)
+    # Pre-compute canvas dimensions for CPU path
+    canvas_w_cpu, canvas_h_cpu = layout["canvas_w"], layout["canvas_h"]
 
     # ── GPU path: render unique states, pipe via frame mapping ──
     if use_gpu and len(frame_params) > 1:
@@ -1589,8 +1655,8 @@ def generate_frames(
         puzzle_h = h * tile_size
         canvas_w = gpu.canvas_w
         canvas_h = gpu.canvas_h
-        panel_x = PADDING + puzzle_w + PADDING
-        panel_w_val = canvas_w - panel_x - PADDING
+        panel_x = puzzle_w + layout["pad"]
+        panel_w_val = canvas_w - panel_x
 
         extra_overlay_args = dict(
             panel_w_val=panel_w_val,
@@ -1793,7 +1859,7 @@ class ReplayVideoGenerator:
         force_fringe: bool = False,
         show_progress: bool = True,
         speed_factor: float = 1.0,
-    quality: float = 1.0,
+    quality: int = 1080,
         external_progress_cb = None,
         use_gpu: bool = True,
         cancel_check=None,
@@ -1867,7 +1933,7 @@ class ReplayVideoGenerator:
 
         if show_progress:
             print(f"Puzzle: {width}x{height}, Moves: {sol_len}, TPS: {tps_val:.3f}")
-            print(f"Tile size: {pick_tile_size(width, height)}px x quality={quality}, Frames: {total_frames}")
+            print(f"Frames: {total_frames}")
             print(f"Output: {output_path}")
 
         prog = None
@@ -2032,7 +2098,7 @@ class ReplayVideoGenerator:
             groups: Dict[tuple, List[dict]] = {}
             for item in items:
                 sz = item.get("_inferred_size") or (0, 0)
-                kval = (sz[0], sz[1], item.get("quality", 1.0), item.get("opts", RenderOptions()))
+                kval = (sz[0], sz[1], item.get("quality", 1080), item.get("opts", RenderOptions()))
                 groups.setdefault(kval, []).append(item)
 
             _batch_prog = ProgressTracker(
@@ -2050,17 +2116,10 @@ class ReplayVideoGenerator:
                         if renderer is not None:
                             renderer.cleanup()
                         w, h, quality, batch_opts = key
-                        eff_q = quality + 1.0
-                        raw_ts = pick_tile_size(w, h)
-                        if batch_opts.grid_only:
-                            min_ch = None
-                        else:
-                            eff_ts = max(raw_ts, int(raw_ts * eff_q))
-                            pw_est = w * eff_ts
-                            cw_est = (pw_est + STATS_PANEL_WIDTH + PADDING * 3 + 1) // 2 * 2
-                            pnl_w = cw_est - (PADDING + pw_est + PADDING) - PADDING
-                            min_ch = HEADER_H + PADDING + _compute_stats_full_height(pnl_w, has_grid_stages=True) + PADDING
-                        renderer = GPURenderer(w, h, raw_ts, quality=eff_q, min_canvas_h=min_ch, opts=batch_opts)
+                        from geometry import compute_layout
+                        layout = compute_layout(quality, w, h, batch_opts.grid_only)
+                        tile_size = layout["tile_size"]
+                        renderer = GPURenderer(w, h, tile_size, pad=layout["pad"], header_h=layout["header_h"], panel_w=layout["panel_w"], canvas_w=layout["canvas_w"], canvas_h=layout["canvas_h"], opts=batch_opts)
 
                     for item in group:
                         if cancel_check and cancel_check():
@@ -2145,7 +2204,7 @@ def main():
     parser.add_argument("--size", type=str, default=None, help="Puzzle size (e.g. 4x4)")
     parser.add_argument("--output", type=str, default="replay.mp4", help="Output video path")
     parser.add_argument("--force-fringe", action="store_true", default=False, help="Force fringe colors (disable grids detection)")
-    parser.add_argument("--quality", type=float, default=1.0, help="Render quality multiplier")
+    parser.add_argument("--quality", type=int, default=1080, help="Target video quality (360/480/720/1080/1440/2160)")
     parser.add_argument("--speed", type=float, default=1.0, help="Speed factor")
     parser.add_argument("--fps", type=int, default=60, help="Output video frame rate (default: 60)")
     parser.add_argument("--temp-dir", type=str, default=None, help="Temp directory for frames")

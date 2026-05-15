@@ -4,9 +4,9 @@ from functools import lru_cache
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-PADDING = 20
-HEADER_H = 56
-STATS_PANEL_WIDTH = 320
+PADDING = 2
+HEADER_H = 32
+STATS_PANEL_WIDTH = 340
 INFO_H = 40
 TIMER_HEIGHT = 30
 
@@ -26,9 +26,9 @@ GREEN = (0, 255, 0)
 GRAY = (128, 128, 128)
 LIGHT_GRAY = (200, 200, 200)
 
-TILE_BORDER_WIDTH = 1
+TILE_BORDER_WIDTH = 1  # base; scaled by tile_size in render
 TILE_BORDER_RADIUS_RATIO = 0.4
-BASE_SIZE = 15
+MIN_TILE = 2
 
 # ─── Font Loading ──────────────────────────────────────────────────
 
@@ -81,8 +81,8 @@ def render_number_texture(num: int, tile_size: int, font_size: int) -> Image.Ima
 
 
 @lru_cache(maxsize=128)
-def render_timer_text(timer_text: str) -> Image.Image:
-    font = get_font(36, bold=True, mono=True)
+def render_timer_text(timer_text: str, font_size: int = 36) -> Image.Image:
+    font = get_font(font_size, bold=True, mono=True)
     b = font.getbbox(timer_text)
     w = b[2] - b[0]
     h = b[3] - b[1]
@@ -104,10 +104,6 @@ def render_dynamic_text(text: str, font, color=WHITE):
     return im
 
 
-def compute_tile_size(raw_tile: int, quality: float) -> int:
-    return max(raw_tile, int(raw_tile * quality))
-
-
 def compute_font_size(width: int, height: int, tile_size: int) -> int:
     max_num = width * height - 1
     num_digits = len(str(max_num))
@@ -115,15 +111,19 @@ def compute_font_size(width: int, height: int, tile_size: int) -> int:
     return max(8, tile_size * 11 // divisor)
 
 
-def compute_grid_position(grid_only: bool) -> tuple[int, int]:
-    return PADDING, PADDING if grid_only else PADDING + HEADER_H + PADDING
+def compute_grid_position(grid_only: bool, pad: int = None, header_h: int = None) -> tuple[int, int]:
+    if header_h is None:
+        header_h = HEADER_H
+    return 0, header_h if not grid_only else 0
 
 
-def compute_panel_rect(grid_x: int, puzzle_w: int, canvas_w: int, grid_y: int, canvas_h: int) -> tuple[int, int, int, int]:
-    panel_x = grid_x + puzzle_w + PADDING
+def compute_panel_rect(grid_x: int, puzzle_w: int, canvas_w: int, grid_y: int, canvas_h: int, pad: int = None) -> tuple[int, int, int, int]:
+    if pad is None:
+        pad = PADDING
+    panel_x = grid_x + puzzle_w + pad
     panel_y = grid_y
-    panel_w = canvas_w - panel_x - PADDING
-    panel_h = canvas_h - panel_y - PADDING
+    panel_w = canvas_w - panel_x
+    panel_h = canvas_h - panel_y
     return panel_x, panel_y, panel_w, panel_h
 
 
@@ -142,24 +142,79 @@ def round_canvas_height(h: int) -> int:
     return (h + 1) // 2 * 2
 
 
-def compute_canvas_dimensions(puzzle_w: int, puzzle_h: int, tile_size: int,
-                              grid_only: bool = False) -> tuple[int, int]:
-    if puzzle_w < 1 or puzzle_h < 1:
-        raise ValueError(f"puzzle dimensions must be >= 1, got {puzzle_w}x{puzzle_h}")
-    if tile_size < 1:
-        raise ValueError(f"tile_size must be >= 1, got {tile_size}")
+def compute_layout(quality: int, puzzle_w: int, puzzle_h: int, grid_only: bool = False) -> dict:
+    """Compute layout parameters from a target video height preset.
+    Canvas height is always the exact quality — no edge padding.
+    pad = gap between puzzle grid and stats panel (small).
+    header_h = timer bar height."""
+    scale = quality / 1080
+    header_h = max(8, int(round(32 * scale)))
+    gap = max(1, int(round(4 * scale)))
+    panel_w = max(80, int(round(STATS_PANEL_WIDTH * scale)))
+
+    max_dim = max(puzzle_w, puzzle_h)
+    if grid_only:
+        avail_h = quality
+    else:
+        avail_h = quality - header_h
+    tile_size = avail_h // max_dim
+    tile_size = max(MIN_TILE, tile_size)
+
+    font_size = compute_font_size(puzzle_w, puzzle_h, tile_size)
 
     puzzle_px_w = puzzle_w * tile_size
     puzzle_px_h = puzzle_h * tile_size
 
     if grid_only:
-        cw = (puzzle_px_w + PADDING * 2 + 1) // 2 * 2
-        ch = (puzzle_px_h + PADDING * 2 + 1) // 2 * 2
+        canvas_w = (puzzle_px_w + 1) // 2 * 2
     else:
-        panel_w_est = STATS_PANEL_WIDTH
-        cw = (puzzle_px_w + panel_w_est + PADDING * 3 + 1) // 2 * 2
-        base_h = HEADER_H + puzzle_px_h + PADDING * 3
-        ch = (base_h + 1) // 2 * 2
+        canvas_w = (puzzle_px_w + gap + panel_w + 1) // 2 * 2
+    canvas_h = (quality + 1) // 2 * 2
+
+    return {
+        "pad": gap,
+        "header_h": header_h,
+        "panel_w": panel_w,
+        "tile_size": tile_size,
+        "font_size": font_size,
+        "canvas_w": canvas_w,
+        "canvas_h": canvas_h,
+    }
+
+
+def compute_canvas_dimensions(puzzle_w: int, puzzle_h: int, tile_size: int,
+                              grid_only: bool = False,
+                              pad: int = None, header_h: int = None,
+                              panel_w: int = None,
+                              quality: int = None) -> tuple[int, int]:
+    if puzzle_w < 1 or puzzle_h < 1:
+        raise ValueError(f"puzzle dimensions must be >= 1, got {puzzle_w}x{puzzle_h}")
+    if tile_size < 1:
+        raise ValueError(f"tile_size must be >= 1, got {tile_size}")
+
+    if pad is None:
+        pad = PADDING
+    if header_h is None:
+        header_h = HEADER_H
+    if panel_w is None:
+        panel_w = STATS_PANEL_WIDTH
+
+    puzzle_px_w = puzzle_w * tile_size
+    puzzle_px_h = puzzle_h * tile_size
+
+    if grid_only:
+        cw = (puzzle_px_w + 1) // 2 * 2
+        if quality is not None:
+            ch = (quality + 1) // 2 * 2
+        else:
+            ch = (puzzle_px_h + 1) // 2 * 2
+    else:
+        cw = (puzzle_px_w + panel_w + pad + 1) // 2 * 2
+        if quality is not None:
+            ch = (quality + 1) // 2 * 2
+        else:
+            base_h = header_h + puzzle_px_h
+            ch = (base_h + 1) // 2 * 2
 
     return cw, ch
 

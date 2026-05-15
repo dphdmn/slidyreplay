@@ -19,6 +19,12 @@
 - x is missing in speedup
 - no-stats version to remove panel but keep timer
 - more tile size potions
+- batch mode stuff (relays and marathons)
+- combine 3 sections in gui in one
+- bars are scaled in a wrong way
+- check font size issues on 50x50
+- remove gap from the bottom
+
 
 Anyway two major optimization ideas:
 1) Rendering only tiles that changed.
