@@ -87,6 +87,7 @@ from geometry import (PADDING, HEADER_H, STATS_PANEL_WIDTH, INFO_H, TIMER_HEIGHT
     compute_canvas_dimensions, RenderOptions,
     get_font, render_number_texture, compute_font_size,
     compute_grid_position, compute_panel_rect, compute_secondary_bar_rect,
+    should_draw_tile_border, should_draw_secondary_border_rect,
     round_canvas_height)
 
 
@@ -122,9 +123,13 @@ class GPURenderer:
                 width, height, tile_size, grid_only=self.opts.grid_only,
                 pad=self.pad, header_h=self.header_h, panel_w=self.layout_panel_w,
             )
-        self.grid_x, self.grid_y = compute_grid_position(self.opts.grid_only, pad=self.pad, header_h=self.header_h)
+        self.grid_x, self.grid_y = compute_grid_position(
+            self.opts.grid_only, pad=self.pad, header_h=self.header_h,
+            canvas_h=self.canvas_h, puzzle_h=self.ph,
+        )
         self.panel_x, self.panel_y, self.panel_w, self.panel_h = compute_panel_rect(
-            self.grid_x, puzzle_w, self.canvas_w, self.grid_y, self.canvas_h, pad=self.pad
+            self.grid_x, puzzle_w, self.canvas_w, self.grid_y, self.canvas_h,
+            pad=self.pad, panel_y=(0 if self.opts.grid_only else self.header_h),
         )
         self.timer_bbox = (0, 0, 0, 0) if self.opts.grid_only else (0, 0, self.canvas_w, self.header_h)
 
@@ -168,29 +173,22 @@ class GPURenderer:
 
             # Tile border mask: 1 px border
             border = torch.zeros(tile_size, tile_size, 1, device=cuda_dev, dtype=torch.float32)
-            border[0, :] = 1
-            border[tile_size - 1, :] = 1
-            border[:, 0] = 1
-            border[:, tile_size - 1] = 1
+            if should_draw_tile_border(tile_size) and not self.opts.no_border:
+                border[0, :] = 1
+                border[:, 0] = 1
             self._border_mask = border
             self._border_mask_inv = 1.0 - border
 
             # Secondary colour bar masks
-            bx0, by0, bx1, by1 = compute_secondary_bar_rect(tile_size)
+            bx0, by0, bx1, by1 = compute_secondary_bar_rect(tile_size, font_size=self.font_size)
             bar_fill = torch.zeros(tile_size, tile_size, 1, device=cuda_dev, dtype=torch.float32)
             bar_border = torch.zeros(tile_size, tile_size, 1, device=cuda_dev, dtype=torch.float32)
             bar_fill[by0:by1, bx0:bx1] = 1.0
-            bar_border[by0:by1, bx0:bx1] = 1.0
-            if by0 > 0:
+            if should_draw_secondary_border_rect(tile_size, (bx0, by0, bx1, by1)) and not self.opts.no_secondary_border:
                 bar_border[by0, bx0:bx1] = 1.0
-            if by1 < tile_size:
                 bar_border[by1 - 1, bx0:bx1] = 1.0
-            if bx0 > 0:
                 bar_border[by0:by1, bx0] = 1.0
-            if bx1 < tile_size:
                 bar_border[by0:by1, bx1 - 1] = 1.0
-            if by1 - by0 > 2 and bx1 - bx0 > 2:
-                bar_border[by0 + 1:by1 - 1, bx0 + 1:bx1 - 1] = 0.0
             self._bar_fill = bar_fill
             self._bar_border = bar_border
 
@@ -565,6 +563,22 @@ class GPURenderer:
 
                         _static_base_gpu = _sb
                         _sb_h, _sb_w = _static_base_gpu.shape[:2]
+                        _static_base_pil = overlay_render_data.get("static_base")
+                        if _static_base_pil is not None:
+                            _static_base_arr = np.array(_static_base_pil.convert("RGBA"), dtype=np.uint8)
+                            _static_base_gpu = torch.from_numpy(_static_base_arr).to(dev, non_blocking=True).float() / 255.0
+                            _sb_h, _sb_w = _static_base_gpu.shape[:2]
+                        _stage_highlights = []
+                        if _stage_raw_lines and _gs_lf:
+                            for _cum_s, _split_s, _mvtps_s, _label in _stage_raw_lines:
+                                if '.' in _cum_s:
+                                    _gl = f"{_cum_s:>{_stage_w1}} | {_split_s:>{_stage_w2}} {_mvtps_s:<{_stage_w3}} | {_label:<{_stage_w4}}"
+                                else:
+                                    _gl = f"{_cum_s:>{_stage_w1}} | {_split_s:<{_stage_w2}}  | {_label:<{_stage_w4}}"
+                                _b = _gs_lf.getbbox(_gl)
+                                _surf = Image.new("RGBA", (max(_b[2], 1), max(_b[3], 1)), (0, 0, 0, 0))
+                                ImageDraw.Draw(_surf).text((0, 0), _gl, fill=(*CYAN, 255), font=_gs_lf)
+                                _stage_highlights.append(torch.from_numpy(np.array(_surf)).to(dev, non_blocking=True).float() / 255.0)
                         _cyan_rgb = torch.tensor(CYAN, device=dev, dtype=torch.float32) / 255.0
                         _overlay_ready = True
 
@@ -624,14 +638,17 @@ class GPURenderer:
                         # Stage highlight: CYAN from gs_lf atlas (same positioning as white static base)
                         _cur_stage = _sd.get("grid_current", 0)
                         if _stage_raw_lines and _cur_stage < len(_stage_y_positions):
-                            _cums_s, _splits_s, _mvtpss_s, _label_s = _stage_raw_lines[_cur_stage]
-                            if '.' in _cums_s:
-                                _line_s = f"{_cums_s:>{_stage_w1}} | {_splits_s:>{_stage_w2}} {_mvtpss_s:<{_stage_w3}} | {_label_s:<{_stage_w4}}"
-                            else:
-                                _line_s = f"{_cums_s:>{_stage_w1}} | {_splits_s:<{_stage_w2}}  | {_label_s:<{_stage_w4}}"
-                            _blend_cyan(canvas[0], _line_s, _gs_atlas,
-                                        px + _gs_x, py + _stage_y_positions[_cur_stage],
-                                        cw, ch)
+                            if _cur_stage < len(_stage_highlights):
+                                _hi = _stage_highlights[_cur_stage]
+                                _hx = px + _gs_x
+                                _hy = py + _stage_y_positions[_cur_stage]
+                                _hh = min(_hi.shape[0], ch - _hy)
+                                _hw = min(_hi.shape[1], cw - _hx)
+                                if _hh > 0 and _hw > 0:
+                                    _src = _hi[:_hh, :_hw]
+                                    _sa = _src[:, :, 3:4]
+                                    _dst = canvas[0, _hy:_hy + _hh, _hx:_hx + _hw]
+                                    _dst[:, :, :3] = _src[:, :, :3] * _sa + _dst[:, :, :3] * (1 - _sa)
                 else:
                     first_stats_arr = frame_params_list[batch_start].get("stats_arr")
                     if first_stats_arr is not None:

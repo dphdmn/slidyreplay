@@ -24,7 +24,8 @@
 - bars are scaled in a wrong way
 - check font size issues on 50x50
 - remove gap from the bottom
-
+- hours in timer
+- optional timer / md stats - stats panel
 
 Anyway two major optimization ideas:
 1) Rendering only tiles that changed.

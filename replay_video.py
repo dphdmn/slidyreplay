@@ -52,6 +52,7 @@ from geometry import (PADDING, HEADER_H, STATS_PANEL_WIDTH, INFO_H, TIMER_HEIGHT
     get_font, render_number_texture, render_timer_text,
     compute_font_size,
     compute_grid_position, compute_panel_rect, compute_secondary_bar_rect,
+    should_draw_numbers, should_draw_tile_border, should_draw_secondary_border_rect,
     round_canvas_height,
     TileSpriteCache, _solid_base, _bar_sprite, select_base, select_bar,
     prerender_composite_tile)
@@ -349,7 +350,10 @@ def render_frame(
         panel_w = STATS_PANEL_WIDTH
     puzzle_w = w * tile_size
     puzzle_h = h * tile_size
-    grid_x, grid_y = compute_grid_position(opts.grid_only, pad=pad, header_h=header_h)
+    grid_x, grid_y = compute_grid_position(
+        opts.grid_only, pad=pad, header_h=header_h,
+        canvas_h=canvas_h, puzzle_h=puzzle_h,
+    )
 
     if prev_canvas is not None and changed_tiles is not None:
         canvas = prev_canvas
@@ -458,23 +462,27 @@ def render_frame(
                 bg_color = tuple(bg_color.ravel()) if isinstance(bg_color, np.ndarray) else bg_color
                 draw_filled_rect(draw, sq_bbox, bg_color)
 
-                if tile_size > 7 and not opts.no_border:
-                    draw.rectangle(sq_bbox, outline=TILE_BORDER_COLOR, width=TILE_BORDER_WIDTH)
+                if should_draw_tile_border(tile_size) and not opts.no_border:
+                    draw.line([(sx, sy), (sx + tile_size - 1, sy)], fill=TILE_BORDER_COLOR, width=TILE_BORDER_WIDTH)
+                    draw.line([(sx, sy), (sx, sy + tile_size - 1)], fill=TILE_BORDER_COLOR, width=TILE_BORDER_WIDTH)
 
                 if sec_bg is not None:
-                    bx0, by0, bx1, by1 = compute_secondary_bar_rect(tile_size, sx, sy)
-                    bar_bbox = (bx0, by0, bx1, by1)
+                    bx0, by0, bx1, by1 = compute_secondary_bar_rect(tile_size, sx, sy, font_size=font_size)
+                    bar_bbox = (bx0, by0, max(bx0, bx1 - 1), max(by0, by1 - 1))
                     draw_filled_rect(draw, bar_bbox, sec_bg)
-                    if tile_size > 1 and not opts.no_secondary_border:
+                    if should_draw_secondary_border_rect(tile_size, (bx0, by0, bx1, by1)) and not opts.no_secondary_border:
                         draw.rectangle(bar_bbox, outline=TILE_BORDER_COLOR, width=1)
 
-                if not opts.no_numbers and num != 0:
+                if not opts.no_numbers and num != 0 and should_draw_numbers(tile_size, font_size):
                     tex = render_number_texture(num, tile_size, font_size)
                     canvas.paste(tex, (sx, sy), tex)
 
     # ─── Stats Panel ──────────────────────────────────────────────
     if not opts.grid_only:
-        panel_x, panel_y, panel_w, panel_h = compute_panel_rect(grid_x, puzzle_w, canvas_w, grid_y, canvas_h)
+        panel_x, panel_y, panel_w, panel_h = compute_panel_rect(
+            grid_x, puzzle_w, canvas_w, grid_y, canvas_h,
+            pad=pad, panel_y=header_h,
+        )
 
         if panel_w > 0 and panel_h > 0:
             blended_bg = tuple(
@@ -1055,21 +1063,21 @@ def prerender_tile_layers(width, height, tile_size, font_size, opts, all_fringe_
                         color = tuple(int(x) for x in scheme[r, c])
                         if color not in seen:
                             seen.add(color)
-                            bar_sprites[color] = _bar_sprite(color, ts, opts)
+                            bar_sprites[color] = _bar_sprite(color, ts, opts, font_size=font_size)
             elif sc["type"] == CT_MAP["grids1"]:
                 color = red_t
                 if color not in seen:
                     seen.add(color)
-                    bar_sprites[color] = _bar_sprite(color, ts, opts)
+                    bar_sprites[color] = _bar_sprite(color, ts, opts, font_size=font_size)
             elif sc["type"] == CT_MAP["grids2"]:
                 color = blue_t
                 if color not in seen:
                     seen.add(color)
-                    bar_sprites[color] = _bar_sprite(color, ts, opts)
+                    bar_sprites[color] = _bar_sprite(color, ts, opts, font_size=font_size)
 
     for col in (red_t, blue_t):
         if col not in seen:
-            bar_sprites[col] = _bar_sprite(col, ts, opts)
+            bar_sprites[col] = _bar_sprite(col, ts, opts, font_size=font_size)
 
     return TileSpriteCache(
         tile_size=ts,

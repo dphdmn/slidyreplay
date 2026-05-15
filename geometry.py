@@ -29,6 +29,9 @@ LIGHT_GRAY = (200, 200, 200)
 TILE_BORDER_WIDTH = 1  # base; scaled by tile_size in render
 TILE_BORDER_RADIUS_RATIO = 0.4
 MIN_TILE = 2
+MIN_NUMBER_TILE_SIZE = 12
+MIN_BORDER_TILE_SIZE = 12
+MIN_SECONDARY_BORDER_TILE_SIZE = 35
 
 # ─── Font Loading ──────────────────────────────────────────────────
 
@@ -69,13 +72,22 @@ def render_number_texture(num: int, tile_size: int, font_size: int) -> Image.Ima
         return cached
     im = Image.new("RGBA", (tile_size, tile_size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(im)
-    if num != 0:
+    if num != 0 and should_draw_numbers(tile_size, font_size):
         text = str(num)
         tf = get_font(font_size)
         tb = draw.textbbox((0, 0), text, font=tf)
-        tx = tile_size // 2 - (tb[0] + tb[2]) // 2
-        ty = tile_size // 2 - (tb[1] + tb[3]) // 2
-        draw.text((tx, ty), text, fill=(0, 0, 0, 255), font=tf)
+        text_w = max(1, tb[2] - tb[0])
+        text_h = max(1, tb[3] - tb[1])
+        pad = 2
+        text_im = Image.new("RGBA", (text_w + pad * 2, text_h + pad * 2), (0, 0, 0, 0))
+        text_draw = ImageDraw.Draw(text_im)
+        text_draw.text((pad - tb[0], pad - tb[1]), text, fill=(0, 0, 0, 255), font=tf)
+        ink_bbox = text_im.getbbox()
+        if ink_bbox is not None:
+            text_im = text_im.crop(ink_bbox)
+            tx = (tile_size - text_im.width + 1) // 2
+            ty = (tile_size - text_im.height) // 2
+            im.alpha_composite(text_im, (tx, ty))
     _number_texture_cache[key] = im
     return im
 
@@ -105,34 +117,85 @@ def render_dynamic_text(text: str, font, color=WHITE):
 
 
 def compute_font_size(width: int, height: int, tile_size: int) -> int:
+    if tile_size < MIN_NUMBER_TILE_SIZE:
+        return 0
     max_num = width * height - 1
-    num_digits = len(str(max_num))
-    divisor = 25 if num_digits <= 3 else 30
-    return max(8, tile_size * 11 // divisor)
+    sample = str(max_num)
+    max_text_w = max(1, round(tile_size * 0.82))
+    max_text_h = max(1, round(tile_size * 0.56))
+    for font_size in range(max(4, tile_size), 3, -1):
+        font = get_font(font_size)
+        bbox = font.getbbox(sample)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+        if text_w <= max_text_w and text_h <= max_text_h:
+            return font_size
+    return 0
 
 
-def compute_grid_position(grid_only: bool, pad: int = None, header_h: int = None) -> tuple[int, int]:
+def should_draw_numbers(tile_size: int, font_size: int) -> bool:
+    return tile_size >= MIN_NUMBER_TILE_SIZE and font_size > 0
+
+
+def should_draw_tile_border(tile_size: int) -> bool:
+    return tile_size >= MIN_BORDER_TILE_SIZE
+
+
+def should_draw_secondary_border(tile_size: int) -> bool:
+    return tile_size >= MIN_SECONDARY_BORDER_TILE_SIZE
+
+
+def should_draw_secondary_border_rect(tile_size: int, rect: tuple[int, int, int, int]) -> bool:
+    x0, y0, x1, y1 = rect
+    return should_draw_secondary_border(tile_size) and (x1 - x0) >= 3 and (y1 - y0) >= 3
+
+
+def compute_grid_position(grid_only: bool, pad: int = None, header_h: int = None,
+                          canvas_h: int = None, puzzle_h: int = None) -> tuple[int, int]:
     if header_h is None:
         header_h = HEADER_H
-    return 0, header_h if not grid_only else 0
+    base_y = 0 if grid_only else header_h
+    if grid_only and canvas_h is not None and puzzle_h is not None:
+        avail_h = canvas_h if grid_only else max(0, canvas_h - header_h)
+        extra_h = max(0, avail_h - puzzle_h)
+        base_y += extra_h // 2
+    return 0, base_y
 
 
-def compute_panel_rect(grid_x: int, puzzle_w: int, canvas_w: int, grid_y: int, canvas_h: int, pad: int = None) -> tuple[int, int, int, int]:
+def compute_panel_rect(grid_x: int, puzzle_w: int, canvas_w: int, grid_y: int, canvas_h: int,
+                       pad: int = None, panel_y: int = None) -> tuple[int, int, int, int]:
     if pad is None:
         pad = PADDING
+    if panel_y is None:
+        panel_y = grid_y
     panel_x = grid_x + puzzle_w + pad
-    panel_y = grid_y
     panel_w = canvas_w - panel_x
     panel_h = canvas_h - panel_y
     return panel_x, panel_y, panel_w, panel_h
 
 
-def compute_secondary_bar_rect(tile_size: int, tile_x: int = 0, tile_y: int = 0) -> tuple[int, int, int, int]:
-    bar_h = max(2, int(tile_size * 0.1))
-    bar_off = max(2, int(tile_size * 0.06))
-    bar_inset = max(2, int(tile_size * 0.1))
-    y0 = tile_y + tile_size - bar_h - bar_off
-    y1 = tile_y + tile_size - bar_off
+def compute_number_visual_bottom(tile_size: int, font_size: int) -> int:
+    if not should_draw_numbers(tile_size, font_size):
+        return round(tile_size * 0.55)
+    font = get_font(font_size)
+    bbox = font.getbbox("8888")
+    text_mid_y = (bbox[1] + bbox[3]) // 2
+    text_y = tile_size // 2 - text_mid_y
+    return text_y + bbox[3]
+
+
+def compute_secondary_bar_rect(tile_size: int, tile_x: int = 0, tile_y: int = 0,
+                               font_size: int = None) -> tuple[int, int, int, int]:
+    bar_h = round(tile_size * 0.10)
+    if tile_size >= MIN_NUMBER_TILE_SIZE:
+        bar_h = max(3, bar_h)
+    else:
+        bar_h = max(1, bar_h)
+    bar_inset = max(1, round(tile_size * 0.12))
+    number_bottom = compute_number_visual_bottom(tile_size, font_size or 0)
+    bar_mid_y = number_bottom + max(1, (tile_size - number_bottom) // 2)
+    y0 = tile_y + max(0, min(tile_size - bar_h, bar_mid_y - bar_h // 2))
+    y1 = y0 + bar_h
     x0 = tile_x + bar_inset
     x1 = tile_x + tile_size - bar_inset
     return x0, y0, x1, y1
@@ -244,28 +307,20 @@ def _solid_base(color, tile_size, opts):
     im = Image.new("RGBA", (tile_size, tile_size))
     draw = ImageDraw.Draw(im)
     draw.rectangle([(0, 0), (tile_size - 1, tile_size - 1)], fill=color)
-    if tile_size > 1 and not opts.no_border:
-        draw.rectangle(
-            [(0, 0), (tile_size - 1, tile_size - 1)],
-            outline=TILE_BORDER_COLOR, width=TILE_BORDER_WIDTH
-        )
+    if should_draw_tile_border(tile_size) and not opts.no_border:
+        draw.line([(0, 0), (tile_size - 1, 0)], fill=TILE_BORDER_COLOR, width=TILE_BORDER_WIDTH)
+        draw.line([(0, 0), (0, tile_size - 1)], fill=TILE_BORDER_COLOR, width=TILE_BORDER_WIDTH)
     return im
 
 
-def _bar_sprite(color, tile_size, opts):
-    bar_h = max(2, int(tile_size * 0.1))
-    bar_off = max(2, int(tile_size * 0.06))
-    bar_inset = max(2, int(tile_size * 0.1))
-    y0 = tile_size - bar_h - bar_off
-    y1 = tile_size - bar_off
-    x0 = bar_inset
-    x1 = tile_size - bar_inset
+def _bar_sprite(color, tile_size, opts, font_size: int = None):
+    x0, y0, x1, y1 = compute_secondary_bar_rect(tile_size, font_size=font_size)
 
     im = Image.new("RGBA", (tile_size, tile_size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(im)
-    bar_bbox = (x0, y0, x1, y1)
+    bar_bbox = (x0, y0, max(x0, x1 - 1), max(y0, y1 - 1))
     draw.rectangle(bar_bbox, fill=color)
-    if tile_size > 1 and not opts.no_secondary_border:
+    if should_draw_secondary_border_rect(tile_size, (x0, y0, x1, y1)) and not opts.no_secondary_border:
         draw.rectangle(bar_bbox, outline=TILE_BORDER_COLOR, width=1)
     return im
 
