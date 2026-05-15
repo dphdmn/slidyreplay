@@ -119,18 +119,22 @@ def render_dynamic_text(text: str, font, color=WHITE):
 def compute_font_size(width: int, height: int, tile_size: int) -> int:
     if tile_size < MIN_NUMBER_TILE_SIZE:
         return 0
-    max_num = width * height - 1
-    sample = str(max_num)
-    max_text_w = max(1, round(tile_size * 0.82))
-    max_text_h = max(1, round(tile_size * 0.56))
-    for font_size in range(max(4, tile_size), 3, -1):
+    # Sub-linear base: font grows proportionally up to 60px tile,
+    # then only 25% of excess contributes, keeping fonts reasonable on small puzzles.
+    base = tile_size if tile_size <= 60 else 60 + (tile_size - 60) * 0.25
+    # Target font size from formula — no dependency on digit count, so no jumps.
+    font_size = max(4, round(base * 0.68))
+    # Verify against a fixed 4-char sample (covers all puzzles up to 100x100).
+    # Using "8888" everywhere eliminates digit-count transitions entirely.
+    max_text_w = max(1, round(tile_size * 0.85))
+    max_text_h = max(1, round(tile_size * 0.58))
+    font = get_font(font_size)
+    bbox = font.getbbox("8888")
+    while font_size > 4 and (bbox[2] - bbox[0] > max_text_w or bbox[3] - bbox[1] > max_text_h):
+        font_size -= 1
         font = get_font(font_size)
-        bbox = font.getbbox(sample)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
-        if text_w <= max_text_w and text_h <= max_text_h:
-            return font_size
-    return 0
+        bbox = font.getbbox("8888")
+    return font_size
 
 
 def should_draw_numbers(tile_size: int, font_size: int) -> bool:
