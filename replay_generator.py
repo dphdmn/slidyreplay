@@ -21,6 +21,23 @@ def compress_solution(solution):
     return re.sub(r'(.)\1+', lambda m: m.group(1) + str(len(m.group(0))), solution)
 
 
+def count_moves(solution: str) -> int:
+    """Count individual moves without expanding the full string."""
+    total = 0
+    i = 0
+    while i < len(solution):
+        if solution[i] in 'RULD':
+            i += 1
+            num = 0
+            while i < len(solution) and solution[i].isdigit():
+                num = num * 10 + int(solution[i])
+                i += 1
+            total += num if num else 1
+        else:
+            i += 1
+    return total
+
+
 @functools.lru_cache(maxsize=32)
 def expand_solution(solution):
     return re.sub(r'([RULD])(\d+)', lambda m: m.group(1) * int(m.group(2)), solution)
@@ -163,9 +180,9 @@ class ReplayGenerator:
             width = len(matrix[0])
             height = len(matrix)
             scramble = puzzle_to_scramble(matrix)
-        solution_expanded = expand_solution(solution)
+        sol_len = count_moves(solution)
         if time is not None:
-            tps = len(solution_expanded) / time
+            tps = sol_len / time
         elif tps is None:
             tps = 15
         tps_int = int(tps * 1000)

@@ -7,7 +7,7 @@ from sliding_puzzles import (
 )
 from grids_analysis import get_grid_states, filter_grid_stages
 from replay_generator import (
-    expand_solution, scramble_to_puzzle, puzzle_to_scramble,
+    count_moves, expand_solution, scramble_to_puzzle, puzzle_to_scramble,
     calculate_manhattan_distance, get_cubic_estimate,
 )
 
@@ -174,7 +174,7 @@ def splits(sol: str, grid_data: Optional[Dict] = None) -> Optional[List[List[Uni
 
 def calculate_splits(grids_states: Dict, move_times, solution: str, scramble: str, tps_from_url=None) -> List[List[Union[float, int]]]:
     try:
-        solution_length = len(expand_solution(solution))
+        solution_length = count_moves(solution)
     except Exception:
         solution_length = 0
 

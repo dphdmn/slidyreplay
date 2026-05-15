@@ -75,7 +75,7 @@ def parse_puzzle_info(content: str):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, script_dir)
     from sliding_puzzles import parse_replay_url
-    from replay_generator import parse_scramble_guess, expand_solution, guess_size
+    from replay_generator import parse_scramble_guess, count_moves
     try:
         sol, tps, scramble, movetimes = parse_replay_url(content)
     except Exception:
@@ -84,11 +84,10 @@ def parse_puzzle_info(content: str):
         scramble = None
         movetimes = -1
     matrix = parse_scramble_guess(sol)
-    expanded = expand_solution(sol)
     has_mt = isinstance(movetimes, list) and len(movetimes) > 0
     return {
         "puzzle_size": f"{len(matrix)}x{len(matrix[0])}",
-        "moves": len(expanded),
+        "moves": count_moves(sol),
         "movetimes_count": len(movetimes) if has_mt else 0,
         "movetimes_accurate": has_mt,
         "tps_from_url": tps,

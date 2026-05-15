@@ -1731,18 +1731,8 @@ def _quick_infer_size(solution: str, scramble: Optional[str] = None, size=None) 
     except Exception:
         pass
     try:
-        sol_len = 0
-        i = 0
-        while i < len(solution):
-            if solution[i] in 'RULD':
-                i += 1
-                num = 0
-                while i < len(solution) and solution[i].isdigit():
-                    num = num * 10 + int(solution[i])
-                    i += 1
-                sol_len += num if num else 1
-            else:
-                i += 1
+        from replay_generator import count_moves
+        sol_len = count_moves(solution)
         side = math.isqrt(sol_len)
         if side * side == sol_len:
             return (side, side)
