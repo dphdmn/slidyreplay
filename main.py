@@ -398,6 +398,17 @@ class ReplayGUI(tb.Window):
         self.upscale_var.trace_add("write", lambda *_: self._update_quality_warning())
         r += 1
 
+        # Encoder override
+        enc_row = tb.Frame(settings)
+        enc_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
+        tb.Label(enc_row, text="Encoder:", font=(FONT_FAMILY, 9)).pack(side="left", padx=(0, 6))
+        self.encoder_var = tk.StringVar(value="Auto")
+        enc_combo = ttk.Combobox(enc_row, textvariable=self.encoder_var,
+                                 values=["Auto", "hevc_nvenc", "h264_nvenc", "libx264"],
+                                 state="readonly", width=14)
+        enc_combo.pack(side="left")
+        r += 1
+
         # Render toggles
         render_opts_row = tb.Frame(settings)
         render_opts_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
@@ -778,6 +789,7 @@ class ReplayGUI(tb.Window):
                 "slow_render": self.slow_render_var.get(),
                 "speed_factor": self._get_speed_factor(),
                 "upscale": self.upscale_var.get(),
+                "encoder_override": "" if self.encoder_var.get() == "Auto" else self.encoder_var.get(),
                 "opts": opts,
             }
             log.info(f"_process_item[{idx}]: base_params={params}")
@@ -883,6 +895,7 @@ class ReplayGUI(tb.Window):
                 "slow_render": self.slow_render_var.get(),
                 "speed_factor": self._get_speed_factor(),
                 "upscale": self.upscale_var.get(),
+                "encoder_override": "" if self.encoder_var.get() == "Auto" else self.encoder_var.get(),
                 "opts": RenderOptions(
                     grid_only=self.no_layout_var.get(),
                     no_border=self.no_border_var.get(),
@@ -1191,6 +1204,9 @@ Examples:
     parser.add_argument("--upscale", action="store_true", default=False,
                         help="After rendering, upscale video to 2K (2560x1440) for best YouTube quality. "
                              "Only beneficial for qualities below 1440p. Keeps both original and upscaled versions.")
+    parser.add_argument("--encoder", type=str, default="",
+                        choices=["hevc_nvenc", "h264_nvenc", "libx264"],
+                        help="Force video encoder. Auto-detected from available hardware if not set.")
 
     args = parser.parse_args()
 
@@ -1295,7 +1311,7 @@ Examples:
                 output_path = f"{root}_{idx+1:03d}{ext}"
 
                 kwargs = dict(quality=args.quality, fps=args.fps, compression=args.compression,
-                              slow_render=slow_render, encoder_preset=args.encoder_preset, speed_factor=args.speedup, force_fringe=args.force_fringe, upscale=args.upscale)
+                              slow_render=slow_render, encoder_preset=args.encoder_preset, speed_factor=args.speedup, force_fringe=args.force_fringe, upscale=args.upscale, encoder_override=args.encoder)
                 try:
                     sol, tps, scramble, movetimes = parse_replay_url(val)
                     kwargs["tps"] = tps or args.tps
@@ -1342,7 +1358,7 @@ Examples:
                                fps=args.fps, compression=args.compression,
                                slow_render=slow_render, encoder_preset=args.encoder_preset,
                                speed_factor=args.speedup, force_fringe=args.force_fringe,
-                               upscale=args.upscale)
+                               upscale=args.upscale, encoder_override=args.encoder)
                 else:
                     run_single(val, output_path, opts=opts,
                                tps=None if movetimes else args.tps, time=args.time,
@@ -1351,7 +1367,7 @@ Examples:
                                fps=args.fps, compression=args.compression,
                                slow_render=slow_render, encoder_preset=args.encoder_preset,
                                 speed_factor=args.speedup, force_fringe=args.force_fringe,
-                                upscale=args.upscale)
+                                upscale=args.upscale, encoder_override=args.encoder)
     except Exception as e:
         import traceback
         traceback.print_exc()

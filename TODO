@@ -2,7 +2,6 @@
 - batches optimization idea
 - batch mode stuff (relays and marathons with data)
 - move splits and replay_generator stuff parts into separate module/repo
-- upscale fhd 2k 4k
 - Cursor dancing
 - Fringe Hue slider
 - Grids colors select

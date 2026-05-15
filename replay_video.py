@@ -1188,8 +1188,20 @@ def _close_pipe(proc: subprocess.Popen) -> None:
 
 
 @functools.lru_cache(maxsize=1)
-def _get_best_encoder() -> str:
-    """Return best available encoder: 'hevc_nvenc' > 'h264_nvenc' > 'libx264'."""
+def _nvidia_available() -> bool:
+    try:
+        r = subprocess.run(['nvidia-smi'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+@functools.lru_cache(maxsize=1)
+def _get_best_encoder(encoder_override: str = "") -> str:
+    if encoder_override:
+        return encoder_override
+    if not _nvidia_available():
+        return 'libx264'
     try:
         r = subprocess.run(['ffmpeg', '-encoders'], capture_output=True, text=True, timeout=5)
         if 'hevc_nvenc' in r.stdout:
@@ -1201,13 +1213,14 @@ def _get_best_encoder() -> str:
     return 'libx264'
 
 
-def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18, slow_render: bool = False, encoder_preset: str = ""):
+def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18, slow_render: bool = False, encoder_preset: str = "", encoder_override: str = ""):
     """Spawn ffmpeg with best available encoder reading rawvideo from stdin.
     Tries hevc_nvenc > h264_nvenc > libx264.
     slow_render=True: p7 for NVENC, slow for libx264 (smaller file, slower encode).
     slow_render=False: p4 for NVENC, veryfast for libx264 (default).
-    encoder_preset: override preset name (for benchmarking). Takes priority over slow_render."""
-    encoder = _get_best_encoder()
+    encoder_preset: override preset name (for benchmarking). Takes priority over slow_render.
+    encoder_override: force a specific encoder ('hevc_nvenc', 'h264_nvenc', 'libx264')."""
+    encoder = _get_best_encoder(encoder_override)
 
     if encoder == 'hevc_nvenc':
         p = encoder_preset or ('p7' if slow_render else 'p4')
@@ -1251,9 +1264,9 @@ def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60
     return subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 
-def _create_ffmpeg_pipe_gpu(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18, slow_render: bool = False, encoder_preset: str = ""):
+def _create_ffmpeg_pipe_gpu(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18, slow_render: bool = False, encoder_preset: str = "", encoder_override: str = ""):
     """Spawn ffmpeg with best encoder (same as _create_ffmpeg_pipe)."""
-    return _create_ffmpeg_pipe(output_path, width, height, fps, compression, slow_render, encoder_preset)
+    return _create_ffmpeg_pipe(output_path, width, height, fps, compression, slow_render, encoder_preset, encoder_override)
 
 
 def _get_upscaled_path(input_path: str) -> str:
@@ -1268,8 +1281,9 @@ def upscale_video(
     compression: int = 18,
     slow_render: bool = False,
     encoder_preset: str = "",
+    encoder_override: str = "",
 ) -> str:
-    encoder = _get_best_encoder()
+    encoder = _get_best_encoder(encoder_override)
     scale_filter = "scale=-1:1440:flags=lanczos,pad=2560:1440:(ow-iw)/2:(oh-ih)/2"
 
     if encoder == 'hevc_nvenc':
@@ -1337,6 +1351,7 @@ def generate_frames(
     compression: int = 18,
     slow_render: bool = False,
     encoder_preset: str = "",
+    encoder_override: str = "",
     gpu_renderer: Optional['GPURenderer'] = None,
     speed_factor: float = 1.0,
     opts: RenderOptions = RenderOptions(),
@@ -1454,7 +1469,7 @@ def generate_frames(
     log.info(f"  frame_state: total_frames={total_frames}, unique_states={len(states_needed)}, frame_time_ms={frame_time_ms:.3f} (took {_t_frame_state_end - _t_stage1:.3f}s)")
 
     # Resolve codec + encoder preset for stats display
-    _best_codec = _get_best_encoder()
+    _best_codec = _get_best_encoder(encoder_override)
     _codec_name = _best_codec
     if _best_codec in ('hevc_nvenc', 'h264_nvenc'):
         _resolved_preset = encoder_preset or ('p7' if slow_render else 'p4')
@@ -1738,7 +1753,7 @@ def generate_frames(
 
         # Open ffmpeg pipe with selected encoder
         log.info(f"  OPENING FFMPEG PIPE: output={output_path}, canvas={canvas_w}x{canvas_h}, fps={fps}, compression={compression}, encoder=hevc_nvenc")
-        enc_proc = _create_ffmpeg_pipe_gpu(output_path, canvas_w, canvas_h, fps=fps, compression=compression, slow_render=slow_render, encoder_preset=encoder_preset)
+        enc_proc = _create_ffmpeg_pipe_gpu(output_path, canvas_w, canvas_h, fps=fps, compression=compression, slow_render=slow_render, encoder_preset=encoder_preset, encoder_override=encoder_override)
         writer = _PipeWriter(enc_proc)
         unique_params = [frame_params[i] for i in states_needed]
         _t_stage3 = time_module.time()
@@ -1811,7 +1826,7 @@ def generate_frames(
 
     # Open ffmpeg pipe early so render + encode overlap
     log.info(f"  CPU FFMPEG PIPE: output={output_path}, total_frames={total_video_frames}, compression={compression}")
-    ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w_cpu, canvas_h_cpu, fps=fps, compression=compression, slow_render=slow_render, encoder_preset=encoder_preset)
+    ffmpeg_proc = _create_ffmpeg_pipe(output_path, canvas_w_cpu, canvas_h_cpu, fps=fps, compression=compression, slow_render=slow_render, encoder_preset=encoder_preset, encoder_override=encoder_override)
     writer = _PipeWriter(ffmpeg_proc)
 
     _render_prog_step = max(1, num_needed // 100)
@@ -1933,12 +1948,13 @@ class ReplayVideoGenerator:
         compression: int = 18,
         slow_render: bool = False,
         encoder_preset: str = "",
+        encoder_override: str = "",
         gpu_renderer=None,
         opts: RenderOptions = RenderOptions(),
         upscale: bool = False,
     ):
         _start_time = time_module.time()
-        log.info(f"generate_simple_replay: output={output_path}, force_fringe={force_fringe}, fps={fps}, compression={compression}, slow_render={slow_render}, quality={quality}, use_gpu={use_gpu}, upscale={upscale}")
+        log.info(f"generate_simple_replay: output={output_path}, force_fringe={force_fringe}, fps={fps}, compression={compression}, slow_render={slow_render}, quality={quality}, use_gpu={use_gpu}, upscale={upscale}, encoder_override={encoder_override}")
         log.info(f"  tps={tps}, time={time}, scramble_len={len(scramble) if scramble else 0}, size={size}")
         if tps is not None and time is not None:
             raise ValueError("Provide either tps or time, not both")
@@ -2108,6 +2124,7 @@ class ReplayVideoGenerator:
             compression=compression,
             slow_render=slow_render,
             encoder_preset=encoder_preset,
+            encoder_override=encoder_override,
             gpu_renderer=gpu_renderer,
             speed_factor=speed_factor,
             opts=opts,
@@ -2134,6 +2151,7 @@ class ReplayVideoGenerator:
                     compression=compression,
                     slow_render=slow_render,
                     encoder_preset=encoder_preset,
+                    encoder_override=encoder_override,
                 )
                 print(f"Upscaled version saved to: {upscaled_path}")
             else:
