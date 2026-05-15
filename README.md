@@ -33,7 +33,7 @@ python main.py --batch solutions.txt
 | `--size` | Puzzle size (e.g. `3x3`, `10x10`) |
 | `--scramble` | Scramble string |
 | `--output` / `-o` | Output file (default: `replay.mp4`) |
-| `--quality` | Render quality 1.0–4.0 (default: 1.0) |
+| `--quality` | Render quality (canvas height, min: 720) |
 | `--compression` | Video encoder quality 10–40, lower = fewer artifacts but larger file (default: 18) |
 | `--movetimes` | Comma-separated move timings in seconds (overrides `--tps`/`--time`) |
 | `--speedup` | Speed multiplier (e.g. 2.0 = 2× faster, 0.5 = half speed) (default: 1.0) |
@@ -69,23 +69,25 @@ The GUI shows the GPU name when available, or "Not available — install CUDA" w
 
 ### Benchmarks (NVIDIA GeForce GTX 1660 SUPER)
 
-**Settings:** quality=1.0, 60 FPS. "Unique" = number of distinct puzzle states rendered (video may duplicate frames via frame mapping).
+**Settings:** quality=720, 60 FPS. 
 
-| Puzzle | Moves | Unique | Lay CPU | Lay GPU | NoL CPU | NoL GPU |
-| ------ | ----- | ------ | ------- | ------- | ------- | ------- |
-| 4×4    | 26    | 25     | 1.2s    | 0.7s    | 0.8s    | 0.3s    |
-| 5×5    | 98    | 95     | 2.3s    | 1.4s    | 1.1s    | 0.6s    |
-| 6×6    | 213   | 208    | 6.0s    | 3.1s    | 2.1s    | 1.2s    |
-| 7×7    | 425   | 401    | 9.5s    | 6.6s    | 4.2s    | 2.6s    |
-| 8×8    | 707   | 652    | 16.5s   | 11.2s   | 8.8s    | 5.7s    |
-| 9×9    | 1251  | 1079   | 30.4s   | 20.2s   | 15.8s   | 8.7s    |
-| 10×10  | 1569  | 1362   | 31.3s   | 22.8s   | 15.6s   | 11.7s   |
-| 12×12  | 2883  | 2470   | —       | 52.7s   | —       | 20.8s   |
-| 16×16  | 7132  | 5692   | —       | 158.8s  | —       | 80.5s   |
-| 20×20  | 14203 | 11177  | —       | 330.1s  | —       | 175.4s  |
+15.05 (v5.0) version benchmark results (Layout / No Layout):
+======================================================================
+      Puzzle      Moves     Unique    GPU Lay    GPU NoL    CPU Lay    CPU NoL
+  -----------------------------------------------------------------------------
+         4x4         26         25       0.9s       0.7s       0.8s       0.7s
+         5x5         98         95       1.1s       0.9s       1.2s       0.9s
+         6x6        213        208       1.5s       1.2s       1.7s       1.4s
+         7x7        425        401       2.2s       1.7s       2.9s       2.2s
+         8x8        707        652       3.0s       2.3s       4.5s       3.1s
+         9x9       1251       1079       4.8s       3.3s       7.6s       4.7s
+       10x10       1569       1362       6.9s       4.5s       9.7s       6.1s
+       12x12       2883       2470      11.2s       8.1s      16.5s      10.7s
+       16x16       7132       5692      20.7s      18.8s      39.4s      23.6s
+       20x20      14203      11177      43.6s      32.3s      78.0s      43.0s
 
 Run your own benchmarks with `python benchmark.py`.
-
+"Unique" = number of distinct puzzle states rendered (video may duplicate frames via frame mapping).
 
 ### Installing GPU support
 
