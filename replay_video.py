@@ -1187,85 +1187,109 @@ def _close_pipe(proc: subprocess.Popen) -> None:
         proc.wait()
 
 
+_ENCODER_PRIORITY = ['hevc_nvenc', 'hevc_amf', 'hevc_qsv', 'libx265', 'h264_nvenc', 'h264_amf', 'h264_qsv', 'libx264']
+
+_ENCODER_CONFIG = {
+    'hevc_nvenc': {'profile': 'main', 'preset_fast': 'p4', 'preset_slow': 'p7', 'preset_flag': '-preset', 'quality_flag': '-cq', 'quality_offset': 11, 'rc_cqp': False},
+    'h264_nvenc': {'profile': 'high', 'preset_fast': 'p4', 'preset_slow': 'p7', 'preset_flag': '-preset', 'quality_flag': '-cq', 'quality_offset': 12, 'rc_cqp': False},
+    'hevc_amf':   {'profile': None, 'preset_fast': 'balanced', 'preset_slow': 'quality', 'preset_flag': '-quality', 'quality_flag': '-qp_p', 'quality_offset': 8, 'rc_cqp': True},
+    'h264_amf':   {'profile': 'high', 'preset_fast': 'balanced', 'preset_slow': 'quality', 'preset_flag': '-quality', 'quality_flag': '-qp_p', 'quality_offset': 8, 'rc_cqp': True},
+    'hevc_qsv':   {'profile': None, 'preset_fast': 'medium', 'preset_slow': 'veryslow', 'preset_flag': '-preset', 'quality_flag': '-global_quality', 'quality_offset': 8, 'rc_cqp': False},
+    'h264_qsv':   {'profile': 'high', 'preset_fast': 'medium', 'preset_slow': 'veryslow', 'preset_flag': '-preset', 'quality_flag': '-global_quality', 'quality_offset': 8, 'rc_cqp': False},
+    'libx265':    {'profile': 'main', 'preset_fast': 'veryfast', 'preset_slow': 'slow', 'preset_flag': '-preset', 'quality_flag': '-crf', 'quality_offset': 0, 'rc_cqp': False},
+    'libx264':    {'profile': 'high', 'preset_fast': 'veryfast', 'preset_slow': 'slow', 'preset_flag': '-preset', 'quality_flag': '-crf', 'quality_offset': 0, 'rc_cqp': False},
+}
+
+
 @functools.lru_cache(maxsize=1)
-def _nvidia_available() -> bool:
+def _detect_gpu_vendors() -> set:
+    vendors = set()
     try:
         r = subprocess.run(['nvidia-smi'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
-        return r.returncode == 0
+        if r.returncode == 0:
+            vendors.add('nvidia')
     except Exception:
-        return False
+        pass
+    if sys.platform == 'win32':
+        try:
+            r = subprocess.run(['wmic', 'path', 'win32_VideoController', 'get', 'name'],
+                             capture_output=True, text=True, timeout=5)
+            lower = r.stdout.lower()
+            if any(x in lower for x in ('amd', 'radeon', 'advanced micro', 'ati ')):
+                vendors.add('amd')
+            if 'intel' in lower:
+                vendors.add('intel')
+        except Exception:
+            pass
+    return vendors
+
+
+@functools.lru_cache(maxsize=1)
+def _get_available_encoders() -> list:
+    vendors = _detect_gpu_vendors()
+    try:
+        r = subprocess.run(['ffmpeg', '-encoders'], capture_output=True, text=True, timeout=5)
+        available = []
+        for name in _ENCODER_PRIORITY:
+            if name not in r.stdout:
+                continue
+            if 'nvenc' in name and 'nvidia' not in vendors:
+                continue
+            if 'amf' in name and 'amd' not in vendors:
+                continue
+            if 'qsv' in name and 'intel' not in vendors:
+                continue
+            available.append(name)
+        return available if available else ['libx264']
+    except Exception:
+        return ['libx264']
 
 
 @functools.lru_cache(maxsize=1)
 def _get_best_encoder(encoder_override: str = "") -> str:
     if encoder_override:
         return encoder_override
-    if not _nvidia_available():
-        return 'libx264'
-    try:
-        r = subprocess.run(['ffmpeg', '-encoders'], capture_output=True, text=True, timeout=5)
-        if 'hevc_nvenc' in r.stdout:
-            return 'hevc_nvenc'
-        if 'h264_nvenc' in r.stdout:
-            return 'h264_nvenc'
-    except Exception:
-        pass
-    return 'libx264'
+    available = _get_available_encoders()
+    return available[0]
+
+
+def _build_encoder_cmd_base(encoder_name: str, compression: int, slow_render: bool, encoder_preset: str) -> tuple:
+    cfg = _ENCODER_CONFIG.get(encoder_name, _ENCODER_CONFIG['libx264'])
+    preset = encoder_preset or (cfg['preset_slow'] if slow_render else cfg['preset_fast'])
+    quality = compression + cfg['quality_offset']
+    return cfg, preset, quality
 
 
 def _create_ffmpeg_pipe(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18, slow_render: bool = False, encoder_preset: str = "", encoder_override: str = ""):
     """Spawn ffmpeg with best available encoder reading rawvideo from stdin.
-    Tries hevc_nvenc > h264_nvenc > libx264.
-    slow_render=True: p7 for NVENC, slow for libx264 (smaller file, slower encode).
-    slow_render=False: p4 for NVENC, veryfast for libx264 (default).
-    encoder_preset: override preset name (for benchmarking). Takes priority over slow_render.
-    encoder_override: force a specific encoder ('hevc_nvenc', 'h264_nvenc', 'libx264')."""
+    slow_render=True: slower preset (smaller file, slower encode).
+    slow_render=False: faster preset.
+    encoder_preset: override preset name. Takes priority over slow_render.
+    encoder_override: force a specific encoder name."""
     encoder = _get_best_encoder(encoder_override)
+    cfg, p, quality = _build_encoder_cmd_base(encoder, compression, slow_render, encoder_preset)
 
-    if encoder == 'hevc_nvenc':
-        p = encoder_preset or ('p7' if slow_render else 'p4')
-        cq = compression + 11
-        cmd = [
-            'ffmpeg', '-y', '-hide_banner',
-            '-f', 'rawvideo', '-pix_fmt', 'rgb24',
-            '-s', f'{width}x{height}', '-r', str(fps), '-i', '-',
-            '-c:v', 'hevc_nvenc', '-preset', p, '-cq', str(cq),
-            '-profile:v', 'main', '-pix_fmt', 'yuv420p',
-            '-fps_mode', 'cfr', '-movflags', '+faststart',
-            output_path,
-        ]
-        log.info(f"_create_ffmpeg_pipe (hevc_nvenc, preset={p}): cmd={' '.join(cmd)}")
-    elif encoder == 'h264_nvenc':
-        p = encoder_preset or ('p7' if slow_render else 'p4')
-        cq = compression + 12
-        cmd = [
-            'ffmpeg', '-y', '-hide_banner',
-            '-f', 'rawvideo', '-pix_fmt', 'rgb24',
-            '-s', f'{width}x{height}', '-r', str(fps), '-i', '-',
-            '-c:v', 'h264_nvenc', '-preset', p, '-cq', str(cq),
-            '-profile:v', 'high', '-pix_fmt', 'yuv420p',
-            '-fps_mode', 'cfr', '-movflags', '+faststart',
-            output_path,
-        ]
-        log.info(f"_create_ffmpeg_pipe (h264_nvenc, preset={p}): cmd={' '.join(cmd)}")
-    else:
-        p = encoder_preset or ('slow' if slow_render else 'veryfast')
-        cmd = [
-            'ffmpeg', '-y',
-            '-f', 'rawvideo', '-pix_fmt', 'rgb24',
-            '-s', f'{width}x{height}', '-r', str(fps), '-i', '-',
-            '-c:v', 'libx264', '-preset', p, '-crf', str(compression),
-            '-profile:v', 'high', '-level', '4.1', '-pix_fmt', 'yuv420p',
-            '-fps_mode', 'cfr', '-movflags', '+faststart',
-            output_path,
-        ]
-        log.info(f"_create_ffmpeg_pipe (libx264, preset={p}): cmd={' '.join(cmd)}")
+    cmd = [
+        'ffmpeg', '-y', '-hide_banner',
+        '-f', 'rawvideo', '-pix_fmt', 'rgb24',
+        '-s', f'{width}x{height}', '-r', str(fps), '-i', '-',
+        '-c:v', encoder, cfg['preset_flag'], p,
+    ]
+    if cfg['profile']:
+        cmd += ['-profile:v', cfg['profile']]
+    cmd += [cfg['quality_flag'], str(quality)]
+    if cfg['rc_cqp']:
+        cmd += ['-rc', 'cqp']
+    cmd += ['-pix_fmt', 'yuv420p']
+    if encoder == 'libx264':
+        cmd += ['-level', '4.1']
+    cmd += ['-fps_mode', 'cfr', '-movflags', '+faststart', output_path]
 
+    log.info(f"_create_ffmpeg_pipe ({encoder}, preset={p}): cmd={' '.join(cmd)}")
     return subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 
 def _create_ffmpeg_pipe_gpu(output_path: str, width: int, height: int, fps: int = 60, compression: int = 18, slow_render: bool = False, encoder_preset: str = "", encoder_override: str = ""):
-    """Spawn ffmpeg with best encoder (same as _create_ffmpeg_pipe)."""
     return _create_ffmpeg_pipe(output_path, width, height, fps, compression, slow_render, encoder_preset, encoder_override)
 
 
@@ -1284,40 +1308,20 @@ def upscale_video(
     encoder_override: str = "",
 ) -> str:
     encoder = _get_best_encoder(encoder_override)
+    cfg, p, quality = _build_encoder_cmd_base(encoder, compression, slow_render, encoder_preset)
     scale_filter = "scale=-1:1440:flags=lanczos,pad=2560:1440:(ow-iw)/2:(oh-ih)/2"
 
-    if encoder == 'hevc_nvenc':
-        p = encoder_preset or ('p7' if slow_render else 'p4')
-        cq = compression + 11
-        cmd = [
-            'ffmpeg', '-i', input_path,
-            '-vf', scale_filter,
-            '-c:v', 'hevc_nvenc', '-preset', p, '-cq', str(cq),
-            '-pix_fmt', 'yuv420p',
-            '-r', str(fps),
-            '-y', output_path,
-        ]
-    elif encoder == 'h264_nvenc':
-        p = encoder_preset or ('p7' if slow_render else 'p4')
-        cq = compression + 12
-        cmd = [
-            'ffmpeg', '-i', input_path,
-            '-vf', scale_filter,
-            '-c:v', 'h264_nvenc', '-preset', p, '-cq', str(cq),
-            '-pix_fmt', 'yuv420p',
-            '-r', str(fps),
-            '-y', output_path,
-        ]
-    else:
-        p = encoder_preset or ('slow' if slow_render else 'veryfast')
-        cmd = [
-            'ffmpeg', '-i', input_path,
-            '-vf', scale_filter,
-            '-c:v', 'libx264', '-preset', p, '-crf', str(compression),
-            '-profile:v', 'high', '-pix_fmt', 'yuv420p',
-            '-r', str(fps),
-            '-y', output_path,
-        ]
+    cmd = [
+        'ffmpeg', '-i', input_path,
+        '-vf', scale_filter,
+        '-c:v', encoder, cfg['preset_flag'], p,
+    ]
+    if cfg['profile']:
+        cmd += ['-profile:v', cfg['profile']]
+    cmd += [cfg['quality_flag'], str(quality)]
+    if cfg['rc_cqp']:
+        cmd += ['-rc', 'cqp']
+    cmd += ['-pix_fmt', 'yuv420p', '-r', str(fps), '-y', output_path]
 
     log.info(f"Upscaling to 2K: {' '.join(cmd)}")
     result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -1471,10 +1475,8 @@ def generate_frames(
     # Resolve codec + encoder preset for stats display
     _best_codec = _get_best_encoder(encoder_override)
     _codec_name = _best_codec
-    if _best_codec in ('hevc_nvenc', 'h264_nvenc'):
-        _resolved_preset = encoder_preset or ('p7' if slow_render else 'p4')
-    else:
-        _resolved_preset = encoder_preset or ('slow' if slow_render else 'veryfast')
+    _cfg = _ENCODER_CONFIG.get(_best_codec, _ENCODER_CONFIG['libx264'])
+    _resolved_preset = encoder_preset or (_cfg['preset_slow'] if slow_render else _cfg['preset_fast'])
     canvas_size = f"{layout['canvas_w']}x{layout['canvas_h']}"
     unique_frames_count = len(states_needed)
 

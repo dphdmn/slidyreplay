@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 
-from replay_video import ReplayVideoGenerator, CancelError, _quick_infer_size
+from replay_video import ReplayVideoGenerator, CancelError, _quick_infer_size, _get_available_encoders
 from sliding_puzzles import parse_replay_url
 from replay_generator import count_moves
 from geometry import RenderOptions
@@ -403,9 +403,11 @@ class ReplayGUI(tb.Window):
         enc_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
         tb.Label(enc_row, text="Encoder:", font=(FONT_FAMILY, 9)).pack(side="left", padx=(0, 6))
         self.encoder_var = tk.StringVar(value="Auto")
+        available = _get_available_encoders()
+        enc_values = ["Auto"] + available
         enc_combo = ttk.Combobox(enc_row, textvariable=self.encoder_var,
-                                 values=["Auto", "hevc_nvenc", "h264_nvenc", "libx264"],
-                                 state="readonly", width=14)
+                                 values=enc_values,
+                                 state="readonly", width=18)
         enc_combo.pack(side="left")
         r += 1
 
@@ -1205,7 +1207,7 @@ Examples:
                         help="After rendering, upscale video to 2K (2560x1440) for best YouTube quality. "
                              "Only beneficial for qualities below 1440p. Keeps both original and upscaled versions.")
     parser.add_argument("--encoder", type=str, default="",
-                        choices=["hevc_nvenc", "h264_nvenc", "libx264"],
+                        choices=["hevc_nvenc", "hevc_amf", "hevc_qsv", "libx265", "h264_nvenc", "h264_amf", "h264_qsv", "libx264"],
                         help="Force video encoder. Auto-detected from available hardware if not set.")
 
     args = parser.parse_args()
