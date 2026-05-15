@@ -1791,6 +1791,7 @@ class ReplayVideoGenerator:
         gpu_renderer=None,
         opts: RenderOptions = RenderOptions(),
     ):
+        _start_time = time_module.time()
         log.info(f"generate_simple_replay: output={output_path}, force_fringe={force_fringe}, fps={fps}, compression={compression}, slow_render={slow_render}, quality={quality}, use_gpu={use_gpu}")
         log.info(f"  tps={tps}, time={time}, scramble_len={len(scramble) if scramble else 0}, size={size}")
         if tps is not None and time is not None:
@@ -1967,7 +1968,7 @@ class ReplayVideoGenerator:
 
         if prog:
             prog.finish()
-            elapsed = time_module.time() - prog.start_time
+            elapsed = time_module.time() - _start_time
             unique_frames = len(set(frame_state_map))
             total_frames = len(frame_state_map)
             print(f"Done! Video saved to: {output_path} ({unique_frames} unique / {total_frames} total frames, took {elapsed:.1f}s)")
