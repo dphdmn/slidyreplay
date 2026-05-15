@@ -202,6 +202,7 @@ class ReplayGUI(tb.Window):
         self.no_border_var = tk.BooleanVar(value=False)
         self.no_secondary_border_var = tk.BooleanVar(value=False)
         self.no_numbers_var = tk.BooleanVar(value=False)
+        self.upscale_var = tk.BooleanVar(value=False)
 
         _register_fonts()
         os.makedirs(self.out_folder_var.get(), exist_ok=True)
@@ -385,6 +386,18 @@ class ReplayGUI(tb.Window):
         self.after(10, _update_slow_render_desc)
         r += 1
 
+        # Upscale to 2K
+        upscale_row = tb.Frame(settings)
+        upscale_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
+        self.upscale_cb = tb.Checkbutton(upscale_row, text="Upscale to 2K", variable=self.upscale_var,
+                                          bootstyle="round-toggle")
+        self.upscale_cb.pack(side="left")
+        self.upscale_desc = tb.Label(upscale_row, text="Re-encode to 2560×1440 for best YouTube quality",
+                                      font=(FONT_FAMILY, 9), foreground="#888")
+        self.upscale_desc.pack(side="left", padx=(8, 0))
+        self.upscale_var.trace_add("write", lambda *_: self._update_quality_warning())
+        r += 1
+
         # Render toggles
         render_opts_row = tb.Frame(settings)
         render_opts_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
@@ -556,10 +569,14 @@ class ReplayGUI(tb.Window):
     def _update_quality_warning(self):
         h = self._get_quality()
         text = ""
-        if h >= 1440:
-            text = "⚠ 2K (1440p) uses high RAM during atlas prerender — may cause slowdown or OOM on large puzzles (>=50×50)"
         if h >= 2160:
             text = "⚠ 4K (2160p) uses very high RAM during atlas prerender — reduce puzzle size if out of memory"
+        elif h >= 1440:
+            text = "⚠ 2K (1440p) uses high RAM during atlas prerender — may cause slowdown or OOM on large puzzles (>=50×50)"
+        if h >= 1440 and self.upscale_var.get():
+            text += "  |  Upscale not needed (already ≥1440p)"
+        elif h < 1440 and self.upscale_var.get():
+            text += "  |  ✓ Upscale to 2K after render"
         if text:
             self.quality_warning.config(text=text)
             self.quality_warning.grid()
@@ -760,6 +777,7 @@ class ReplayGUI(tb.Window):
                 "compression": self.compression_var.get(),
                 "slow_render": self.slow_render_var.get(),
                 "speed_factor": self._get_speed_factor(),
+                "upscale": self.upscale_var.get(),
                 "opts": opts,
             }
             log.info(f"_process_item[{idx}]: base_params={params}")
@@ -840,6 +858,10 @@ class ReplayGUI(tb.Window):
             if not self.cancel_flag:
                 self._item_progress[idx]["path"] = out_path
                 self.after(0, lambda p=out_path: self._add_to_list(p))
+                if self.upscale_var.get() and self._get_quality() < 1440:
+                    stem, ext = os.path.splitext(out_path)
+                    upscaled_path = f"{stem}_1440p60{ext}"
+                    self.after(0, lambda p=upscaled_path: os.path.exists(p) and self._add_to_list(p))
         except CancelError:
             log.info(f"_process_item[{idx}]: CANCELLED")
             raise
@@ -860,6 +882,7 @@ class ReplayGUI(tb.Window):
                 "compression": self.compression_var.get(),
                 "slow_render": self.slow_render_var.get(),
                 "speed_factor": self._get_speed_factor(),
+                "upscale": self.upscale_var.get(),
                 "opts": RenderOptions(
                     grid_only=self.no_layout_var.get(),
                     no_border=self.no_border_var.get(),
@@ -1165,6 +1188,9 @@ Examples:
                         help="Suppress secondary color bar borders")
     parser.add_argument("--no-numbers", action="store_true",
                         help="Suppress tile number text")
+    parser.add_argument("--upscale", action="store_true", default=False,
+                        help="After rendering, upscale video to 2K (2560x1440) for best YouTube quality. "
+                             "Only beneficial for qualities below 1440p. Keeps both original and upscaled versions.")
 
     args = parser.parse_args()
 
@@ -1180,6 +1206,9 @@ Examples:
 
     if args.quality < 720:
         parser.error("minimum quality is 720")
+
+    if args.upscale and args.quality >= 1440:
+        print("[Note] --upscale: source quality already >=1440p, no upscaling performed.", file=sys.stderr)
 
     movetimes = None
     if args.movetimes:
@@ -1266,7 +1295,7 @@ Examples:
                 output_path = f"{root}_{idx+1:03d}{ext}"
 
                 kwargs = dict(quality=args.quality, fps=args.fps, compression=args.compression,
-                              slow_render=slow_render, encoder_preset=args.encoder_preset, speed_factor=args.speedup, force_fringe=args.force_fringe)
+                              slow_render=slow_render, encoder_preset=args.encoder_preset, speed_factor=args.speedup, force_fringe=args.force_fringe, upscale=args.upscale)
                 try:
                     sol, tps, scramble, movetimes = parse_replay_url(val)
                     kwargs["tps"] = tps or args.tps
@@ -1312,7 +1341,8 @@ Examples:
                                movetimes=movetimes, quality=args.quality,
                                fps=args.fps, compression=args.compression,
                                slow_render=slow_render, encoder_preset=args.encoder_preset,
-                               speed_factor=args.speedup, force_fringe=args.force_fringe)
+                               speed_factor=args.speedup, force_fringe=args.force_fringe,
+                               upscale=args.upscale)
                 else:
                     run_single(val, output_path, opts=opts,
                                tps=None if movetimes else args.tps, time=args.time,
@@ -1320,7 +1350,8 @@ Examples:
                                quality=args.quality, movetimes=movetimes,
                                fps=args.fps, compression=args.compression,
                                slow_render=slow_render, encoder_preset=args.encoder_preset,
-                               speed_factor=args.speedup, force_fringe=args.force_fringe)
+                                speed_factor=args.speedup, force_fringe=args.force_fringe,
+                                upscale=args.upscale)
     except Exception as e:
         import traceback
         traceback.print_exc()

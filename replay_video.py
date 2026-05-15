@@ -1256,6 +1256,64 @@ def _create_ffmpeg_pipe_gpu(output_path: str, width: int, height: int, fps: int 
     return _create_ffmpeg_pipe(output_path, width, height, fps, compression, slow_render, encoder_preset)
 
 
+def _get_upscaled_path(input_path: str) -> str:
+    stem, ext = os.path.splitext(input_path)
+    return f"{stem}_1440p60{ext}"
+
+
+def upscale_video(
+    input_path: str,
+    output_path: str,
+    fps: int = 60,
+    compression: int = 18,
+    slow_render: bool = False,
+    encoder_preset: str = "",
+) -> str:
+    encoder = _get_best_encoder()
+    scale_filter = "scale=-1:1440:flags=lanczos,pad=2560:1440:(ow-iw)/2:(oh-ih)/2"
+
+    if encoder == 'hevc_nvenc':
+        p = encoder_preset or ('p7' if slow_render else 'p4')
+        cq = compression + 11
+        cmd = [
+            'ffmpeg', '-i', input_path,
+            '-vf', scale_filter,
+            '-c:v', 'hevc_nvenc', '-preset', p, '-cq', str(cq),
+            '-pix_fmt', 'yuv420p',
+            '-r', str(fps),
+            '-y', output_path,
+        ]
+    elif encoder == 'h264_nvenc':
+        p = encoder_preset or ('p7' if slow_render else 'p4')
+        cq = compression + 12
+        cmd = [
+            'ffmpeg', '-i', input_path,
+            '-vf', scale_filter,
+            '-c:v', 'h264_nvenc', '-preset', p, '-cq', str(cq),
+            '-pix_fmt', 'yuv420p',
+            '-r', str(fps),
+            '-y', output_path,
+        ]
+    else:
+        p = encoder_preset or ('slow' if slow_render else 'veryfast')
+        cmd = [
+            'ffmpeg', '-i', input_path,
+            '-vf', scale_filter,
+            '-c:v', 'libx264', '-preset', p, '-crf', str(compression),
+            '-profile:v', 'high', '-pix_fmt', 'yuv420p',
+            '-r', str(fps),
+            '-y', output_path,
+        ]
+
+    log.info(f"Upscaling to 2K: {' '.join(cmd)}")
+    result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        err = result.stderr.decode('utf-8', errors='replace')[:500] if result.stderr else ""
+        raise RuntimeError(f"Upscale failed (code {result.returncode}): {err}")
+    log.info(f"Upscale completed: {output_path}")
+    return output_path
+
+
 def generate_frames(
     matrix: List[List[int]],
     solution: str,
@@ -1877,9 +1935,10 @@ class ReplayVideoGenerator:
         encoder_preset: str = "",
         gpu_renderer=None,
         opts: RenderOptions = RenderOptions(),
+        upscale: bool = False,
     ):
         _start_time = time_module.time()
-        log.info(f"generate_simple_replay: output={output_path}, force_fringe={force_fringe}, fps={fps}, compression={compression}, slow_render={slow_render}, quality={quality}, use_gpu={use_gpu}")
+        log.info(f"generate_simple_replay: output={output_path}, force_fringe={force_fringe}, fps={fps}, compression={compression}, slow_render={slow_render}, quality={quality}, use_gpu={use_gpu}, upscale={upscale}")
         log.info(f"  tps={tps}, time={time}, scramble_len={len(scramble) if scramble else 0}, size={size}")
         if tps is not None and time is not None:
             raise ValueError("Provide either tps or time, not both")
@@ -2063,6 +2122,22 @@ class ReplayVideoGenerator:
             unique_frames = len(set(frame_state_map))
             total_frames = len(frame_state_map)
             print(f"Done! Video saved to: {output_path} ({unique_frames} unique / {total_frames} total frames, took {elapsed:.1f}s)")
+
+        if upscale:
+            if quality < 1440:
+                upscaled_path = _get_upscaled_path(output_path)
+                print("Upscaling to 2K (2560x1440)...")
+                upscale_video(
+                    input_path=output_path,
+                    output_path=upscaled_path,
+                    fps=fps,
+                    compression=compression,
+                    slow_render=slow_render,
+                    encoder_preset=encoder_preset,
+                )
+                print(f"Upscaled version saved to: {upscaled_path}")
+            else:
+                print("[Note] Upscale skipped — quality already >=1440p (no upscaling needed).")
 
         return output_path
 
