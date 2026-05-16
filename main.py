@@ -210,6 +210,7 @@ class ReplayGUI(tb.Window):
         self.dynamic_md_var = tk.BooleanVar(value=False)
         self.upscale_var = tk.BooleanVar(value=False)
         self.cycles_detection_var = tk.BooleanVar(value=False)
+        self.adjust_height_var = tk.BooleanVar(value=False)
 
         _register_fonts()
         os.makedirs(self.out_folder_var.get(), exist_ok=True)
@@ -469,6 +470,8 @@ class ReplayGUI(tb.Window):
                        bootstyle="round-toggle").grid(row=2, column=1, sticky="w")
         tb.Checkbutton(d_grid, text="No layout", variable=self.no_layout_var,
                        bootstyle="round-toggle").grid(row=3, column=1, sticky="w")
+        tb.Checkbutton(d_grid, text="Adjust height", variable=self.adjust_height_var,
+                       bootstyle="round-toggle").grid(row=4, column=1, sticky="w")
 
         # Column 2: Extra
         tb.Label(d_grid, text="Extra", **_col_hdr).grid(row=0, column=2, sticky="w", pady=(0, 2))
@@ -887,6 +890,7 @@ class ReplayGUI(tb.Window):
                     no_details=self.no_details_var.get(),
                     dynamic_md=self.dynamic_md_var.get(),
                     cycles_detection=self.cycles_detection_var.get(),
+                    adjust_height=self.adjust_height_var.get(),
                 )
                 params = {
                     "force_fringe": self.force_fringe_var.get(),
@@ -1189,6 +1193,9 @@ Examples:
     parser.add_argument("--encoder", type=str, default="",
                         choices=["hevc_nvenc", "hevc_amf", "hevc_qsv", "libx265", "h264_nvenc", "h264_amf", "h264_qsv", "libx264"],
                         help="Force video encoder. Auto-detected from available hardware if not set.")
+    parser.add_argument("--adjust-height", action="store_true", default=False,
+                        help="Crop canvas height to puzzle content instead of fixed quality preset. "
+                             "Aligns puzzle to the top (no centering) and removes bottom gap.")
 
     args = parser.parse_args()
 
@@ -1201,6 +1208,7 @@ Examples:
         no_details=args.no_details,
         dynamic_md=args.dynamic_md,
         cycles_detection=args.cycles_detection,
+        adjust_height=args.adjust_height,
     )
 
     if args.speedup <= 0:

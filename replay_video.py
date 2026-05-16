@@ -414,6 +414,7 @@ def render_frame(
         opts.grid_only, pad=pad, header_h=header_h,
         canvas_h=canvas_h, puzzle_h=puzzle_h,
         no_header=opts.no_header,
+        align_top=opts.adjust_height,
     )
 
     if prev_canvas is not None and changed_tiles is not None:
@@ -422,7 +423,7 @@ def render_frame(
         draw = ImageDraw.Draw(canvas)
     else:
         if canvas_w is None or canvas_h is None:
-            canvas_w, canvas_h = compute_canvas_dimensions(w, h, tile_size, grid_only=opts.grid_only, pad=pad, header_h=header_h, panel_w=panel_w, no_details=opts.no_details)
+            canvas_w, canvas_h = compute_canvas_dimensions(w, h, tile_size, grid_only=opts.grid_only, pad=pad, header_h=header_h, panel_w=panel_w, no_details=opts.no_details, adjust_height=opts.adjust_height)
             if not opts.grid_only and not opts.no_details:
                 panel_w_est = canvas_w - puzzle_w - pad
                 stats_h = _compute_stats_full_height(
@@ -1606,7 +1607,7 @@ def generate_frames(
             elif lw >= 0:
                 cycles_fix_times[t] = round(time_arr[-1])
 
-    layout = compute_layout(quality, w, h, opts.grid_only, no_header=opts.no_header, no_details=opts.no_details)
+    layout = compute_layout(quality, w, h, opts.grid_only, no_header=opts.no_header, no_details=opts.no_details, adjust_height=opts.adjust_height)
     tile_size = layout["tile_size"]
     font_size = layout["font_size"]
     log.info(f"  tile_size={tile_size}, pad={layout['pad']}, header_h={layout['header_h']}, panel_w={layout['panel_w']}, font_size={font_size}")
@@ -2441,7 +2442,7 @@ class ReplayVideoGenerator:
                             renderer.cleanup()
                         w, h, quality, batch_opts = key
                         from geometry import compute_layout
-                        layout = compute_layout(quality, w, h, batch_opts.grid_only)
+                        layout = compute_layout(quality, w, h, batch_opts.grid_only, adjust_height=batch_opts.adjust_height)
                         tile_size = layout["tile_size"]
                         renderer = GPURenderer(w, h, tile_size, pad=layout["pad"], header_h=layout["header_h"], panel_w=layout["panel_w"], canvas_w=layout["canvas_w"], canvas_h=layout["canvas_h"], opts=batch_opts)
 

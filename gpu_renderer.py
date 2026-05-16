@@ -127,6 +127,7 @@ class GPURenderer:
             self.opts.grid_only, pad=self.pad, header_h=self.header_h,
             canvas_h=self.canvas_h, puzzle_h=self.ph,
             no_header=self.opts.no_header,
+            align_top=self.opts.adjust_height,
         )
         self.panel_x, self.panel_y, self.panel_w, self.panel_h = compute_panel_rect(
             self.grid_x, puzzle_w, self.canvas_w, self.grid_y, self.canvas_h,
