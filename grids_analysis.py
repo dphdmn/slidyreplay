@@ -44,9 +44,7 @@ def _check_gs(mc_2d, width, height, offset_w, offset_h,
               can_split_tb, can_split_lr, tb_new_h, lr_new_w,
               tb_exp_rows_bc, tb_exp_cols_bc,
               lr_exp_rows_bc, lr_exp_cols_bc,
-              _row_of, _col_of, full_h, full_w, cycled=np.array([], dtype=np.int32)):
-    if len(cycled) == 0:
-        cycled = _wrong_tiles(mc_2d, full_h, full_w, _row_of, _col_of) if _corner_solved(mc_2d, full_h, full_w, _row_of, _col_of) else np.array([], dtype=np.int32)
+              _row_of, _col_of, full_h=None, full_w=None, cycled=None):
     gs = 0
     if can_split_tb:
         sub = mc_2d[offset_h:tb_new_h, offset_w:offset_w + width]
@@ -64,7 +62,7 @@ def _check_gs(mc_2d, width, height, offset_w, offset_h,
             targets = _row_of[vals]
             if not np.any(targets >= tb_new_h) and total / 3 > n_solved:
                 gs = 1
-            elif gs == 0 and len(cycled) > 0:
+            elif gs == 0 and cycled is not None and len(cycled) > 0:
                 not_cycled = ~np.isin(vals + 1, cycled)
                 filtered = targets[not_cycled]
                 if len(filtered) == 0 or not np.any(filtered >= tb_new_h):
@@ -85,7 +83,7 @@ def _check_gs(mc_2d, width, height, offset_w, offset_h,
             targets = _col_of[vals]
             if not np.any(targets >= lr_new_w) and total / 3 > n_solved:
                 gs = 2
-            elif gs == 0 and len(cycled) > 0:
+            elif gs == 0 and cycled is not None and len(cycled) > 0:
                 not_cycled = ~np.isin(vals + 1, cycled)
                 filtered = targets[not_cycled]
                 if len(filtered) == 0 or not np.any(filtered >= lr_new_w):
@@ -319,7 +317,10 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
         return {"enableGridsStatus": -1, "width": width, "height": height, "offsetW": offset_w, "offsetH": offset_h}
 
     # Shared args dict to reduce parameter passing
-    _gs_args = (width, height, offset_w, offset_h, can_split_tb, can_split_lr, tb_new_h, lr_new_w, tb_exp_rows_bc, tb_exp_cols_bc, lr_exp_rows_bc, lr_exp_cols_bc, _row_of, _col_of, height_initial, width_initial, global_cycled if global_cycled is not None else np.array([], dtype=np.int32))
+    if global_cycled is not None:
+        _gs_args = (width, height, offset_w, offset_h, can_split_tb, can_split_lr, tb_new_h, lr_new_w, tb_exp_rows_bc, tb_exp_cols_bc, lr_exp_rows_bc, lr_exp_cols_bc, _row_of, _col_of, height_initial, width_initial, global_cycled)
+    else:
+        _gs_args = (width, height, offset_w, offset_h, can_split_tb, can_split_lr, tb_new_h, lr_new_w, tb_exp_rows_bc, tb_exp_cols_bc, lr_exp_rows_bc, lr_exp_cols_bc, _row_of, _col_of)
 
     _t_loop = time.time()
 
@@ -889,7 +890,7 @@ def analyse_grids_initial(matrix, solution, progress_callback=None, cancel_check
     _col_of = np.arange(total_cells) % w
     _timing = {"main_loop": 0.0, "scan_fwd": 0.0, "scan_cycles": 0.0, "get_parts": 0.0, "n_calls": 0}
     _lock = threading.Lock()
-    global_cycled = np.array([], dtype=np.int32)
+    global_cycled = None
     if cycles_detection:
         trunc_at, global_cycled = _find_truncation_point(matrix, solution, w, h, _row_of, _col_of)
         if trunc_at > 0:
