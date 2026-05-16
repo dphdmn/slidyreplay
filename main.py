@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import filedialog, scrolledtext, ttk
+from tkinter import colorchooser, filedialog, scrolledtext, ttk
 import threading
 import time
 import os
@@ -488,6 +488,52 @@ class ReplayGUI(tb.Window):
         tb.Checkbutton(d_grid, text="Cycle detect", variable=self.cycles_detection_var,
                        bootstyle="round-toggle").grid(row=5, column=2, sticky="w")
 
+        # ════════ COLORS ════════
+        r += 1
+        tb.Label(settings, text="COLORS", font=_sec_font, bootstyle="secondary").grid(
+            row=r, column=0, sticky="w", padx=12, pady=(6, 0))
+        r += 1
+        tb.Separator(settings, bootstyle="secondary").grid(
+            row=r, column=0, sticky="ew", pady=(1, 4), padx=12)
+        r += 1
+
+        self._color_vars = {
+            "grid1": tk.StringVar(value="C86767"),
+            "grid2": tk.StringVar(value="8DB3FF"),
+            "tile_bg": tk.StringVar(value="969696"),
+        }
+        self._color_previews = {}
+
+        def _pick_color(name: str, label: str):
+            initial = self._color_vars[name].get()
+            rgb = colorchooser.askcolor(
+                color=f"#{initial}", title=f"Choose {label}",
+                parent=self)
+            if rgb[0] is not None:
+                r_, g_, b_ = [int(x) for x in rgb[0]]
+                hex_str = f"{r_:02X}{g_:02X}{b_:02X}"
+                self._color_vars[name].set(hex_str)
+
+        _color_labels = [
+            ("grid1", "Grid 1 (red grids):"),
+            ("grid2", "Grid 2 (blue grids):"),
+            ("tile_bg", "Tile background:"),
+        ]
+        for name, label in _color_labels:
+            row_f = tb.Frame(settings)
+            row_f.grid(row=r, column=0, sticky="ew", pady=1, padx=12)
+            row_f.grid_columnconfigure(1, weight=1)
+            preview = tb.Label(row_f, text="    ", background=f"#{self._color_vars[name].get()}")
+            preview.grid(row=0, column=0, padx=(0, 6))
+            self._color_previews[name] = preview
+            tb.Label(row_f, text=label, font=(FONT_FAMILY, 9)).grid(row=0, column=1, sticky="w")
+            tb.Button(row_f, text="Pick", bootstyle="secondary-outline",
+                      command=lambda n=name, lbl=label: _pick_color(n, lbl),
+                      width=5).grid(row=0, column=2, padx=(4, 0))
+            self._color_vars[name].trace_add("write",
+                lambda *_, n=name: self._color_previews[n].config(background=f"#{self._color_vars[n].get()}"))
+            r += 1
+
         # ======== COLUMN 1: UNIFIED INPUT + OVERRIDES ========
         mid = tb.Frame(root)
         mid.grid(row=0, column=1, sticky="ns", padx=(3, 3))
@@ -896,6 +942,7 @@ class ReplayGUI(tb.Window):
 
             try:
                 # Build params from current GUI settings + queue entry overrides
+                from geometry import parse_hex_color
                 opts = RenderOptions(
                     grid_only=self.no_layout_var.get(),
                     no_border=self.no_border_var.get(),
@@ -906,6 +953,9 @@ class ReplayGUI(tb.Window):
                     dynamic_md=self.dynamic_md_var.get(),
                     cycles_detection=self.cycles_detection_var.get(),
                     adjust_height=self.adjust_height_var.get(),
+                    grid1_color=parse_hex_color(self._color_vars["grid1"].get()),
+                    grid2_color=parse_hex_color(self._color_vars["grid2"].get()),
+                    tile_bg_color=parse_hex_color(self._color_vars["tile_bg"].get()),
                 )
                 params = {
                     "force_fringe": self.force_fringe_var.get(),
@@ -1221,9 +1271,13 @@ Examples:
     parser.add_argument("--adjust-height", action="store_true", default=False,
                         help="Crop canvas height to puzzle content instead of fixed quality preset. "
                              "Aligns puzzle to the top (no centering) and removes bottom gap.")
+    parser.add_argument("--grid1-color", type=str, default=None, help="Grid 1 color as hex (e.g. FF0000)")
+    parser.add_argument("--grid2-color", type=str, default=None, help="Grid 2 color as hex (e.g. 0000FF)")
+    parser.add_argument("--tile-bg-color", type=str, default=None, help="Tile background color as hex")
 
     args = parser.parse_args()
 
+    from geometry import parse_hex_color
     opts = RenderOptions(
         grid_only=args.no_layout,
         no_border=args.no_border,
@@ -1234,6 +1288,9 @@ Examples:
         dynamic_md=args.dynamic_md,
         cycles_detection=args.cycles_detection,
         adjust_height=args.adjust_height,
+        grid1_color=parse_hex_color(args.grid1_color),
+        grid2_color=parse_hex_color(args.grid2_color),
+        tile_bg_color=parse_hex_color(args.tile_bg_color),
     )
 
     if args.speedup <= 0:

@@ -1,17 +1,31 @@
 import os
+import re
+from typing import Optional, Tuple
 from dataclasses import dataclass
 from functools import lru_cache
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 PADDING = 2
+
+
+def parse_hex_color(hex_str: Optional[str]) -> Optional[Tuple[int, int, int]]:
+    if hex_str is None:
+        return None
+    hex_str = hex_str.strip().lstrip("#")
+    if not re.match(r"^[0-9a-fA-F]{6}$", hex_str):
+        return None
+    r = int(hex_str[0:2], 16)
+    g = int(hex_str[2:4], 16)
+    b = int(hex_str[4:6], 16)
+    return (r, g, b)
 HEADER_H = 32
 STATS_PANEL_WIDTH = 340
 INFO_H = 40
 TIMER_HEIGHT = 30
 
 BG_COLOR = (18, 18, 18)
-TILE_BG = (51, 51, 51)
+TILE_BG = (69, 69, 69)
 TILE_TEXT_COLOR = (0, 0, 0)
 TILE_BORDER_COLOR = (0, 0, 0)
 NULL_COLOR = (248, 24, 148)
@@ -320,6 +334,9 @@ class RenderOptions:
     dynamic_md: bool = False
     cycles_detection: bool = False
     adjust_height: bool = False
+    grid1_color: Optional[Tuple[int, int, int]] = None
+    grid2_color: Optional[Tuple[int, int, int]] = None
+    tile_bg_color: Optional[Tuple[int, int, int]] = None
 
 
 @dataclass
@@ -373,7 +390,8 @@ def prerender_composite_tile(num: int, main_bg, sec_bg, tile_sprites: TileSprite
 
 def select_base(main_bg, num, cache: TileSpriteCache):
     if main_bg is None:
-        return cache.base_sprites[TILE_BG]
+        bg_color = cache.opts.tile_bg_color or TILE_BG
+        return cache.base_sprites[bg_color]
     if isinstance(main_bg, np.ndarray):
         main_bg = tuple(int(x) for x in main_bg.ravel())
     else:

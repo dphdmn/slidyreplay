@@ -61,6 +61,9 @@ python main.py --solution R2D2L2U2 --no-header --no-details    # puzzle grid onl
 | | `--force-fringe` | | Force fringe colors (disable grids detection) |
 | | `--force-rows` | | Force row stripes (disable grids detection) |
 | | `--force-columns` | | Force column stripes (disable grids detection) |
+| | `--grid1-color` | | Grid 1 (red sections) color as hex, e.g. `FF0000` |
+| | `--grid2-color` | | Grid 2 (blue sections) color as hex, e.g. `0000FF` |
+| | `--tile-bg-color` | | Tile background color as hex, e.g. `969696` |
 | | `--cycles-detection` | | EXPERIMENTAL: detect and display cycling tiles in grid stats (may increase analysis time) |
 | **Hardware** | `--no-gpu` | `-g` | Disable GPU acceleration (GPU is auto-detected by default) |
 | **Debug** | `--log` | `-l` | Enable debug logging to `logs/debug_\<timestamp\>.log` |

@@ -56,7 +56,7 @@ from geometry import (PADDING, HEADER_H, STATS_PANEL_WIDTH, INFO_H, TIMER_HEIGHT
     should_draw_numbers, should_draw_tile_border, should_draw_secondary_border_rect,
     round_canvas_height,
     TileSpriteCache, _solid_base, _bar_sprite, select_base, select_bar,
-    prerender_composite_tile)
+    prerender_composite_tile, parse_hex_color)
 
 # ─── Color Utilities (ported from fringeColors.js) ──────────────────
 
@@ -239,7 +239,9 @@ def apply_color_any(colors_matrix, number, box_w, box_h, offset_w, offset_h, mai
     return None
 
 
-def get_tile_colors(number, state, all_fringe_schemes, main_w):
+def get_tile_colors(number, state, all_fringe_schemes, main_w, opts=None):
+    grid1_color = np.array(opts.grid1_color, dtype=np.uint8) if opts and opts.grid1_color else RED_GRIDS
+    grid2_color = np.array(opts.grid2_color, dtype=np.uint8) if opts and opts.grid2_color else BLUE_GRIDS
     main_bg = None
     secondary_bg = None
     if number == 0:
@@ -252,9 +254,9 @@ def get_tile_colors(number, state, all_fringe_schemes, main_w):
     else:
         for cs in state["mainColors"]:
             if cs["type"] == CT_MAP["grids1"]:
-                c = RED_GRIDS
+                c = grid1_color
             elif cs["type"] == CT_MAP["grids2"]:
-                c = BLUE_GRIDS
+                c = grid2_color
             else:
                 continue
             scheme = get_mono_colors(c, cs["width"], cs["height"])
@@ -267,9 +269,9 @@ def get_tile_colors(number, state, all_fringe_schemes, main_w):
                 key = f"{sc['width']}x{sc['height']}"
                 scheme = all_fringe_schemes[key]
             elif sc["type"] == CT_MAP["grids1"]:
-                scheme = get_mono_colors(RED_GRIDS, sc["width"], sc["height"])
+                scheme = get_mono_colors(grid1_color, sc["width"], sc["height"])
             elif sc["type"] == CT_MAP["grids2"]:
-                scheme = get_mono_colors(BLUE_GRIDS, sc["width"], sc["height"])
+                scheme = get_mono_colors(grid2_color, sc["width"], sc["height"])
             else:
                 continue
             if secondary_bg is None:
@@ -487,7 +489,7 @@ def render_frame(
             num = matrix[r][c]
             sx = grid_x + c * tile_size
             sy = grid_y + r * tile_size
-            main_bg, sec_bg = get_tile_colors(num, grid_state, all_fringe_schemes, w)
+            main_bg, sec_bg = get_tile_colors(num, grid_state, all_fringe_schemes, w, opts)
             base = select_base(main_bg, num, tile_sprites)
             canvas.paste(base, (sx, sy), base)
             if not opts.no_numbers and num != 0:
@@ -512,7 +514,7 @@ def render_frame(
                 sx = grid_x + col_idx * tile_size
                 sy = grid_y + row_idx * tile_size
 
-                main_bg, sec_bg = get_tile_colors(num, grid_state, all_fringe_schemes, w)
+                main_bg, sec_bg = get_tile_colors(num, grid_state, all_fringe_schemes, w, opts)
                 base = select_base(main_bg, num, tile_sprites)
                 canvas.paste(base, (sx, sy), base)
 
@@ -531,8 +533,8 @@ def render_frame(
                 sy = grid_y + row_idx * tile_size
                 sq_bbox = (sx, sy, sx + tile_size, sy + tile_size)
 
-                main_bg, sec_bg = get_tile_colors(num, grid_state, all_fringe_schemes, w)
-                bg_color = main_bg if main_bg is not None else TILE_BG
+                main_bg, sec_bg = get_tile_colors(num, grid_state, all_fringe_schemes, w, opts)
+                bg_color = main_bg if main_bg is not None else (opts.tile_bg_color or TILE_BG)
                 bg_color = tuple(bg_color.ravel()) if isinstance(bg_color, np.ndarray) else bg_color
                 draw_filled_rect(draw, sq_bbox, bg_color)
 
@@ -1190,11 +1192,14 @@ def prerender_tile_layers(width, height, tile_size, font_size, opts, all_fringe_
             if color not in base_sprites:
                 base_sprites[color] = _solid_base(color, ts, opts)
 
-    red_t = tuple(int(x) for x in RED_GRIDS)
-    blue_t = tuple(int(x) for x in BLUE_GRIDS)
+    grid1_color_arr = opts.grid1_color if opts and opts.grid1_color else RED_GRIDS
+    grid2_color_arr = opts.grid2_color if opts and opts.grid2_color else BLUE_GRIDS
+    tile_bg = opts.tile_bg_color if opts and opts.tile_bg_color else TILE_BG
+    red_t = tuple(int(x) for x in grid1_color_arr)
+    blue_t = tuple(int(x) for x in grid2_color_arr)
     base_sprites[red_t] = _solid_base(red_t, ts, opts)
     base_sprites[blue_t] = _solid_base(blue_t, ts, opts)
-    base_sprites[TILE_BG] = _solid_base(TILE_BG, ts, opts)
+    base_sprites[tile_bg] = _solid_base(tile_bg, ts, opts)
     base_sprites[NULL_COLOR] = _solid_base(NULL_COLOR, ts, opts)
 
     number_texts = {}
@@ -1256,7 +1261,7 @@ def build_composite_atlas(tile_sprites, w, h, font_size, opts, grid_states, all_
         state_sig = id(state)
         lookup = [0] * (w * h + 1)
         for num in range(w * h + 1):
-            main_bg, sec_bg = get_tile_colors(num, state, all_fringe_schemes, w)
+            main_bg, sec_bg = get_tile_colors(num, state, all_fringe_schemes, w, opts)
             composite = prerender_composite_tile(num, main_bg, sec_bg, tile_sprites, opts)
             idx = len(composite_images)
             composite_images.append(composite)
@@ -2545,8 +2550,16 @@ def main():
     parser.add_argument("--speed", type=float, default=1.0, help="Speed factor")
     parser.add_argument("--fps", type=int, default=60, help="Output video frame rate (default: 60)")
     parser.add_argument("--temp-dir", type=str, default=None, help="Temp directory for frames")
+    parser.add_argument("--grid1-color", type=str, default=None, help="Grid 1 color as hex (e.g. FF0000 for red)")
+    parser.add_argument("--grid2-color", type=str, default=None, help="Grid 2 color as hex (e.g. 0000FF for blue)")
+    parser.add_argument("--tile-bg-color", type=str, default=None, help="Tile background color as hex")
 
     args = parser.parse_args()
+    opts = RenderOptions(
+        grid1_color=parse_hex_color(args.grid1_color),
+        grid2_color=parse_hex_color(args.grid2_color),
+        tile_bg_color=parse_hex_color(args.tile_bg_color),
+    )
 
     if args.url:
         solution, tps, scramble, movetimes = parse_replay_url(args.url)
@@ -2579,7 +2592,8 @@ def main():
         speed_factor=args.speed,
         quality=args.quality,
         fps=args.fps,
-        show_progress=True
+        show_progress=True,
+        opts=opts,
     )
 
 
