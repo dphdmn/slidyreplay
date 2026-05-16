@@ -107,22 +107,22 @@ def _open(path, status_callback=None):
 
 def _generate_filename(solution, tps, time_v, movetimes, size_arg=None, index=0, speed_factor=1.0, scramble=None):
     moves = count_moves(solution)
-    if tps and tps > 0:
-        display_tps = tps
-    else:
-        display_tps = None
     if isinstance(movetimes, list) and len(movetimes) > 1:
         time_s = movetimes[-1] / 1000.0 if movetimes[-1] > 0 else 0
         is_movetimes_accurate = True
+        display_tps = moves / time_s if time_s > 0 else None
     elif time_v and time_v > 0:
         time_s = time_v
         is_movetimes_accurate = False
-    elif display_tps and display_tps > 0:
-        time_s = moves / display_tps
+        display_tps = moves / time_s
+    elif tps and tps > 0:
+        time_s = moves / tps
         is_movetimes_accurate = False
+        display_tps = tps
     else:
         time_s = 0
         is_movetimes_accurate = False
+        display_tps = None
     if size_arg:
         if isinstance(size_arg, tuple):
             w, h = size_arg
@@ -767,19 +767,22 @@ class ReplayGUI(tb.Window):
         size = _quick_infer_size(solution, scramble, size_s)
 
         # Build display name (like filename would be)
-        raw_tps = tps
         if isinstance(movetimes, list) and len(movetimes) > 1 and movetimes[-1] > 0:
             time_s = movetimes[-1] / 1000.0
             is_movetimes_accurate = True
+            raw_tps = moves / time_s
         elif time_v and time_v > 0:
             time_s = time_v
             is_movetimes_accurate = False
+            raw_tps = moves / time_s
         elif tps and tps > 0:
             time_s = moves / tps
             is_movetimes_accurate = False
+            raw_tps = tps
         else:
             time_s = 0
             is_movetimes_accurate = False
+            raw_tps = None
 
         size_str = f"{size[0]}x{size[1]}" if size and size[0] and size[1] else "?"
         parts = [size_str]

@@ -54,6 +54,7 @@ python main.py --solution R2D2L2U2 --no-header --no-details    # puzzle grid onl
 | | `--no-header` | | Hide the timer header bar (time/moves/tps and MD display) |
 | | `--no-details` | | Hide the stats panel on the right side of the puzzle |
 | | `--dynamic-md` | | Show MD/predicted/MMD timer on the right of the header (off by default — timer centered instead) |
+| | `--adjust-height` | | Crop canvas height to puzzle content instead of fixed quality preset. Aligns puzzle to the top and removes the bottom gap (default: centered). Useful when big puzzle doesn't fill the frame due to small tile size |
 | | `--no-border` | | Suppress tile border outlines |
 | | `--no-secondary-border` | | Suppress secondary color bar borders |
 | | `--no-numbers` | | Suppress tile number text (improves compression) |
