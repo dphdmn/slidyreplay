@@ -169,9 +169,10 @@ class ReplayGUI(tb.Window):
         super().__init__(themename="darkly")
         self.withdraw()
         self.title("Replay Video Generator")
-        self.minsize(1200, 680)
+        self.minsize(750, 500)
 
         self.generated_files = []
+        self.render_queue = []
         self._executor = None
         self._batch_futures = []
         self._item_progress = {}
@@ -180,6 +181,8 @@ class ReplayGUI(tb.Window):
         self._last_poll_pct = 0.0
         self._rolling_rate = 0.0
         self.cancel_flag = False
+        self.pb_overall_text = tk.StringVar(value="0 / 0")
+        self.pb_detail_text = tk.StringVar(value="")
 
         self.fps_var = tk.IntVar(value=60)
         self.force_fringe_var = tk.BooleanVar(value=False)
@@ -196,7 +199,7 @@ class ReplayGUI(tb.Window):
         self.movetimes_var = tk.StringVar()
         self.out_folder_var = tk.StringVar(value=os.path.join(script_dir, "replays"))
         self.file_path_var = tk.StringVar()
-        self.progress_text = tk.StringVar(value="Ready")
+        self.progress_text = self.pb_overall_text
         self._gpu_info_var = tk.StringVar(value="")
         self.no_layout_var = tk.BooleanVar(value=False)
         self.no_border_var = tk.BooleanVar(value=False)
@@ -233,9 +236,9 @@ class ReplayGUI(tb.Window):
         root.pack(fill="both", expand=True)
 
         # ── Three-column layout using grid ──
-        root.grid_columnconfigure(0, weight=1, minsize=360)
-        root.grid_columnconfigure(1, weight=1, minsize=360)
-        root.grid_columnconfigure(2, weight=1, minsize=360)
+        root.grid_columnconfigure(0, weight=1, minsize=250)
+        root.grid_columnconfigure(1, weight=0, minsize=250)
+        root.grid_columnconfigure(2, weight=1, minsize=250)
         root.grid_rowconfigure(0, weight=1)
 
         # ======== COLUMN 0: SETTINGS ========
@@ -473,130 +476,141 @@ class ReplayGUI(tb.Window):
         tb.Checkbutton(d_grid, text="Force fringe", variable=self.force_fringe_var,
                        bootstyle="round-toggle").grid(row=2, column=2, sticky="w")
 
-        # ======== COLUMN 1: INPUTS ========
-        mid = tb.Frame(root)
-        mid.grid(row=0, column=1, sticky="nsew", padx=(3, 3))
-        mid.grid_rowconfigure(0, weight=1)
+        # ======== COLUMN 1: UNIFIED INPUT + OVERRIDES ========
+        mid = tb.Frame(root, width=250)
+        mid.grid(row=0, column=1, sticky="ns", padx=(3, 3))
+        mid.grid_propagate(False)
         mid.grid_columnconfigure(0, weight=1)
 
-        nb = tb.Notebook(mid, bootstyle="dark")
-        nb.grid(row=0, column=0, sticky="nsew")
-        self.nb = nb
-
-        url_tab = tb.Frame(nb, padding=8)
-        file_tab = tb.Frame(nb, padding=8)
-        manual_tab = tb.Frame(nb, padding=8)
-        nb.add(url_tab, text="URL")
-        nb.add(file_tab, text="File")
-        nb.add(manual_tab, text="Manual")
-
-        # -- URL tab --
-        tb.Label(url_tab, text="Replay URLs (one per line):",
-                 font=(FONT_FAMILY, 10, "bold")).pack(anchor="w")
-        self.url_text = scrolledtext.ScrolledText(
-            url_tab, font=(FONT_MONO_FAMILY, 10),
-            bg="#1e1e1e", fg="#d4d4d4", insertbackground="#fff",
-            relief="flat", borderwidth=0, highlightthickness=1,
-            highlightbackground="#3a3a3a", highlightcolor="#3a3a3a")
-        self.url_text.pack(fill="both", expand=True, pady=(4, 0))
-        _setup_placeholder(self.url_text, "# paste URLs here, one per line")
-
-        # -- File tab --
-        tb.Label(file_tab, text="Single input file (solution or replay URL):",
-                 font=(FONT_FAMILY, 10, "bold")).pack(anchor="w", pady=(0, 4))
-        file_row = tb.Frame(file_tab)
+        # File selection
+        tb.Label(mid, text="File:", font=(FONT_FAMILY, 9)).pack(anchor="w")
+        file_row = tb.Frame(mid)
         file_row.pack(fill="x", pady=(0, 4))
         file_row.grid_columnconfigure(0, weight=1)
         self.file_entry = tb.Entry(file_row, textvariable=self.file_path_var)
         self.file_entry.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         tb.Button(file_row, text="Browse...", command=self._browse_file,
                   bootstyle="secondary-outline", width=9).grid(row=0, column=1)
-        self.file_meta_var = tk.StringVar(value="No file selected.")
-        self.file_meta_label = tb.Label(file_tab, textvariable=self.file_meta_var,
-                                        font=(FONT_FAMILY, 9), foreground="#aaaaaa",
-                                        anchor="w", wraplength=300)
-        self.file_meta_label.pack(fill="x", anchor="w")
 
-        # -- Manual tab --
-        manual_tab.grid_rowconfigure(3, weight=1)
-        manual_tab.grid_columnconfigure(0, weight=1)
-
-        params = tb.Frame(manual_tab)
-        params.grid(row=0, column=0, sticky="ew", pady=(0, 2))
-        c = 0
-        tb.Label(params, text="TPS:", font=(FONT_FAMILY, 9)).grid(row=0, column=c, sticky="w", padx=(0, 2))
-        c += 1
-        self.tps_entry = tb.Entry(params, textvariable=self.tps_var, width=8)
-        self.tps_entry.grid(row=0, column=c, padx=(0, 6))
-        c += 1
-        tb.Label(params, text="Time (s):", font=(FONT_FAMILY, 9)).grid(row=0, column=c, sticky="w", padx=(0, 2))
-        c += 1
-        self.time_entry = tb.Entry(params, textvariable=self.time_var, width=8)
-        self.time_entry.grid(row=0, column=c, padx=(0, 6))
-        c += 1
-        tb.Label(params, text="Size:", font=(FONT_FAMILY, 9)).grid(row=0, column=c, sticky="w", padx=(0, 2))
-        c += 1
-        self.size_entry = tb.Entry(params, textvariable=self.size_var, width=8)
-        self.size_entry.grid(row=0, column=c)
-
-        params2 = tb.Frame(manual_tab)
-        params2.grid(row=1, column=0, sticky="ew")
-        tb.Label(params2, text="Scramble:", font=(FONT_FAMILY, 9)).pack(side="left")
-        self.scramble_entry = tb.Entry(params2, textvariable=self.scramble_var, width=18)
-        self.scramble_entry.pack(side="left", padx=(4, 6))
-        tb.Label(params2, text="Movetimes:", font=(FONT_FAMILY, 9)).pack(side="left")
-        self.movetimes_entry = tb.Entry(params2, textvariable=self.movetimes_var, width=18)
-        self.movetimes_entry.pack(side="left", padx=(4, 0))
-
-        tb.Label(manual_tab, text="Solution strings (one per line):",
-                 font=(FONT_FAMILY, 10, "bold")).grid(row=2, column=0, sticky="w", pady=(6, 0))
-        self.solution_text = scrolledtext.ScrolledText(
-            manual_tab, font=(FONT_MONO_FAMILY, 10),
+        # Main text area for URLs / solutions
+        tb.Label(mid, text="URLs / Solution strings (one per line):",
+                 font=(FONT_FAMILY, 10, "bold")).pack(anchor="w", pady=(4, 0))
+        self.input_text = scrolledtext.ScrolledText(
+            mid, font=(FONT_MONO_FAMILY, 10),
             bg="#1e1e1e", fg="#d4d4d4", insertbackground="#fff",
             relief="flat", borderwidth=0, highlightthickness=1,
             highlightbackground="#3a3a3a", highlightcolor="#3a3a3a")
-        self.solution_text.grid(row=3, column=0, sticky="nsew", pady=(2, 0))
-        _setup_placeholder(self.solution_text, "# solutions here, one per line")
-        self.solution_text.bind("<<Modified>>", self._on_solution_change)
+        self.input_text.pack(fill="both", expand=True, pady=(2, 0))
+        _setup_placeholder(self.input_text,
+                           "# paste URLs or solution strings here, one per line")
 
-        # ── Action buttons (below inputs) ──
+        # Override params (always visible, always editable) — each on its own line
+        ov_frame = tb.LabelFrame(mid, text="Override (optional — applied on add to queue)",
+                                 font=(FONT_FAMILY, 9, "bold"))
+        ov_frame.pack(fill="x", pady=(4, 0))
+
+        def _ov_entry(container, label, width=8):
+            r = tb.Frame(container)
+            r.pack(fill="x", padx=4, pady=(0, 1))
+            tb.Label(r, text=label, font=(FONT_FAMILY, 9)).pack(side="left", padx=(2, 4))
+            e = tb.Entry(r, width=width)
+            e.pack(side="left")
+            return e
+
+        self.tps_entry = _ov_entry(ov_frame, "TPS:", 8)
+        self.tps_entry.config(textvariable=self.tps_var)
+        self.time_entry = _ov_entry(ov_frame, "Time (s):", 8)
+        self.time_entry.config(textvariable=self.time_var)
+        self.size_entry = _ov_entry(ov_frame, "Size:", 8)
+        self.size_entry.config(textvariable=self.size_var)
+        self.scramble_entry = _ov_entry(ov_frame, "Scramble:", 18)
+        self.scramble_entry.config(textvariable=self.scramble_var)
+        self.movetimes_entry = _ov_entry(ov_frame, "Movetimes:", 18)
+        self.movetimes_entry.config(textvariable=self.movetimes_var)
+
+        # Action buttons
         act = tb.Frame(mid)
-        act.grid(row=1, column=0, sticky="ew", pady=(6, 0))
-        self.gen_btn = tb.Button(act, text="Generate All", command=self._generate,
-                                 bootstyle="success", width=16)
+        act.pack(fill="x", pady=(6, 0))
+        self.add_btn = tb.Button(act, text="Add to Queue", command=self._add_to_queue,
+                                 bootstyle="primary", width=14)
+        self.add_btn.pack(side="left", padx=(0, 6))
+        self.clear_input_btn = tb.Button(act, text="Clear Input", command=self._clear_input,
+                                         bootstyle="secondary-outline", width=12)
+        self.clear_input_btn.pack(side="left", padx=(0, 6))
+        self.gen_btn = tb.Button(act, text="Render", command=self._generate,
+                                 bootstyle="success", width=12)
         self.gen_btn.pack(side="left", padx=(0, 6))
         self.cancel_btn = tb.Button(act, text="Cancel", command=self._cancel,
                                     bootstyle="secondary", state="disabled")
         self.cancel_btn.pack(side="left")
 
-        # ======== COLUMN 2: PROGRESS + OUTPUTS ========
+        # ======== COLUMN 2: PROGRESS + QUEUE + OUTPUTS ========
         right = tb.Frame(root)
         right.grid(row=0, column=2, sticky="nsew", padx=(3, 0))
-        right.grid_rowconfigure(1, weight=1)
+        right.grid_rowconfigure(1, weight=0)
+        right.grid_rowconfigure(2, weight=1)
         right.grid_columnconfigure(0, weight=1)
 
-        # ── Progress ──
+        # ── Progress (overall batch bar) ──
         prog_frame = tb.LabelFrame(right, text="Progress")
-        prog_frame.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        prog_frame.pack_propagate(False)
-        prog_frame.configure(height=100)
+        prog_frame.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        prog_frame.grid_columnconfigure(0, weight=1)
 
-        self.progress_bar = tb.Progressbar(prog_frame, mode="determinate",
+        tb.Label(prog_frame, text="Overall:", font=(FONT_FAMILY, 9)).grid(
+            row=0, column=0, sticky="w", padx=(8, 0), pady=(4, 0))
+        self.overall_bar = tb.Progressbar(prog_frame, mode="determinate",
                                            bootstyle="success-striped")
-        self.progress_bar.pack(fill="x", padx=8, pady=(8, 2))
+        self.overall_bar.grid(row=1, column=0, sticky="ew", padx=8, pady=(1, 0))
+        ov_lbl = tb.Label(prog_frame, textvariable=self.pb_overall_text,
+                          font=(FONT_FAMILY, 9), anchor="w")
+        ov_lbl.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 2))
 
-        prog_label = tb.Label(prog_frame, textvariable=self.progress_text,
-                              font=(FONT_FAMILY, 9), anchor="w")
-        prog_label.pack(fill="x", padx=8, pady=(0, 0))
+        tb.Label(prog_frame, text="Current:", font=(FONT_FAMILY, 9)).grid(
+            row=3, column=0, sticky="w", padx=(8, 0), pady=(4, 0))
+        self.detail_bar = tb.Progressbar(prog_frame, mode="determinate",
+                                          bootstyle="info-striped")
+        self.detail_bar.grid(row=4, column=0, sticky="ew", padx=8, pady=(1, 0))
+        dt_lbl = tb.Label(prog_frame, textvariable=self.pb_detail_text,
+                          font=(FONT_FAMILY, 9), anchor="w")
+        dt_lbl.grid(row=5, column=0, sticky="ew", padx=8, pady=(0, 4))
 
-        self._gpu_info_var = tk.StringVar(value="")
-        gpu_label = tb.Label(prog_frame, textvariable=self._gpu_info_var,
-                             font=(FONT_FAMILY, 8), anchor="w", foreground="#aaaaaa")
-        gpu_label.pack(fill="x", padx=8, pady=(0, 6))
+        gpu_lbl = tb.Label(prog_frame, textvariable=self._gpu_info_var,
+                           font=(FONT_FAMILY, 8), anchor="w", foreground="#aaaaaa")
+        gpu_lbl.grid(row=6, column=0, sticky="ew", padx=8, pady=(0, 4))
+
+        # ── Render Queue (collapsible — row 1, fixed height) ──
+        q_frame = tb.LabelFrame(right, text="Render Queue")
+        q_frame.grid(row=1, column=0, sticky="ew", pady=(0, 4))
+        q_frame.grid_columnconfigure(0, weight=1)
+        q_frame.grid_columnconfigure(1, weight=0)
+
+        self.queue_listbox = tk.Listbox(
+            q_frame, font=(FONT_MONO_FAMILY, 8), activestyle="none",
+            selectbackground="#2a6d9c", selectforeground="white",
+            height=6,
+            bg="#1a1a1a", fg="#cccccc", relief="flat", borderwidth=0,
+            highlightthickness=1, highlightbackground="#333")
+        self.queue_listbox.grid(row=0, column=0, sticky="ew", padx=6, pady=(6, 2))
+
+        q_scroll = tb.Scrollbar(q_frame, orient="vertical", command=self.queue_listbox.yview)
+        q_scroll.grid(row=0, column=1, sticky="ns", pady=(6, 2))
+        self.queue_listbox.configure(yscrollcommand=q_scroll.set)
+
+        q_actions = tb.Frame(q_frame)
+        q_actions.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 6))
+        tb.Button(q_actions, text="Remove Selected", command=self._remove_selected_from_queue,
+                  bootstyle="secondary-outline", width=16).pack(side="left", padx=(0, 4))
+        tb.Button(q_actions, text="Clear Queue", command=self._clear_queue,
+                  bootstyle="secondary-outline", width=12).pack(side="left")
+
+        self.queue_count_var = tk.StringVar(value="0 items")
+        q_count = tb.Label(q_actions, textvariable=self.queue_count_var,
+                           font=(FONT_FAMILY, 8), foreground="#888")
+        q_count.pack(side="right")
 
         # ── Generated replays ──
         lst_frame = tb.LabelFrame(right, text="Generated Replays")
-        lst_frame.grid(row=1, column=0, sticky="nsew")
+        lst_frame.grid(row=2, column=0, sticky="nsew")
         lst_frame.grid_columnconfigure(0, weight=1)
         lst_frame.grid_rowconfigure(0, weight=1)
 
@@ -647,26 +661,10 @@ class ReplayGUI(tb.Window):
 
     def _center_window(self):
         self.update_idletasks()
-        w, h = 1200, 720
+        w, h = 1400, 720
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
         self.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
-
-    def _count_solutions(self):
-        raw = self.solution_text.get("1.0", "end-1c").strip()
-        lines = [l.strip() for l in raw.splitlines()
-                 if l.strip() and not l.strip().startswith("#")]
-        return len(lines)
-
-    def _on_solution_change(self, event=None):
-        n = self._count_solutions()
-        state = "disabled" if n > 1 else "normal"
-        fg = "#555" if n > 1 else "#d4d4d4"
-        self.scramble_entry.config(state=state)
-        self.movetimes_entry.config(state=state)
-        self.scramble_entry.configure(foreground=fg)
-        self.movetimes_entry.configure(foreground=fg)
-        self.solution_text.edit_modified(False)
 
     def _browse_output(self):
         path = filedialog.askdirectory(title="Output folder")
@@ -678,114 +676,177 @@ class ReplayGUI(tb.Window):
             title="Select input file",
             filetypes=[("All files", "*.*")]
         )
-        if not path:
-            return
-        self.file_path_var.set(path)
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                raw = f.read().strip()
-            if not raw:
-                self.file_meta_var.set("Empty file.")
-                return
-            if raw.startswith(("http://", "https://")):
-                solution, tps, scramble, movetimes = parse_replay_url(raw)
-                moves = count_moves(solution)
-                if isinstance(movetimes, list) and movetimes[-1] > 0:
-                    time_s = movetimes[-1] / 1000.0
-                    tps = moves / time_s
-                else:
-                    time_s = 0
-                size = _quick_infer_size(solution, scramble)
-                size_str = f"{size[0]}x{size[1]}" if size else "?"
-                accurate = isinstance(movetimes, list) and len(movetimes) > 1
-                if time_s and tps:
-                    meta = f"{size_str} | {time_s:.3f} ({moves} / {tps:.3f})"
-                elif time_s:
-                    meta = f"{size_str} | {time_s:.3f} ({moves})"
-                else:
-                    meta = f"{size_str} | {moves} moves"
-                if accurate:
-                    meta += " | movetimes accurate"
-            else:
-                solution = raw
-                moves = count_moves(solution)
-                size = _quick_infer_size(solution)
-                size_str = f"{size[0]}x{size[1]}" if size else "?"
-                meta = f"{size_str} | {moves} moves"
-            self.file_meta_var.set(meta)
-        except Exception as e:
-            self.file_meta_var.set(f"Parse error: {e}")
+        if path:
+            self.file_path_var.set(path)
 
-    def _active_tab(self):
-        return self.nb.index(self.nb.select())
+
+
+    def _add_to_queue(self):
+        """Parse input text and overrides, add entries to render queue."""
+        raw = self.input_text.get("1.0", "end-1c").strip()
+
+        # Capture current override values
+        override_tps = self.tps_var.get().strip()
+        override_time = self.time_var.get().strip()
+        override_size = self.size_var.get().strip()
+        override_scramble = self.scramble_var.get().strip()
+        override_movetimes = self.movetimes_var.get().strip()
+
+        # Also read file if set
+        file_path = self.file_path_var.get().strip()
+        file_raw = None
+        if file_path and os.path.exists(file_path):
+            with open(file_path, "r", encoding="utf-8") as f:
+                file_raw = f.read().strip()
+
+        count = 0
+        # Process file content (treat each line as a separate input)
+        if file_raw:
+            for fline in file_raw.splitlines():
+                fline = fline.strip()
+                if not fline or fline.startswith("#"):
+                    continue
+                new_entries = self._parse_input_to_entries(
+                    fline, override_tps, override_time, override_size,
+                    override_scramble, override_movetimes)
+                self.render_queue.extend(new_entries)
+                count += len(new_entries)
+
+        # Process each line from the text area
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            new_entries = self._parse_input_to_entries(
+                line, override_tps, override_time, override_size,
+                override_scramble, override_movetimes)
+            self.render_queue.extend(new_entries)
+            count += len(new_entries)
+
+        if count:
+            self._refresh_queue_display()
+            self.input_text.delete("1.0", "end")
+
+    def _parse_input_to_entries(self, text, override_tps, override_time,
+                                 override_size, override_scramble, override_movetimes):
+        """Parse a single input string (URL or solution) and return queue entry dicts."""
+        if text.startswith(("http://", "https://")):
+            try:
+                solution, tps, scramble, movetimes = parse_replay_url(text)
+            except Exception as e:
+                self.after(0, lambda m=f"Parse error for URL: {e}": self.pb_overall_text.set(m))
+                return []
+            # Apply overrides on top of URL-parsed values
+            if override_tps:
+                tps = float(override_tps)
+            if override_scramble:
+                scramble = override_scramble
+            if override_movetimes:
+                movetimes = [int(x.strip()) for x in override_movetimes.split(",")]
+            mode = "url"
+        else:
+            solution = text
+            tps = float(override_tps) if override_tps else None
+            scramble = override_scramble if override_scramble else None
+            movetimes = [int(x.strip()) for x in override_movetimes.split(",")] if override_movetimes else -1
+            mode = "manual"
+
+        time_v = float(override_time) if override_time else None
+        size_s = override_size if override_size else None
+
+        if time_v and tps:
+            tps = None
+
+        moves = count_moves(solution)
+        size = _quick_infer_size(solution, scramble, size_s)
+
+        # Build display name (like filename would be)
+        raw_tps = tps
+        if isinstance(movetimes, list) and len(movetimes) > 1 and movetimes[-1] > 0:
+            time_s = movetimes[-1] / 1000.0
+            is_movetimes_accurate = True
+        elif time_v and time_v > 0:
+            time_s = time_v
+            is_movetimes_accurate = False
+        elif tps and tps > 0:
+            time_s = moves / tps
+            is_movetimes_accurate = False
+        else:
+            time_s = 0
+            is_movetimes_accurate = False
+
+        size_str = f"{size[0]}x{size[1]}" if size and size[0] and size[1] else "?"
+        parts = [size_str]
+        if time_s:
+            parts.append(f"{time_s:.3f}")
+        parts.append(str(moves))
+        if raw_tps:
+            parts.append(f"{raw_tps:.3f}")
+        if is_movetimes_accurate:
+            parts.append("movetimes")
+        display_name = "_".join(parts)
+
+        return [{
+            "mode": mode,
+            "input_str": text,
+            "solution": solution,
+            "tps": tps,
+            "time": time_v if time_v else 0,
+            "size": size_s,
+            "scramble": scramble,
+            "movetimes": movetimes if isinstance(movetimes, list) else -1,
+            "display_name": display_name,
+        }]
+
+    def _remove_selected_from_queue(self):
+        sel = self.queue_listbox.curselection()
+        if not sel:
+            return
+        for i in reversed(sel):
+            del self.render_queue[i]
+        self._refresh_queue_display()
+
+    def _clear_queue(self):
+        self.render_queue.clear()
+        self._refresh_queue_display()
+
+    def _clear_input(self):
+        self.input_text.delete("1.0", "end")
+
+    def _refresh_queue_display(self):
+        self.queue_listbox.delete(0, "end")
+        for item in self.render_queue:
+            self.queue_listbox.insert("end", item["display_name"])
+        n = len(self.render_queue)
+        self.queue_count_var.set(f"{n} item{'s' if n != 1 else ''}")
 
     def _generate(self):
-        if self._executor and not all(f.done() for f in self._batch_futures):
-            log.info("_generate: skipped — previous batch still running")
+        if not self.render_queue:
+            self.pb_overall_text.set("Queue is empty. Add items first.")
             return
-
-        tab = self._active_tab()
-        items = []
-        log.info(f"_generate: tab={tab} ('URL' if tab==0 else 'File' if tab==1 else 'Manual')")
-
-        if tab == 0:
-            raw = self.url_text.get("1.0", "end-1c").strip()
-            log.info(f"  URL tab raw len={len(raw)}, first_100={repr(raw[:100])}")
-            for line in raw.splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    log.info(f"  SKIP line: {repr(line[:80])}")
-                    continue
-                if line.startswith(("http://", "https://")):
-                    log.info(f"  ADD url item: len={len(line)}, preview={repr(line[:100])}")
-                    items.append(("url", line))
-                else:
-                    log.info(f"  SKIP (not http): {repr(line[:80])}")
-        elif tab == 1:
-            path = self.file_path_var.get().strip()
-            log.info(f"  File tab path={repr(path)} exists={os.path.exists(path)}")
-            if not path or not os.path.exists(path):
-                self.progress_text.set("No file selected.")
-                return
-            with open(path, "r", encoding="utf-8") as f:
-                raw = f.read().strip()
-            log.info(f"  File tab raw len={len(raw)} starts_http={raw.startswith('http')}")
-            if raw.startswith(("http://", "https://")):
-                log.info(f"  ADD url item from file: len={len(raw)}")
-                items.append(("url", raw))
-            else:
-                log.info(f"  ADD manual item from file: len={len(raw)}")
-                items.append(("manual", raw))
-        else:
-            raw = self.solution_text.get("1.0", "end-1c").strip()
-            n_lines = 0
-            for line in raw.splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                items.append(("manual", line))
-                n_lines += 1
-            log.info(f"  Manual tab: {n_lines} solution lines")
-
-        log.info(f"_generate: total items={len(items)}")
-        if not items:
-            self.progress_text.set("No valid entries.")
+        if self._executor and not all(f.done() for f in self._batch_futures):
+            log.info("_generate: skipped — previous render still running")
             return
 
         self.cancel_flag = False
         self._set_ui_busy(True)
         self._start_time = time.time()
-        self.progress_bar["value"] = 0
-        self.progress_text.set("")
+        self._last_poll_time = time.time()
+        self._last_poll_pct = 0.0
+        self._rolling_rate = 0.0
+        self.overall_bar["value"] = 0
+        self.detail_bar["value"] = 0
+        self.pb_overall_text.set("0 / 0")
+        self.pb_detail_text.set("")
+        self._gpu_info_var.set("")
         self.replay_listbox.delete(0, "end")
         self.generated_files.clear()
 
         raw_folder = self.out_folder_var.get().strip()
         output_dir = os.path.abspath(raw_folder) if raw_folder else os.path.join(script_dir, "replays")
-        log.info(f"_generate: output_dir={output_dir}")
         os.makedirs(output_dir, exist_ok=True)
 
-        total = len(items)
+        total = len(self.render_queue)
         self._item_progress = {}
         for idx in range(total):
             self._item_progress[idx] = {"adjusted_cur": 0, "adjusted_tot": 1,
@@ -794,163 +855,27 @@ class ReplayGUI(tb.Window):
 
         self._batch_futures = []
         self._executor = ThreadPoolExecutor(max_workers=1)
+        self._current_item_idx = -1
+        fut = self._executor.submit(self._process_queue, output_dir)
+        self._batch_futures = [fut]
+        self.after(500, self._poll_queue)
 
-        if total == 1:
-            # Single item: existing per-item path (preserves detailed progress)
-            self._is_batch = False
-            def on_done(idx, fut):
-                try:
-                    fut.result()
-                except CancelError:
-                    self._item_progress[idx]["cancelled"] = True
-                except Exception as e:
-                    self._item_progress[idx]["error"] = str(e)
-                self._item_progress[idx]["done"] = True
+    def _process_queue(self, output_dir):
+        """Iterate all queued items and render each sequentially."""
+        import copy
+        total = len(self.render_queue)
+        gen = ReplayVideoGenerator(cleanup_frames=False)
 
-            for idx, (mode, input_str) in enumerate(items):
-                fut = self._executor.submit(
-                    self._process_item, idx, mode, input_str, output_dir, total)
-                fut.add_done_callback(lambda f, i=idx: on_done(i, f))
-                self._batch_futures.append(fut)
-        else:
-            # Batch: build all items, submit once via batch_render
-            self._is_batch = True
-            self._batch_done = 0
-            self._batch_total = total
-            self._batch_cancelled = False
-            fut = self._executor.submit(self._process_batch, items, output_dir)
-            self._batch_futures = [fut]
+        for idx, entry in enumerate(self.render_queue):
+            if self.cancel_flag:
+                raise CancelError()
 
-        self.after(1000, self._poll_batch)
+            self._current_item_idx = idx
+            log.info(f"_process_queue[{idx}]: {entry['display_name']}")
 
-    def _process_item(self, idx, mode, input_str, output_dir, total):
-        log.info(f"_process_item[{idx}]: mode={mode}, input_str_len={len(input_str)}")
-        try:
-            opts = RenderOptions(
-                grid_only=self.no_layout_var.get(),
-                no_border=self.no_border_var.get(),
-                no_secondary_border=self.no_secondary_border_var.get(),
-                no_numbers=self.no_numbers_var.get(),
-                no_header=self.no_header_var.get(),
-                no_details=self.no_details_var.get(),
-                dynamic_md=self.dynamic_md_var.get(),
-            )
-            params = {
-                "force_fringe": self.force_fringe_var.get(),
-                "quality": self._get_quality(),
-                "fps": self.fps_var.get(),
-                "compression": self.compression_var.get(),
-                "slow_render": self.slow_render_var.get(),
-                "speed_factor": self._get_speed_factor(),
-                "upscale": self.upscale_var.get(),
-                "encoder_override": "" if self.encoder_var.get() == "Auto" else self.encoder_var.get(),
-                "opts": opts,
-            }
-            log.info(f"_process_item[{idx}]: base_params={params}")
-
-            if mode == "url":
-                solution, tps, scramble, movetimes = parse_replay_url(input_str)
-                sol_len = count_moves(solution)
-                log.info(f"_process_item[{idx}]: parsed URL -> sol_len={sol_len}, tps={tps}, scramble={'yes' if scramble else 'no'}, movetimes_type={type(movetimes).__name__}")
-                if isinstance(movetimes, list):
-                    log.info(f"_process_item[{idx}]: movetimes len={len(movetimes)}, first={movetimes[0]}, last={movetimes[-1]}")
-                if tps is not None:
-                    params["tps"] = tps
-                    log.info(f"_process_item[{idx}]: set tps={tps}")
-                if scramble:
-                    params["scramble"] = scramble
-                    log.info(f"_process_item[{idx}]: set scramble (len={len(scramble)})")
-                if isinstance(movetimes, list) and len(movetimes) > 0:
-                    params["movetimes"] = movetimes
-                    log.info(f"_process_item[{idx}]: set movetimes (len={len(movetimes)})")
-            else:
-                solution = input_str
-                sol_len = count_moves(solution)
-                log.info(f"_process_item[{idx}]: manual mode, sol_len={sol_len}")
-                tps_s = self.tps_var.get().strip()
-                tps = float(tps_s) if tps_s else None
-                time_s = self.time_var.get().strip()
-                time_v = float(time_s) if time_s else None
-                if time_v and tps:
-                    tps = None
-                if tps:
-                    params["tps"] = tps
-                    log.info(f"_process_item[{idx}]: manual set tps={tps}")
-                if time_v:
-                    params["time"] = time_v
-                    log.info(f"_process_item[{idx}]: manual set time={time_v}")
-                scramble_s = self.scramble_var.get().strip()
-                if scramble_s:
-                    params["scramble"] = scramble_s
-                    log.info(f"_process_item[{idx}]: manual set scramble (len={len(scramble_s)})")
-                size_s = self.size_var.get().strip()
-                if size_s:
-                    params["size"] = size_s
-                    log.info(f"_process_item[{idx}]: manual set size={size_s}")
-                movetimes_s = self.movetimes_var.get().strip()
-                if movetimes_s:
-                    params["movetimes"] = [int(x.strip()) for x in movetimes_s.split(",")]
-                    log.info(f"_process_item[{idx}]: manual set movetimes (from text)")
-
-            log.info(f"_process_item[{idx}]: final params={ {k: v if not isinstance(v, list) or len(repr(v)) < 200 else f'<list len={len(v)}>' for k, v in params.items()} }")
-            log.info(f"_process_item[{idx}]: use_gpu={self.use_gpu_var.get()}")
-
-            filename_tps = params.get("tps", tps if mode == "url" else None)
-            filename_time = params.get("time", None)
-            base_name = _generate_filename(
-                solution, filename_tps, filename_time,
-                params.get("movetimes", -1), params.get("size"),
-                index=idx + 1, speed_factor=self._get_speed_factor(),
-                scramble=params.get("scramble"))
-            out_path = _pick_output_filename(output_dir, base_name)
-            log.info(f"_process_item[{idx}]: output={out_path}")
-
-            def on_progress(adjusted_cur, adjusted_tot, gpu_stats=None, use_gpu=False):
-                log.info(f"progress[{idx}]: adjusted_cur={adjusted_cur} adjusted_tot={adjusted_tot}")
-                if gpu_stats:
-                    gs = gpu_stats
-                    log.info(f"progress[{idx}]: gpu_stats: name={gs.get('gpu_name','?')}, mem={gs.get('mem_used_mb',0)}/{gs.get('total_mem_mb',0)}MB, batch={gs.get('batch_size',0)}, batch_idx={gs.get('batch_idx',0)}/{gs.get('num_batches',0)}")
-                self._on_item_progress(idx, adjusted_cur, adjusted_tot, gpu_stats=gpu_stats, use_gpu=use_gpu)
-
-            log.info(f"_process_item[{idx}]: calling generate_simple_replay with params={ {k: v if not isinstance(v, list) or len(repr(v)) < 200 else f'<list len={len(v)}>' for k, v in params.items()} }")
-            gen = ReplayVideoGenerator(cleanup_frames=False)
-            gen.generate_simple_replay(
-                solution=solution, output_path=out_path,
-                show_progress=False, external_progress_cb=on_progress,
-                use_gpu=self.use_gpu_var.get(),
-                cancel_check=lambda: self.cancel_flag, **params)
-            log.info(f"_process_item[{idx}]: generate_simple_replay completed")
-
-            if not self.cancel_flag:
-                self._item_progress[idx]["path"] = out_path
-                self.after(0, lambda p=out_path: self._add_to_list(p))
-                if self.upscale_var.get() and self._get_quality() < 1440:
-                    stem, ext = os.path.splitext(out_path)
-                    upscaled_path = f"{stem}_1440p60{ext}"
-                    self.after(0, lambda p=upscaled_path: os.path.exists(p) and self._add_to_list(p))
-        except CancelError:
-            log.info(f"_process_item[{idx}]: CANCELLED")
-            raise
-        except Exception as e:
-            log.error(f"_process_item[{idx}]: FAILED: {e}", exc_info=True)
-            self._item_progress[idx]["error"] = str(e)
-            self.after(0, lambda m=f"Item {idx+1} failed: {e}": self.progress_text.set(m))
-            raise
-
-    def _build_batch_items(self, items, output_dir):
-        """Convert GUI (mode, input_str) pairs into batch_render item dicts."""
-        batch_items = []
-        for idx, (mode, input_str) in enumerate(items):
-            params = {
-                "force_fringe": self.force_fringe_var.get(),
-                "quality": self._get_quality(),
-                "fps": self.fps_var.get(),
-                "compression": self.compression_var.get(),
-                "slow_render": self.slow_render_var.get(),
-                "speed_factor": self._get_speed_factor(),
-                "upscale": self.upscale_var.get(),
-                "encoder_override": "" if self.encoder_var.get() == "Auto" else self.encoder_var.get(),
-                "opts": RenderOptions(
+            try:
+                # Build params from current GUI settings + queue entry overrides
+                opts = RenderOptions(
                     grid_only=self.no_layout_var.get(),
                     no_border=self.no_border_var.get(),
                     no_secondary_border=self.no_secondary_border_var.get(),
@@ -958,100 +883,70 @@ class ReplayGUI(tb.Window):
                     no_header=self.no_header_var.get(),
                     no_details=self.no_details_var.get(),
                     dynamic_md=self.dynamic_md_var.get(),
-                ),
-            }
+                )
+                params = {
+                    "force_fringe": self.force_fringe_var.get(),
+                    "quality": self._get_quality(),
+                    "fps": self.fps_var.get(),
+                    "compression": self.compression_var.get(),
+                    "slow_render": self.slow_render_var.get(),
+                    "speed_factor": self._get_speed_factor(),
+                    "upscale": self.upscale_var.get(),
+                    "encoder_override": "" if self.encoder_var.get() == "Auto" else self.encoder_var.get(),
+                    "opts": opts,
+                }
 
-            if mode == "url":
-                solution, tps, scramble, movetimes = parse_replay_url(input_str)
-                if tps is not None:
-                    params["tps"] = tps
-                if scramble:
-                    params["scramble"] = scramble
-                if isinstance(movetimes, list) and len(movetimes) > 0:
-                    params["movetimes"] = movetimes
-            else:
-                solution = input_str
-                tps_s = self.tps_var.get().strip()
-                tps = float(tps_s) if tps_s else None
-                time_s = self.time_var.get().strip()
-                time_v = float(time_s) if time_s else None
-                if time_v and tps:
-                    tps = None
-                if tps:
-                    params["tps"] = tps
-                if time_v:
-                    params["time"] = time_v
-                scramble_s = self.scramble_var.get().strip()
-                if scramble_s:
-                    params["scramble"] = scramble_s
-                size_s = self.size_var.get().strip()
-                if size_s:
-                    params["size"] = size_s
-                movetimes_s = self.movetimes_var.get().strip()
-                if movetimes_s:
-                    params["movetimes"] = [int(x.strip()) for x in movetimes_s.split(",")]
+                solution = entry["solution"]
+                if entry["tps"] is not None:
+                    params["tps"] = entry["tps"]
+                if entry["scramble"]:
+                    params["scramble"] = entry["scramble"]
+                if isinstance(entry["movetimes"], list) and len(entry["movetimes"]) > 0:
+                    params["movetimes"] = entry["movetimes"]
+                if entry["time"]:
+                    params["time"] = entry["time"]
+                if entry["size"]:
+                    params["size"] = entry["size"]
 
-            out_path = _pick_output_filename(output_dir, _generate_filename(
-                solution, params.get("tps"), params.get("time"),
-                params.get("movetimes", -1), params.get("size"),
-                index=idx + 1, speed_factor=self._get_speed_factor(),
-                scramble=params.get("scramble")))
+                filename_tps = entry["tps"]
+                filename_time = entry["time"] if entry["time"] else None
+                base_name = _generate_filename(
+                    solution, filename_tps, filename_time,
+                    entry["movetimes"], entry["size"],
+                    index=idx + 1, speed_factor=self._get_speed_factor(),
+                    scramble=entry["scramble"] if entry["scramble"] else None)
+                out_path = _pick_output_filename(output_dir, base_name)
 
-            batch_items.append({"solution": solution, "output_path": out_path, **params})
-        return batch_items
+                def on_progress(adjusted_cur, adjusted_tot, desc=None, gpu_stats=None, use_gpu=False):
+                    self._on_item_progress(idx, adjusted_cur, adjusted_tot,
+                                           desc=desc, gpu_stats=gpu_stats, use_gpu=use_gpu)
 
-    def _process_batch(self, items, output_dir):
-        """Run batch_render on all items in a single background thread."""
-        batch_items = self._build_batch_items(items, output_dir)
-        total = len(batch_items)
-        log.info(f"_process_batch: {total} items prepared")
-        _pb_start = time.time()
-        _pb_last = [0.0]
-        _pb_prev = [0]
+                log.info(f"_process_queue[{idx}]: rendering {entry['display_name']}")
+                gen.generate_simple_replay(
+                    solution=solution, output_path=out_path,
+                    show_progress=False, external_progress_cb=on_progress,
+                    use_gpu=self.use_gpu_var.get(),
+                    cancel_check=lambda: self.cancel_flag, **params)
+                log.info(f"_process_queue[{idx}]: completed")
 
-        def _fmt(t):
-            return f"{t:.1f}s" if t < 60 else f"{int(t//60)}m {t%60:.0f}s"
+                if not self.cancel_flag:
+                    self._item_progress[idx]["path"] = out_path
+                    self.after(0, lambda p=out_path: self._add_to_list(p))
+                    if self.upscale_var.get() and self._get_quality() < 1440:
+                        stem, ext = os.path.splitext(out_path)
+                        upscaled_path = f"{stem}_1440p60{ext}"
+                        self.after(0, lambda p=upscaled_path: os.path.exists(p) and self._add_to_list(p))
+            except CancelError:
+                self._item_progress[idx]["cancelled"] = True
+                raise
+            except Exception as e:
+                log.error(f"_process_queue[{idx}]: FAILED: {e}", exc_info=True)
+                self._item_progress[idx]["error"] = str(e)
 
-        def on_progress(cur, _tot, **_):
-            if self.cancel_flag:
-                return
-            now = time.time()
-            dt = now - _pb_last[0]
-            dc = cur - _pb_prev[0]
-            _pb_last[0] = now
-            _pb_prev[0] = cur
-            elapsed = now - _pb_start
-            rate = dc / dt if dt > 0 else 0
-            remaining = total - cur
-            eta = remaining / rate if rate > 0 else 0
-            expected = elapsed + eta
-            pct = cur * 100 / total
-            exp_str = _fmt(expected) if rate > 0 and expected < elapsed * 100 else "?"
-            label = f"{cur}/{total} — {_fmt(elapsed)}/{exp_str}"
-            self.after(0, lambda v=pct: self.progress_bar.configure(value=v))
-            self.after(0, lambda t=f"{label}": self.progress_text.set(t))
+        # All items processed
+        log.info("_process_queue: all items done")
 
-        try:
-            gen = ReplayVideoGenerator()
-            paths = gen.batch_render(
-                batch_items,
-                use_gpu=self.use_gpu_var.get(),
-                show_progress=False,
-                external_progress_cb=on_progress,
-                cancel_check=lambda: self.cancel_flag,
-            )
-            log.info(f"_process_batch: completed {len(paths)} items")
-            for p in paths:
-                self.after(0, lambda p=p: self._add_to_list(p))
-            return paths
-        except CancelError:
-            log.info("_process_batch: CANCELLED")
-            raise
-        except Exception as e:
-            log.error(f"_process_batch: FAILED: {e}", exc_info=True)
-            raise
-
-    def _on_item_progress(self, idx, adjusted_cur, adjusted_tot, gpu_stats=None, use_gpu=False):
+    def _on_item_progress(self, idx, adjusted_cur, adjusted_tot, desc=None, gpu_stats=None, use_gpu=False):
         item = self._item_progress[idx]
         item["adjusted_cur"] = adjusted_cur
         item["adjusted_tot"] = adjusted_tot
@@ -1059,98 +954,80 @@ class ReplayGUI(tb.Window):
             item["gpu_stats"] = gpu_stats
         if use_gpu:
             item["is_gpu"] = True
+        if desc:
+            item["desc"] = desc
 
     def _cancel(self):
         self.cancel_flag = True
         if self._executor:
             self._executor.shutdown(wait=False)
-        self.progress_text.set("Cancelling...")
+        self.pb_overall_text.set("Cancelling...")
 
-    def _poll_batch(self):
+    def _poll_queue(self):
         if not self._batch_futures:
             return
+        fut = self._batch_futures[0]
+        total = len(self.render_queue)
 
-        total = len(self._batch_futures)
-        done_count = sum(1 for f in self._batch_futures if f.done())
-
-        # Batch mode (single future from _process_batch)
-        if getattr(self, '_is_batch', False):
-            fut = self._batch_futures[0]
-            if not fut.done():
-                self.after(500, self._poll_batch)
-                return
+        if not fut.done():
+            # Update overall bar
+            done_count = sum(1 for p in self._item_progress.values() if p.get("path"))
             elapsed = time.time() - self._start_time
             elapsed_str = f"{elapsed:.1f}s" if elapsed < 60 else f"{int(elapsed//60)}m {elapsed%60:.0f}s"
-            try:
-                paths = fut.result()
-                self.progress_text.set(f"{len(paths)} replay(s) generated. {elapsed_str}")
-            except CancelError:
-                self.progress_text.set(f"Cancelled. {elapsed_str}")
-            except Exception as e:
-                self.progress_text.set(f"Batch failed: {e}. {elapsed_str}")
-            self.progress_bar["value"] = 100
-            self._set_ui_busy(False)
-            if self._executor:
-                self._executor.shutdown(wait=False)
-                self._executor = None
-            self._batch_futures = []
-            self._is_batch = False
-            return
 
-        # Single-item mode (per-item futures)
-        log.info(f"_poll_batch: done={done_count}/{total}")
+            overall_pct = (done_count * 100) // total if total else 0
+            if overall_pct > 0 and not self.cancel_flag:
+                self.overall_bar["value"] = min(overall_pct, 99)
 
-        overall_pct = 0.0
-        running = 0
-        for p in self._item_progress.values():
-            share = 1.0 / total
-            completion = min(p["adjusted_cur"] / p["adjusted_tot"], 1.0) if p["adjusted_tot"] > 0 else 0
-            overall_pct += share * completion
-            if not p["done"]:
-                running += 1
-
-        overall_pct *= 100
-
-        now = time.time()
-        dt = now - self._last_poll_time
-        dp = overall_pct - self._last_poll_pct
-        if dt > 0.5 and dp >= 0:
-            inst = dp / dt
-            self._rolling_rate = inst if self._rolling_rate <= 0 else self._rolling_rate * 0.7 + inst * 0.3
-        self._last_poll_time = now
-        self._last_poll_pct = overall_pct
-
-        elapsed = time.time() - self._start_time
-        elapsed_str = f"{elapsed:.1f}s" if elapsed < 60 else f"{int(elapsed//60)}m {elapsed%60:.0f}s"
-
-        if not self.cancel_flag:
-            display_pct = min(overall_pct, 99.0) if running else overall_pct
-            self.progress_bar["value"] = display_pct
-
-            expected_str = ""
-            if overall_pct > 1 and running:
-                eta = (100 - overall_pct) / self._rolling_rate if self._rolling_rate > 0 else 0
-                expected = elapsed + eta
-                if expected < elapsed * 100:
-                    exp_s = f"{expected:.1f}s" if expected < 60 else f"{int(expected//60)}m {expected%60:.0f}s"
-                    expected_str = f"/{exp_s}"
+            # Simple ETA: avg time per completed item × remaining items
+            remaining = total - done_count
+            eta_str = ""
+            if done_count > 0 and remaining > 0:
+                avg_per_item = elapsed / done_count
+                eta_secs = avg_per_item * remaining
+                if eta_secs < 60:
+                    eta_str = f" ~{eta_secs:.0f}s"
                 else:
-                    expected_str = "/?"
+                    eta_str = f" ~{int(eta_secs//60)}m {eta_secs%60:.0f}s"
+            self.pb_overall_text.set(f"{done_count}/{total} — {elapsed_str}{eta_str}")
 
-            gpu_str = ""
-            for p in self._item_progress.values():
+            # Update detail bar from current item
+            cur_idx = self._current_item_idx
+            if cur_idx is not None and cur_idx >= 0 and cur_idx < total:
+                p = self._item_progress[cur_idx]
+                cur = p["adjusted_cur"]
+                tot = p["adjusted_tot"]
+                if tot > 0:
+                    detail_pct = min(cur * 100 // tot, 100)
+                    self.detail_bar["value"] = detail_pct
+                desc = p.get("desc", "")
+                gs = p.get("gpu_stats")
+                detail_parts = []
+                if desc:
+                    detail_parts.append(f"{desc}:")
+                detail_parts.append(f"{cur}/{tot} ({self.detail_bar['value'] if tot > 0 else 0}%)")
+                if gs and gs.get("batch_size"):
+                    detail_parts.append(f"GPU: {gs.get('mem_used_mb', 0)}/{gs.get('total_mem_mb', 0)} MB")
+                self.pb_detail_text.set(" ".join(detail_parts))
+
+                gpu_str = ""
                 gs = p.get("gpu_stats")
                 if gs and gs.get("batch_size"):
                     gpu_str = f"GPU: {gs.get('gpu_name', '?')} | VRAM: {gs.get('mem_used_mb', 0)}/{gs.get('total_mem_mb', 0)} MB | Batch: {gs.get('batch_size', 0)} frames"
-                    break
-            self._gpu_info_var.set(gpu_str)
-            self.progress_text.set(f"{elapsed_str}{expected_str} ({display_pct:.0f}%)")
+                self._gpu_info_var.set(gpu_str)
 
-        if done_count == total:
+            self.after(500, self._poll_queue)
+            return
+
+        # Future done — final summary
+        elapsed = time.time() - self._start_time
+        elapsed_str = f"{elapsed:.1f}s" if elapsed < 60 else f"{int(elapsed//60)}m {elapsed%60:.0f}s"
+        try:
+            fut.result()
+            done_count = sum(1 for p in self._item_progress.values() if p.get("path"))
             errors = sum(1 for p in self._item_progress.values() if p["error"])
             cancelled = sum(1 for p in self._item_progress.values() if p.get("cancelled"))
             ok_count = done_count - errors - cancelled
-            took = f"took {elapsed_str}"
             parts = []
             if ok_count:
                 parts.append(f"{ok_count} replay(s) generated")
@@ -1158,17 +1035,27 @@ class ReplayGUI(tb.Window):
                 parts.append(f"{cancelled} cancelled")
             if errors:
                 parts.append(f"{errors} failed")
-            msg = " — ".join(parts) + f". {took}" if parts else f"Cancelled. {took}"
-            self.progress_text.set(msg)
-            self.progress_bar["value"] = 100
-            self._set_ui_busy(False)
-            if self._executor:
-                self._executor.shutdown(wait=False)
-                self._executor = None
-            self._batch_futures = []
-            return
+            msg = " — ".join(parts) + f". {elapsed_str}" if parts else f"Done. {elapsed_str}"
+            self.pb_overall_text.set(msg)
+        except CancelError:
+            done_count = sum(1 for p in self._item_progress.values() if p.get("path"))
+            self.pb_overall_text.set(f"Cancelled. {done_count} completed. {elapsed_str}")
+        except Exception as e:
+            done_count = sum(1 for p in self._item_progress.values() if p.get("path"))
+            self.pb_overall_text.set(f"Render failed: {e}. {done_count} completed. {elapsed_str}")
 
-        self.after(1000, self._poll_batch)
+        self.overall_bar["value"] = 100
+        self.detail_bar["value"] = 100
+        self._gpu_info_var.set("")
+        self._set_ui_busy(False)
+        if self._executor:
+            self._executor.shutdown(wait=False)
+            self._executor = None
+        self._batch_futures = []
+        self._current_item_idx = -1
+        # Clear queue after render
+        self.render_queue.clear()
+        self._refresh_queue_display()
 
     def _add_to_list(self, path):
         self.generated_files.append(path)
@@ -1194,6 +1081,8 @@ class ReplayGUI(tb.Window):
     def _set_ui_busy(self, busy):
         st = "disabled" if busy else "normal"
         self.gen_btn.config(state=st)
+        self.add_btn.config(state=st)
+        self.clear_input_btn.config(state=st)
         self.cancel_btn.config(state="normal" if busy else "disabled")
 
     def _on_close(self):

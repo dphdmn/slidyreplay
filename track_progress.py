@@ -156,7 +156,7 @@ class ProgressTracker:
 
         # External callback (GUI)
         if self.external_cb:
-            self.external_cb(out_cur, 100, gpu_stats=gpu_stats, use_gpu=use_gpu, **extra)
+            self.external_cb(out_cur, 100, desc=self.desc, gpu_stats=gpu_stats, use_gpu=use_gpu, **extra)
 
     __call__ = update
 
