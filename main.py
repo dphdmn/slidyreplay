@@ -169,7 +169,7 @@ class ReplayGUI(tb.Window):
         super().__init__(themename="darkly")
         self.withdraw()
         self.title("Replay Video Generator")
-        self.minsize(750, 500)
+        self.minsize(750, 700)
 
         self.generated_files = []
         self.render_queue = []
@@ -236,9 +236,9 @@ class ReplayGUI(tb.Window):
         root.pack(fill="both", expand=True)
 
         # ── Three-column layout using grid ──
-        root.grid_columnconfigure(0, weight=1, minsize=250)
-        root.grid_columnconfigure(1, weight=0, minsize=250)
-        root.grid_columnconfigure(2, weight=1, minsize=250)
+        root.grid_columnconfigure(0, weight=0, minsize=300)
+        root.grid_columnconfigure(1, weight=1, minsize=400)
+        root.grid_columnconfigure(2, weight=1, minsize=300)
         root.grid_rowconfigure(0, weight=1)
 
         # ======== COLUMN 0: SETTINGS ========
@@ -477,7 +477,7 @@ class ReplayGUI(tb.Window):
                        bootstyle="round-toggle").grid(row=2, column=2, sticky="w")
 
         # ======== COLUMN 1: UNIFIED INPUT + OVERRIDES ========
-        mid = tb.Frame(root, width=250)
+        mid = tb.Frame(root)
         mid.grid(row=0, column=1, sticky="ns", padx=(3, 3))
         mid.grid_propagate(False)
         mid.grid_columnconfigure(0, weight=1)
@@ -661,7 +661,7 @@ class ReplayGUI(tb.Window):
 
     def _center_window(self):
         self.update_idletasks()
-        w, h = 1400, 720
+        w, h = 1200, 720
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
         self.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
