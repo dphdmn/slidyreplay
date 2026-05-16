@@ -1023,13 +1023,15 @@ def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info, canvas, 
         overlay_surface(line, gs_lf, CYAN, gs_x, stage_y_positions[cur_stage])
 
 
-def prerender_tile_layers(width, height, tile_size, font_size, opts, all_fringe_schemes, grid_states):
+def prerender_tile_layers(width, height, tile_size, font_size, opts, all_fringe_schemes, grid_states, cancel_check=None):
     w, h = width, height
     ts = tile_size
 
     base_sprites = {}
 
     for state in grid_states.values():
+        if cancel_check and cancel_check():
+            raise CancelError()
         if len(state["mainColors"]) != 1:
             continue
         mc = state["mainColors"][0]
@@ -1098,7 +1100,7 @@ def prerender_tile_layers(width, height, tile_size, font_size, opts, all_fringe_
     )
 
 
-def build_composite_atlas(tile_sprites, w, h, font_size, opts, grid_states, all_fringe_schemes):
+def build_composite_atlas(tile_sprites, w, h, font_size, opts, grid_states, all_fringe_schemes, cancel_check=None):
     """Pre-render composite tiles: base + number + bar into single RGBA PIL Image per (state, num).
     Returns (composite_images, composite_lookup):
       composite_images: list of PIL RGBA Images (atlas entries, all tile_size×tile_size)
@@ -1109,6 +1111,8 @@ def build_composite_atlas(tile_sprites, w, h, font_size, opts, grid_states, all_
     ts = tile_sprites.tile_size
 
     for state_key, state in grid_states.items():
+        if cancel_check and cancel_check():
+            raise CancelError()
         if not isinstance(state_key, (int, float)):
             continue
         state_sig = id(state)
@@ -1438,7 +1442,9 @@ def generate_frames(
     font_size = layout["font_size"]
     log.info(f"  tile_size={tile_size}, pad={layout['pad']}, header_h={layout['header_h']}, panel_w={layout['panel_w']}, font_size={font_size}")
 
-    tile_sprites = prerender_tile_layers(w, h, tile_size, font_size, opts, all_fringe_schemes, grid_states)
+    tile_sprites = prerender_tile_layers(w, h, tile_size, font_size, opts, all_fringe_schemes, grid_states, cancel_check=cancel_check)
+    if cancel_check and cancel_check():
+        raise CancelError()
     log.info(f"  tile_sprites: {len(tile_sprites.base_sprites)} bases, {len(tile_sprites.number_texts)} numbers, {len(tile_sprites.bar_sprites)} bars")
 
     all_md = calculate_manhattan_distance(matrix)
@@ -1506,8 +1512,10 @@ def generate_frames(
     filtered_grid_states = {k: v for k, v in grid_states.items()
                             if not isinstance(k, (int, float)) or id(v) in needed_state_ids}
     composite_images, composite_lookup = build_composite_atlas(
-        tile_sprites, w, h, font_size, opts, filtered_grid_states, all_fringe_schemes
+        tile_sprites, w, h, font_size, opts, filtered_grid_states, all_fringe_schemes, cancel_check=cancel_check
     )
+    if cancel_check and cancel_check():
+        raise CancelError()
 
     # Optional GPU acceleration for tile grid rendering
     puzzle_w_est = w * tile_size
@@ -1518,6 +1526,8 @@ def generate_frames(
             from gpu_renderer import GPURenderer
             gpu = GPURenderer(w, h, tile_size, pad=layout["pad"], header_h=layout["header_h"], panel_w=layout["panel_w"], canvas_w=layout["canvas_w"], canvas_h=layout["canvas_h"], opts=opts)
         if gpu.available:
+            if cancel_check and cancel_check():
+                raise CancelError()
             gpu.upload_composite_atlas(composite_images, composite_lookup)
         use_gpu = use_gpu and gpu.available
         log.info(f"  canvas={gpu.canvas_w}x{gpu.canvas_h}, GPU available={gpu.available}, use_gpu={use_gpu}")
@@ -1528,6 +1538,9 @@ def generate_frames(
         log.info(f"  Python={sys.version.split()[0]}, torch={_torch_snapshot.__version__}, CUDA={_torch_snapshot.version.cuda}")
 
     # (tile color cache removed — was only consumed by dead CPU-only _build_tile_colors_np)
+
+    if cancel_check and cancel_check():
+        raise CancelError()
 
     # ── Stage 2: precompute data only for states that will be rendered ──
 
@@ -1634,7 +1647,11 @@ def generate_frames(
     _prog_count = 0 if states_needed[0] == 0 else 1  # state 0 already processed separately
     prev_delta_matrix = None
     prev_state_sig = None
+    _cancel_check_counter = 0
     for frame_idx in range(sol_len + 1):
+        _cancel_check_counter += 1
+        if _cancel_check_counter % 500 == 0 and cancel_check and cancel_check():
+            raise CancelError()
         if frame_idx in states_needed_set:
             if frame_idx == 0:
                 state = state0
@@ -2054,7 +2071,7 @@ class ReplayVideoGenerator:
                 prog(scaled, _analysis_weight)
 
         if not force_fringe:
-            grids_data = analyse_grids_initial(matrix, solution_expanded, progress_callback=_analysis_prog)
+            grids_data = analyse_grids_initial(matrix, solution_expanded, progress_callback=_analysis_prog, cancel_check=cancel_check)
         else:
             grids_data = {
                 "enableGridsStatus": -1,
@@ -2089,6 +2106,9 @@ class ReplayVideoGenerator:
         if prog:
             prog(_analysis_weight, _analysis_weight)
 
+        if cancel_check and cancel_check():
+            raise CancelError()
+
         # ── Stage: Timing ──
         _t_timing_start = time_module.time()
         if isinstance(movetimes, list) and len(movetimes) > 0:
@@ -2111,6 +2131,8 @@ class ReplayVideoGenerator:
 
         _t_prerender_end = time_module.time()
         log.info(f"  pre-render stages total took {_t_prerender_end - _t_analysis_start:.3f}s (analysis={_t_analysis_end - _t_analysis_start:.3f}s, timing={_t_timing_end - _t_timing_start:.3f}s)")
+        if cancel_check and cancel_check():
+            raise CancelError()
         log.info(f"  calling generate_frames: fringe_schemes={len(all_fringe_schemes)}, grid_states_keys={len(grid_states)}, delays={len(delays)}, fake_times={len(fake_times)}")
         _orig_cmt = original_custom_move_times
         frames, frame_state_map = generate_frames(

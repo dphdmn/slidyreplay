@@ -6,7 +6,7 @@ from typing import List, Dict, Tuple, Optional, Callable
 from concurrent.futures import ThreadPoolExecutor
 
 from sliding_puzzles import _MOVE_DIRS, move_matrix_inplace, find_zero
-from debug_log import get_logger
+from debug_log import get_logger, CancelError
 
 log = get_logger()
 
@@ -129,7 +129,9 @@ def _apply_offset(skeleton, new_offset):
 
 
 
-def analyse_grids(matrix, solution, width_initial, height_initial, width, height, offset_w, offset_h, moves_offset, shape_cache=None, progress_callback=None, progress_total=None, _timing=None, _lock=None, _row_of=None, _col_of=None):
+def analyse_grids(matrix, solution, width_initial, height_initial, width, height, offset_w, offset_h, moves_offset, shape_cache=None, progress_callback=None, progress_total=None, _timing=None, _lock=None, _row_of=None, _col_of=None, cancel_check=None):
+    if cancel_check and cancel_check():
+        raise CancelError()
     if _timing is None:
         _timing = {"main_loop": 0.0, "scan_fwd": 0.0, "get_parts": 0.0, "n_calls": 0}
     if _lock is None:
@@ -530,7 +532,7 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
 
         if child_args:
             def run_child(idx, mat, sol, w, h, ow, oh, off, key):
-                r = analyse_grids(mat, sol, width_initial, height_initial, w, h, ow, oh, off, shape_cache, progress_callback, progress_total, _timing, _lock, _row_of, _col_of)
+                r = analyse_grids(mat, sol, width_initial, height_initial, w, h, ow, oh, off, shape_cache, progress_callback, progress_total, _timing, _lock, _row_of, _col_of, cancel_check=cancel_check)
                 shape_cache[key] = _to_relative(r, off)
                 return r
 
@@ -568,7 +570,7 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
     }
 
 
-def analyse_grids_initial(matrix, solution, progress_callback=None):
+def analyse_grids_initial(matrix, solution, progress_callback=None, cancel_check=None):
     _t0 = time.time()
     h = len(matrix)
     w = len(matrix[0])
@@ -577,7 +579,7 @@ def analyse_grids_initial(matrix, solution, progress_callback=None):
     _col_of = np.arange(total_cells) % w
     _timing = {"main_loop": 0.0, "scan_fwd": 0.0, "get_parts": 0.0, "n_calls": 0}
     _lock = threading.Lock()
-    result = analyse_grids(matrix, solution, w, h, w, h, 0, 0, 0, shape_cache={}, progress_callback=progress_callback, progress_total=len(solution), _timing=_timing, _lock=_lock, _row_of=_row_of, _col_of=_col_of)
+    result = analyse_grids(matrix, solution, w, h, w, h, 0, 0, 0, shape_cache={}, progress_callback=progress_callback, progress_total=len(solution), _timing=_timing, _lock=_lock, _row_of=_row_of, _col_of=_col_of, cancel_check=cancel_check)
     elapsed = time.time() - _t0
     log.info(f"  grids analysis: {_timing['n_calls']} calls, {elapsed:.3f}s wall clock")
     return result
