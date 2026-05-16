@@ -13,11 +13,40 @@ log = get_logger()
 CT_MAP = {'fringe': 1, 'grids1': 2, 'grids2': 3}
 
 
+def _wrong_tiles(mc_2d, full_h, full_w, _row_of, _col_of):
+    all_safe = mc_2d - 1
+    all_safe = np.where(mc_2d == 0, 0, all_safe)
+    ar_all = _row_of[all_safe]
+    ac_all = _col_of[all_safe]
+    exp_rows_all = np.arange(full_h)[:, None]
+    exp_cols_all = np.arange(full_w)[None, :]
+    solved_all = (mc_2d != 0) & (ar_all == exp_rows_all) & (ac_all == exp_cols_all)
+    wrong = (mc_2d != 0) & ~solved_all
+    return np.unique(mc_2d[wrong])
+
+def _corner_solved(mc_2d, full_h, full_w, _row_of, _col_of):
+    corner_h = min(5, full_h)
+    corner_w = min(5, full_w)
+    if corner_h < 5 or corner_w < 5:
+        return False
+    corner = mc_2d[full_h - corner_h:, full_w - corner_w:]
+    mask = corner != 0
+    if np.sum(mask) < corner_h * corner_w * 0.5:
+        return False
+    corner_vals = corner[mask] - 1
+    ar = _row_of[corner_vals]
+    ac = _col_of[corner_vals]
+    rows, cols = np.where(mask)
+    solved_count = np.sum((ar == rows + full_h - corner_h) & (ac == cols + full_w - corner_w))
+    return solved_count >= corner_h * corner_w * 0.5
+
 def _check_gs(mc_2d, width, height, offset_w, offset_h,
               can_split_tb, can_split_lr, tb_new_h, lr_new_w,
               tb_exp_rows_bc, tb_exp_cols_bc,
               lr_exp_rows_bc, lr_exp_cols_bc,
-              _row_of, _col_of):
+              _row_of, _col_of, full_h, full_w, cycled=np.array([], dtype=np.int32)):
+    if len(cycled) == 0:
+        cycled = _wrong_tiles(mc_2d, full_h, full_w, _row_of, _col_of) if _corner_solved(mc_2d, full_h, full_w, _row_of, _col_of) else np.array([], dtype=np.int32)
     gs = 0
     if can_split_tb:
         sub = mc_2d[offset_h:tb_new_h, offset_w:offset_w + width]
@@ -25,14 +54,20 @@ def _check_gs(mc_2d, width, height, offset_w, offset_h,
         if not np.any(nonzero):
             gs = 1
         else:
+            all_vals = sub - 1
+            actual_rows = _row_of[all_vals]
+            actual_cols = _col_of[all_vals]
+            solved = nonzero & (actual_rows == tb_exp_rows_bc) & (actual_cols == tb_exp_cols_bc)
+            n_solved = np.sum(solved)
+            total = width * (tb_new_h - offset_h)
             vals = sub[nonzero] - 1
             targets = _row_of[vals]
-            if not np.any(targets >= tb_new_h):
-                all_vals = sub - 1
-                actual_rows = _row_of[all_vals]
-                actual_cols = _col_of[all_vals]
-                solved = nonzero & (actual_rows == tb_exp_rows_bc) & (actual_cols == tb_exp_cols_bc)
-                if width * (tb_new_h - offset_h) / 3 > np.sum(solved):
+            if not np.any(targets >= tb_new_h) and total / 3 > n_solved:
+                gs = 1
+            elif gs == 0 and len(cycled) > 0:
+                not_cycled = ~np.isin(vals + 1, cycled)
+                filtered = targets[not_cycled]
+                if len(filtered) == 0 or not np.any(filtered >= tb_new_h):
                     gs = 1
     if gs == 0 and can_split_lr:
         sub = mc_2d[offset_h:offset_h + height, offset_w:lr_new_w]
@@ -40,14 +75,20 @@ def _check_gs(mc_2d, width, height, offset_w, offset_h,
         if not np.any(nonzero):
             gs = 2
         else:
+            all_vals = sub - 1
+            actual_rows = _row_of[all_vals]
+            actual_cols = _col_of[all_vals]
+            solved = nonzero & (actual_rows == lr_exp_rows_bc) & (actual_cols == lr_exp_cols_bc)
+            n_solved = np.sum(solved)
+            total = height * (lr_new_w - offset_w)
             vals = sub[nonzero] - 1
             targets = _col_of[vals]
-            if not np.any(targets >= lr_new_w):
-                all_vals = sub - 1
-                actual_rows = _row_of[all_vals]
-                actual_cols = _col_of[all_vals]
-                solved = nonzero & (actual_rows == lr_exp_rows_bc) & (actual_cols == lr_exp_cols_bc)
-                if height * (lr_new_w - offset_w) / 3 > np.sum(solved):
+            if not np.any(targets >= lr_new_w) and total / 3 > n_solved:
+                gs = 2
+            elif gs == 0 and len(cycled) > 0:
+                not_cycled = ~np.isin(vals + 1, cycled)
+                filtered = targets[not_cycled]
+                if len(filtered) == 0 or not np.any(filtered >= lr_new_w):
                     gs = 2
     return gs
 
@@ -56,7 +97,7 @@ def _check_solved(mc_2d, enable_gs, width, height, offset_w, offset_h,
                   tb_new_h, lr_new_w, can_split_tb, can_split_lr,
                   tb_gs_full_rows, tb_gs_full_cols,
                   lr_gs_full_rows, lr_gs_full_cols,
-                  _row_of, _col_of):
+                  _row_of, _col_of, cycled_tiles=None):
     if enable_gs == 1 and can_split_tb:
         sub = mc_2d[offset_h:tb_new_h, offset_w:offset_w + width]
         nonzero = sub != 0
@@ -68,7 +109,14 @@ def _check_solved(mc_2d, enable_gs, width, height, offset_w, offset_h,
         nzf = nonzero.ravel()
         exp_rows_sub = tb_gs_full_rows[nzf]
         exp_cols_sub = tb_gs_full_cols[nzf]
-        return np.all((actual_rows == exp_rows_sub) & (actual_cols == exp_cols_sub))
+        correct = (actual_rows == exp_rows_sub) & (actual_cols == exp_cols_sub)
+        if np.all(correct):
+            return True
+        if cycled_tiles is not None and len(cycled_tiles) > 0:
+            wrong_vals = sub[nonzero][~correct]
+            if np.all(np.isin(wrong_vals, cycled_tiles)):
+                return True
+        return False
     if enable_gs == 2 and can_split_lr:
         sub = mc_2d[offset_h:offset_h + height, offset_w:lr_new_w]
         nonzero = sub != 0
@@ -80,8 +128,99 @@ def _check_solved(mc_2d, enable_gs, width, height, offset_w, offset_h,
         nzf = nonzero.ravel()
         exp_rows_sub = lr_gs_full_rows[nzf]
         exp_cols_sub = lr_gs_full_cols[nzf]
-        return np.all((actual_rows == exp_rows_sub) & (actual_cols == exp_cols_sub))
+        correct = (actual_rows == exp_rows_sub) & (actual_cols == exp_cols_sub)
+        if np.all(correct):
+            return True
+        if cycled_tiles is not None and len(cycled_tiles) > 0:
+            wrong_vals = sub[nonzero][~correct]
+            if np.all(np.isin(wrong_vals, cycled_tiles)):
+                return True
+        return False
     return True
+
+
+def _detect_region_cycled(mc_2d, enable_gs, width, height, offset_w, offset_h,
+                          width_initial, _row_of, _col_of, max_cycled=4):
+    if enable_gs == 1:
+        new_h = math.ceil(height / 2) + offset_h
+        sub = mc_2d[offset_h:new_h, offset_w:offset_w + width]
+    elif enable_gs == 2:
+        new_w = math.ceil(width / 2) + offset_w
+        sub = mc_2d[offset_h:offset_h + height, offset_w:new_w]
+    else:
+        return np.array([], dtype=np.int32)
+
+    nonzero = sub != 0
+    if not np.any(nonzero):
+        return np.array([], dtype=np.int32)
+
+    nonzero_vals = sub[nonzero]
+    vals_idx = nonzero_vals - 1
+    actual_rows = _row_of[vals_idx]
+    actual_cols = _col_of[vals_idx]
+
+    nz_flat_idx = np.flatnonzero(nonzero)
+    if enable_gs == 1:
+        sub_w = width
+        exp_rows = np.arange(offset_h, new_h)[nz_flat_idx // sub_w]
+        exp_cols = np.arange(offset_w, offset_w + width)[nz_flat_idx % sub_w]
+    else:
+        sub_w = new_w - offset_w
+        sub_h = height
+        exp_rows = np.arange(offset_h, offset_h + height)[nz_flat_idx // sub_w]
+        exp_cols = np.arange(offset_w, new_w)[nz_flat_idx % sub_w]
+
+    correct = (actual_rows == exp_rows) & (actual_cols == exp_cols)
+    wrong_mask = ~correct
+    if not np.any(wrong_mask):
+        return np.array([], dtype=np.int32)
+
+    wrong_vals = nonzero_vals[wrong_mask]
+    region_area = sub.shape[0] * sub.shape[1]
+    effective_max = min(max_cycled, max(1, region_area // 6))
+    if len(wrong_vals) > effective_max:
+        return np.array([], dtype=np.int32)
+
+    return np.unique(wrong_vals)
+
+
+def _detect_global_cycled(matrix, solution, width_initial, height_initial, _row_of, _col_of):
+    sol_len = len(solution)
+    if sol_len < 50:
+        return np.array([], dtype=np.int32)
+    mc_flat = np.array(matrix, dtype=np.int32).flatten()
+    zp = find_zero(matrix, width_initial, height_initial)
+    zp_idx = zp[0] * width_initial + zp[1]
+    early = int(0.97 * sol_len)
+    late = int(0.99 * sol_len)
+    safe_w = max(1, width_initial // 2)
+    safe_h = max(1, height_initial // 2)
+    safe_r = max(0, height_initial - safe_h)
+    safe_c = max(0, width_initial - safe_w)
+    core = np.ones((height_initial, width_initial), dtype=bool)
+    core[safe_r:, safe_c:] = False
+    min_unsolved = 10**9
+    best = np.array([], dtype=np.int32)
+    for mi in range(late):
+        move = solution[mi]
+        move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
+        dr, dc = _MOVE_DIRS[move]
+        zp_idx += dr * width_initial + dc
+        if mi < early:
+            continue
+        mc_2d = mc_flat.reshape(height_initial, width_initial)
+        all_vals = mc_2d - 1
+        ar = _row_of[all_vals.ravel()].reshape(height_initial, width_initial)
+        ac = _col_of[all_vals.ravel()].reshape(height_initial, width_initial)
+        exp_r = np.arange(height_initial)[:, None]
+        exp_c = np.arange(width_initial)[None, :]
+        solved = (ar == exp_r) & (ac == exp_c)
+        wrong = (mc_2d != 0) & ~solved & core
+        count = np.count_nonzero(wrong)
+        if count < min_unsolved:
+            min_unsolved = count
+            best = np.unique(mc_2d[wrong])
+    return best
 
 
 def get_grids_parts(matrix_before, solution, width, height):
@@ -109,6 +248,7 @@ def _to_relative(node, base_offset):
         "offsetW": node["offsetW"], "offsetH": node["offsetH"],
         "nextLayerFirst": _to_relative(node.get("nextLayerFirst"), base_offset),
         "nextLayerSecond": _to_relative(node.get("nextLayerSecond"), base_offset),
+        "cycledTiles": node.get("cycledTiles", []),
     }
     return shifted
 
@@ -124,16 +264,17 @@ def _apply_offset(skeleton, new_offset):
         "offsetW": skeleton["offsetW"], "offsetH": skeleton["offsetH"],
         "nextLayerFirst": _apply_offset(skeleton.get("nextLayerFirst"), new_offset),
         "nextLayerSecond": _apply_offset(skeleton.get("nextLayerSecond"), new_offset),
+        "cycledTiles": skeleton.get("cycledTiles", []),
     }
     return shifted
 
 
 
-def analyse_grids(matrix, solution, width_initial, height_initial, width, height, offset_w, offset_h, moves_offset, shape_cache=None, progress_callback=None, progress_total=None, _timing=None, _lock=None, _row_of=None, _col_of=None, cancel_check=None):
+def analyse_grids(matrix, solution, width_initial, height_initial, width, height, offset_w, offset_h, moves_offset, shape_cache=None, progress_callback=None, progress_total=None, _timing=None, _lock=None, _row_of=None, _col_of=None, cancel_check=None, global_cycled=None):
     if cancel_check and cancel_check():
         raise CancelError()
     if _timing is None:
-        _timing = {"main_loop": 0.0, "scan_fwd": 0.0, "get_parts": 0.0, "n_calls": 0}
+        _timing = {"main_loop": 0.0, "scan_fwd": 0.0, "scan_cycles": 0.0, "get_parts": 0.0, "n_calls": 0}
     if _lock is None:
         _lock = threading.Lock()
     _timing["n_calls"] += 1
@@ -178,7 +319,7 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
         return {"enableGridsStatus": -1, "width": width, "height": height, "offsetW": offset_w, "offsetH": offset_h}
 
     # Shared args dict to reduce parameter passing
-    _gs_args = (width, height, offset_w, offset_h, can_split_tb, can_split_lr, tb_new_h, lr_new_w, tb_exp_rows_bc, tb_exp_cols_bc, lr_exp_rows_bc, lr_exp_cols_bc, _row_of, _col_of)
+    _gs_args = (width, height, offset_w, offset_h, can_split_tb, can_split_lr, tb_new_h, lr_new_w, tb_exp_rows_bc, tb_exp_cols_bc, lr_exp_rows_bc, lr_exp_cols_bc, _row_of, _col_of, height_initial, width_initial, global_cycled if global_cycled is not None else np.array([], dtype=np.int32))
 
     _t_loop = time.time()
 
@@ -370,7 +511,7 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
             move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
             dr, dc = _MOVE_DIRS[move]
             zp_idx += dr * width_initial + dc
-            if _check_solved(mc_flat.reshape(height_initial, width_initial), *_solv_args):
+            if _check_solved(mc_flat.reshape(height_initial, width_initial), *_solv_args, cycled_tiles=global_cycled):
                 grids_stopped = grids_started + 1 + si
                 break
     else:
@@ -380,7 +521,7 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
             move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
             dr, dc = _MOVE_DIRS[move]
             zp_idx += dr * width_initial + dc
-            if _check_solved(mc_flat.reshape(height_initial, width_initial), *_solv_args):
+            if _check_solved(mc_flat.reshape(height_initial, width_initial), *_solv_args, cycled_tiles=global_cycled):
                 grids_stopped = grids_started + 1 + si
                 break
 
@@ -402,7 +543,7 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
                     zp_idx += dr * width_initial + dc
 
                 cur_pos = target
-                solved = _check_solved(mc_flat.reshape(height_initial, width_initial), *_solv_args)
+                solved = _check_solved(mc_flat.reshape(height_initial, width_initial), *_solv_args, cycled_tiles=global_cycled)
 
                 if solved:
                     snapshot_pos = target - step
@@ -418,7 +559,7 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
                             move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
                             dr, dc = _MOVE_DIRS[move]
                             zp_idx += dr * width_initial + dc
-                        if _check_solved(mc_flat.reshape(height_initial, width_initial), *_solv_args):
+                        if _check_solved(mc_flat.reshape(height_initial, width_initial), *_solv_args, cycled_tiles=global_cycled):
                             hi = mid
                         else:
                             lo = mid
@@ -446,7 +587,7 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
                     move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
                     dr, dc = _MOVE_DIRS[move]
                     zp_idx += dr * width_initial + dc
-                if _check_solved(mc_flat.reshape(height_initial, width_initial), *_solv_args):
+                if _check_solved(mc_flat.reshape(height_initial, width_initial), *_solv_args, cycled_tiles=global_cycled):
                     hi = mid
                 else:
                     lo = mid + 1
@@ -458,7 +599,7 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
                     move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
                     dr, dc = _MOVE_DIRS[move]
                     zp_idx += dr * width_initial + dc
-                if _check_solved(mc_flat.reshape(height_initial, width_initial), *_solv_args):
+                if _check_solved(mc_flat.reshape(height_initial, width_initial), *_solv_args, cycled_tiles=global_cycled):
                     grids_stopped = grids_started + 1 + lo
             # As a safety net (should never be needed for monotonic solved)
             if grids_stopped == -1:
@@ -469,7 +610,7 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
                     move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
                     dr, dc = _MOVE_DIRS[move]
                     zp_idx += dr * width_initial + dc
-                    if _check_solved(mc_flat.reshape(height_initial, width_initial), *_solv_args):
+                    if _check_solved(mc_flat.reshape(height_initial, width_initial), *_solv_args, cycled_tiles=global_cycled):
                         grids_stopped = grids_started + 1 + si
                         break
 
@@ -481,6 +622,147 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
 
     girds_unsolved_last = grids_stopped - 1
     grids_stopped_final = girds_unsolved_last + 1
+
+    # ═══════════════════════════════════════════════════════════════
+    # PHASE 3: Per-region cycle detection
+    # ═══════════════════════════════════════════════════════════════
+    _t_cycles = time.time()
+    per_region_cycled = np.array([], dtype=np.int32)
+    combined = np.array([], dtype=np.int32)
+    if global_cycled is not None and len(global_cycled) > 0:
+        combined = global_cycled.copy()
+    if grids_stopped - grids_started > 2:
+        mc_flat[:] = transition_flat
+        zp_idx = transition_zp
+        for mi in range(grids_started + 1, grids_stopped):
+            move = solution[mi]
+            move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
+            dr, dc = _MOVE_DIRS[move]
+            zp_idx += dr * width_initial + dc
+        mc_2d = mc_flat.reshape(height_initial, width_initial)
+        cycled_candidates = _detect_region_cycled(
+            mc_2d, enable_gs, width, height, offset_w, offset_h,
+            width_initial, _row_of, _col_of
+        )
+        if len(cycled_candidates) > 0:
+            lookahead = min(15, len(solution) - grids_stopped - 1)
+            if lookahead > 0:
+                target = grids_stopped + lookahead - 1
+                for mi in range(grids_stopped, target + 1):
+                    move = solution[mi]
+                    move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
+                    dr, dc = _MOVE_DIRS[move]
+                    zp_idx += dr * width_initial + dc
+                mc_2d = mc_flat.reshape(height_initial, width_initial)
+                still_wrong = _detect_region_cycled(
+                    mc_2d, enable_gs, width, height, offset_w, offset_h,
+                    width_initial, _row_of, _col_of
+                )
+                per_region_cycled = cycled_candidates[np.isin(cycled_candidates, still_wrong)]
+            else:
+                per_region_cycled = cycled_candidates
+
+            seg_len = grids_stopped - grids_started
+            if seg_len > 100 and len(cycled_candidates) > 0:
+                backward = min(500, seg_len // 4)
+                check_at = grids_stopped - backward
+                if check_at > grids_started + 1:
+                    mid_at = grids_started + seg_len // 2
+                    use_midpoint = seg_len > 200 and mid_at > grids_started + 1 and mid_at < check_at - 1
+
+                    mc_flat[:] = transition_flat
+                    zp_idx = transition_zp
+                    if use_midpoint:
+                        for mi in range(grids_started + 1, mid_at + 1):
+                            move = solution[mi]
+                            move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
+                            dr, dc = _MOVE_DIRS[move]
+                            zp_idx += dr * width_initial + dc
+                        mid_cy = _detect_region_cycled(
+                            mc_flat.reshape(height_initial, width_initial),
+                            enable_gs, width, height, offset_w, offset_h,
+                            width_initial, _row_of, _col_of
+                        )
+                        for mi in range(mid_at + 1, check_at + 1):
+                            move = solution[mi]
+                            move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
+                            dr, dc = _MOVE_DIRS[move]
+                            zp_idx += dr * width_initial + dc
+                    else:
+                        for mi in range(grids_started + 1, check_at + 1):
+                            move = solution[mi]
+                            move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
+                            dr, dc = _MOVE_DIRS[move]
+                            zp_idx += dr * width_initial + dc
+
+                    earlier_cy = _detect_region_cycled(
+                        mc_flat.reshape(height_initial, width_initial),
+                        enable_gs, width, height, offset_w, offset_h,
+                        width_initial, _row_of, _col_of
+                    )
+
+                    if len(earlier_cy) > 0:
+                        sets = []
+                        if use_midpoint and len(mid_cy) > 0:
+                            sets.append(mid_cy)
+                        sets.append(earlier_cy)
+                        sets.append(cycled_candidates)
+
+                        persistent = np.array([], dtype=np.int32)
+                        if len(sets) >= 3:
+                            pairs = []
+                            for i in range(len(sets)):
+                                for j in range(i + 1, len(sets)):
+                                    inter = np.intersect1d(sets[i], sets[j])
+                                    if len(inter) > 0:
+                                        pairs.append(inter)
+                            if pairs:
+                                persistent = np.unique(np.concatenate(pairs))
+                        else:
+                            persistent = np.intersect1d(sets[0], sets[1])
+
+                        if len(persistent) > 0:
+                            log.info(f"  persistent cycles@{moves_offset+grids_started}: {persistent.tolist()}")
+                            per_region_cycled = np.union1d(per_region_cycled, persistent)
+        else:
+            per_region_cycled = cycled_candidates
+
+        if global_cycled is not None and len(global_cycled) > 0:
+            combined = np.union1d(per_region_cycled, global_cycled)
+        else:
+            combined = per_region_cycled
+        if len(combined) > 0:
+            lo = grids_started + 1
+            hi = grids_stopped - 1
+            while lo < hi:
+                mid = (lo + hi) // 2
+                mc_flat[:] = transition_flat
+                zp_idx = transition_zp
+                for mi in range(grids_started + 1, mid + 1):
+                    move = solution[mi]
+                    move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
+                    dr, dc = _MOVE_DIRS[move]
+                    zp_idx += dr * width_initial + dc
+                if _check_solved(mc_flat.reshape(height_initial, width_initial), *_solv_args, cycled_tiles=combined):
+                    hi = mid
+                else:
+                    lo = mid + 1
+            mc_flat[:] = transition_flat
+            zp_idx = transition_zp
+            for mi in range(grids_started + 1, lo + 1):
+                move = solution[mi]
+                move_matrix_inplace(mc_flat, move, zp_idx, width_initial)
+                dr, dc = _MOVE_DIRS[move]
+                zp_idx += dr * width_initial + dc
+            if _check_solved(mc_flat.reshape(height_initial, width_initial), *_solv_args, cycled_tiles=combined):
+                if lo < grids_stopped:
+                    log.info(f"    cycles@{moves_offset+grids_started}: {per_region_cycled.tolist()}, grids_stopped {grids_stopped}->{lo}")
+                    grids_stopped = lo
+                    grids_stopped_final = lo
+                    girds_unsolved_last = lo - 1
+
+    with _lock:
+        _timing["scan_cycles"] += time.time() - _t_cycles
 
     sol1 = solution[grids_started + 1: grids_stopped_final + 2]
     sol2 = solution[grids_stopped_final + 2:]
@@ -532,7 +814,7 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
 
         if child_args:
             def run_child(idx, mat, sol, w, h, ow, oh, off, key):
-                r = analyse_grids(mat, sol, width_initial, height_initial, w, h, ow, oh, off, shape_cache, progress_callback, progress_total, _timing, _lock, _row_of, _col_of, cancel_check=cancel_check)
+                r = analyse_grids(mat, sol, width_initial, height_initial, w, h, ow, oh, off, shape_cache, progress_callback, progress_total, _timing, _lock, _row_of, _col_of, cancel_check=cancel_check, global_cycled=combined if len(combined) > 0 else None)
                 shape_cache[key] = _to_relative(r, off)
                 return r
 
@@ -567,7 +849,35 @@ def analyse_grids(matrix, solution, width_initial, height_initial, width, height
         "offsetW": offset_w, "offsetH": offset_h,
         "nextLayerFirst": next_first,
         "nextLayerSecond": next_second,
+        "cycledTiles": combined.tolist() if len(combined) > 0 else [],
     }
+
+
+
+def _find_truncation_point(matrix, solution, full_w, full_h, _row_of, _col_of):
+    if full_h < 5 or full_w < 5:
+        return -1, np.array([], dtype=np.int32)
+    corner_h = min(5, full_h)
+    corner_w = min(5, full_w)
+    mc_flat = np.array(matrix, dtype=np.int32).flatten()
+    zp = find_zero(matrix, full_w, full_h)
+    zp_idx = zp[0] * full_w + zp[1]
+    for mi, move in enumerate(solution):
+        move_matrix_inplace(mc_flat, move, zp_idx, full_w)
+        dr, dc = _MOVE_DIRS[move]
+        zp_idx += dr * full_w + dc
+        mc_2d = mc_flat.reshape(full_h, full_w)
+        if _corner_solved(mc_2d, full_h, full_w, _row_of, _col_of):
+            tiles = _wrong_tiles(mc_2d, full_h, full_w, _row_of, _col_of)
+            # Remove tiles that belong to the corner (they're legit unsolved, not cycle victims)
+            if len(tiles) > 0:
+                vals = tiles - 1
+                tr = vals // full_w
+                tc = vals % full_w
+                corner_mask = ~((tr >= full_h - corner_h) & (tc >= full_w - corner_w))
+                tiles = tiles[corner_mask]
+            return mi, tiles
+    return -1, np.array([], dtype=np.int32)
 
 
 def analyse_grids_initial(matrix, solution, progress_callback=None, cancel_check=None):
@@ -577,9 +887,17 @@ def analyse_grids_initial(matrix, solution, progress_callback=None, cancel_check
     total_cells = w * h
     _row_of = np.arange(total_cells) // w
     _col_of = np.arange(total_cells) % w
-    _timing = {"main_loop": 0.0, "scan_fwd": 0.0, "get_parts": 0.0, "n_calls": 0}
+    _timing = {"main_loop": 0.0, "scan_fwd": 0.0, "scan_cycles": 0.0, "get_parts": 0.0, "n_calls": 0}
     _lock = threading.Lock()
-    result = analyse_grids(matrix, solution, w, h, w, h, 0, 0, 0, shape_cache={}, progress_callback=progress_callback, progress_total=len(solution), _timing=_timing, _lock=_lock, _row_of=_row_of, _col_of=_col_of, cancel_check=cancel_check)
+    trunc_at, global_cycled = _find_truncation_point(matrix, solution, w, h, _row_of, _col_of)
+    if trunc_at > 0:
+        log.info(f"  truncated solution at move {trunc_at}, earliest corner solved; global cycled {global_cycled.tolist() if len(global_cycled) > 0 else 'none'}")
+        solution = solution[:trunc_at]
+    else:
+        global_cycled = _detect_global_cycled(matrix, solution, w, h, _row_of, _col_of)
+    if len(global_cycled) > 0:
+        log.info(f"  global cycled tiles: {global_cycled.tolist()}")
+    result = analyse_grids(matrix, solution, w, h, w, h, 0, 0, 0, shape_cache={}, progress_callback=progress_callback, progress_total=len(solution), _timing=_timing, _lock=_lock, _row_of=_row_of, _col_of=_col_of, cancel_check=cancel_check, global_cycled=global_cycled)
     elapsed = time.time() - _t0
     log.info(f"  grids analysis: {_timing['n_calls']} calls, {elapsed:.3f}s wall clock")
     return result
