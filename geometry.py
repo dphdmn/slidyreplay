@@ -242,7 +242,7 @@ def compute_layout(quality: int, puzzle_w: int, puzzle_h: int, grid_only: bool =
     else:
         canvas_w = (puzzle_px_w + gap + panel_w + 1) // 2 * 2
     if adjust_height:
-        if grid_only or no_details:
+        if grid_only:
             canvas_h = (puzzle_px_h + 1) // 2 * 2
         else:
             content_h = (0 if hide_header else header_h) + puzzle_px_h
@@ -287,11 +287,14 @@ def compute_canvas_dimensions(puzzle_w: int, puzzle_h: int, tile_size: int,
         cw = (puzzle_px_w + 1) // 2 * 2
         if quality is not None:
             if adjust_height:
-                ch = (puzzle_px_h + 1) // 2 * 2
+                ch = (puzzle_px_h + 1) // 2 * 2 if grid_only else (header_h + puzzle_px_h + 1) // 2 * 2
             else:
                 ch = (quality + 1) // 2 * 2
         else:
-            ch = (puzzle_px_h + 1) // 2 * 2
+            if adjust_height and not grid_only:
+                ch = (header_h + puzzle_px_h + 1) // 2 * 2
+            else:
+                ch = (puzzle_px_h + 1) // 2 * 2
     else:
         cw = (puzzle_px_w + panel_w + pad + 1) // 2 * 2
         if quality is not None:

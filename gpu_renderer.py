@@ -122,6 +122,7 @@ class GPURenderer:
             self.canvas_w, self.canvas_h = compute_canvas_dimensions(
                 width, height, tile_size, grid_only=self.opts.grid_only,
                 pad=self.pad, header_h=self.header_h, panel_w=self.layout_panel_w,
+                no_details=self.opts.no_details, adjust_height=self.opts.adjust_height,
             )
         self.grid_x, self.grid_y = compute_grid_position(
             self.opts.grid_only, pad=self.pad, header_h=self.header_h,
