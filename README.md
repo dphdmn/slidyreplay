@@ -54,11 +54,13 @@ python main.py --solution R2D2L2U2 --no-header --no-details    # puzzle grid onl
 | | `--no-header` | | Hide the timer header bar (time/moves/tps and MD display) |
 | | `--no-details` | | Hide the stats panel on the right side of the puzzle |
 | | `--dynamic-md` | | Show MD/predicted/MMD timer on the right of the header (off by default — timer centered instead) |
-| | `--adjust-height` | | Crop canvas height to puzzle content instead of fixed quality preset. Aligns puzzle to the top and removes the bottom gap (default: centered). Useful when big puzzle doesn't fill the frame due to small tile size |
+| | `--adjust-height` | | Crop canvas height to puzzle content instead of fixed quality preset. Useful when big puzzle doesn't fill the frame due to small tile size |
 | | `--no-border` | | Suppress tile border outlines |
 | | `--no-secondary-border` | | Suppress secondary color bar borders |
 | | `--no-numbers` | | Suppress tile number text (improves compression) |
 | | `--force-fringe` | | Force fringe colors (disable grids detection) |
+| | `--force-rows` | | Force row stripes (disable grids detection) |
+| | `--force-columns` | | Force column stripes (disable grids detection) |
 | | `--cycles-detection` | | EXPERIMENTAL: detect and display cycling tiles in grid stats (may increase analysis time) |
 | **Hardware** | `--no-gpu` | `-g` | Disable GPU acceleration (GPU is auto-detected by default) |
 | **Debug** | `--log` | `-l` | Enable debug logging to `logs/debug_\<timestamp\>.log` |

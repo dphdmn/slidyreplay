@@ -186,6 +186,8 @@ class ReplayGUI(tb.Window):
 
         self.fps_var = tk.IntVar(value=60)
         self.force_fringe_var = tk.BooleanVar(value=False)
+        self.force_rows_var = tk.BooleanVar(value=False)
+        self.force_columns_var = tk.BooleanVar(value=False)
         self.quality_preset_var = tk.StringVar(value="1080p")
         self._quality_presets = {"720p": 720, "1080p": 1080, "1440p (2K)": 1440, "2160p (4K)": 2160}
         self.compression_var = tk.IntVar(value=18)
@@ -479,8 +481,12 @@ class ReplayGUI(tb.Window):
                        bootstyle="round-toggle").grid(row=1, column=2, sticky="w")
         tb.Checkbutton(d_grid, text="Force fringe", variable=self.force_fringe_var,
                        bootstyle="round-toggle").grid(row=2, column=2, sticky="w")
-        tb.Checkbutton(d_grid, text="Cycle detect", variable=self.cycles_detection_var,
+        tb.Checkbutton(d_grid, text="Force rows", variable=self.force_rows_var,
                        bootstyle="round-toggle").grid(row=3, column=2, sticky="w")
+        tb.Checkbutton(d_grid, text="Force columns", variable=self.force_columns_var,
+                       bootstyle="round-toggle").grid(row=4, column=2, sticky="w")
+        tb.Checkbutton(d_grid, text="Cycle detect", variable=self.cycles_detection_var,
+                       bootstyle="round-toggle").grid(row=5, column=2, sticky="w")
 
         # ======== COLUMN 1: UNIFIED INPUT + OVERRIDES ========
         mid = tb.Frame(root)
@@ -903,6 +909,8 @@ class ReplayGUI(tb.Window):
                 )
                 params = {
                     "force_fringe": self.force_fringe_var.get(),
+                    "force_rows": self.force_rows_var.get(),
+                    "force_columns": self.force_columns_var.get(),
                     "quality": self._get_quality(),
                     "fps": self.fps_var.get(),
                     "compression": self.compression_var.get(),
@@ -1180,6 +1188,10 @@ Examples:
                         help="Speed multiplier (e.g. 2.0 = 2x faster video, 0.5 = half speed)")
     parser.add_argument("--force-fringe", action="store_true", default=False,
                         help="Force fringe colors (disable grids detection)")
+    parser.add_argument("--force-rows", action="store_true", default=False,
+                        help="Force row stripes (disable grids detection)")
+    parser.add_argument("--force-columns", action="store_true", default=False,
+                        help="Force column stripes (disable grids detection)")
     parser.add_argument("--log", "-l", action="store_true", default=False,
                         help="Enable debug logging to file (logs/debug_<timestamp>.log)")
     parser.add_argument("--no-layout", action="store_true",
@@ -1318,7 +1330,7 @@ Examples:
                 mode, val = item if isinstance(item, tuple) else ("manual", item)
 
                 kwargs = dict(quality=args.quality, fps=args.fps, compression=args.compression,
-                              slow_render=slow_render, encoder_preset=args.encoder_preset, speed_factor=args.speedup, force_fringe=args.force_fringe, upscale=args.upscale, encoder_override=args.encoder)
+                              slow_render=slow_render, encoder_preset=args.encoder_preset, speed_factor=args.speedup, force_fringe=args.force_fringe, force_rows=args.force_rows, force_columns=args.force_columns, upscale=args.upscale, encoder_override=args.encoder)
                 try:
                     sol, tps, scramble, movetimes = parse_replay_url(val)
                     kwargs["tps"] = tps or args.tps
@@ -1385,6 +1397,7 @@ Examples:
                                fps=args.fps, compression=args.compression,
                                slow_render=slow_render, encoder_preset=args.encoder_preset,
                                speed_factor=args.speedup, force_fringe=args.force_fringe,
+                               force_rows=args.force_rows, force_columns=args.force_columns,
                                upscale=args.upscale, encoder_override=args.encoder)
                 else:
                     if args.output is not None:
@@ -1404,6 +1417,7 @@ Examples:
                                fps=args.fps, compression=args.compression,
                                slow_render=slow_render, encoder_preset=args.encoder_preset,
                                 speed_factor=args.speedup, force_fringe=args.force_fringe,
+                                force_rows=args.force_rows, force_columns=args.force_columns,
                                 upscale=args.upscale, encoder_override=args.encoder)
     except Exception as e:
         import traceback
