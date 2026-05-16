@@ -110,7 +110,7 @@ def _generate_filename(solution, tps, time_v, movetimes, size_arg=None, index=0,
     if isinstance(movetimes, list) and len(movetimes) > 1:
         time_s = movetimes[-1] / 1000.0 if movetimes[-1] > 0 else 0
         is_movetimes_accurate = True
-        display_tps = moves / time_s if time_s > 0 else None
+        display_tps = tps if tps and tps > 0 else (moves / time_s if time_s > 0 else None)
     elif time_v and time_v > 0:
         time_s = time_v
         is_movetimes_accurate = False
@@ -763,18 +763,23 @@ class ReplayGUI(tb.Window):
         if time_v and tps:
             tps = None
 
+        if (override_tps or override_time) and isinstance(movetimes, list):
+            movetimes = -1
+
         moves = count_moves(solution)
+        if time_v and tps is None:
+            tps = moves / time_v
         size = _quick_infer_size(solution, scramble, size_s)
 
         # Build display name (like filename would be)
         if isinstance(movetimes, list) and len(movetimes) > 1 and movetimes[-1] > 0:
             time_s = movetimes[-1] / 1000.0
             is_movetimes_accurate = True
-            raw_tps = moves / time_s
+            raw_tps = float(override_tps) if override_tps else (moves / time_s)
         elif time_v and time_v > 0:
             time_s = time_v
             is_movetimes_accurate = False
-            raw_tps = moves / time_s
+            raw_tps = float(override_tps) if override_tps else (moves / time_s)
         elif tps and tps > 0:
             time_s = moves / tps
             is_movetimes_accurate = False
@@ -805,6 +810,7 @@ class ReplayGUI(tb.Window):
             "scramble": scramble,
             "movetimes": movetimes if isinstance(movetimes, list) else -1,
             "display_name": display_name,
+            "tps_was_overridden": bool(override_tps or override_time),
         }]
 
     def _remove_selected_from_queue(self):
@@ -919,7 +925,11 @@ class ReplayGUI(tb.Window):
                 if entry["size"]:
                     params["size"] = entry["size"]
 
-                filename_tps = entry["tps"]
+                if isinstance(entry["movetimes"], list) and len(entry["movetimes"]) > 1:
+                    tps_from_movetimes = count_moves(solution) / (entry["movetimes"][-1] / 1000.0) if entry["movetimes"][-1] > 0 else None
+                    filename_tps = entry["tps"] if entry.get("tps_was_overridden") else (tps_from_movetimes or entry["tps"])
+                else:
+                    filename_tps = entry["tps"]
                 filename_time = entry["time"] if entry["time"] else None
                 base_name = _generate_filename(
                     solution, filename_tps, filename_time,
