@@ -209,6 +209,7 @@ class ReplayGUI(tb.Window):
         self.no_details_var = tk.BooleanVar(value=False)
         self.dynamic_md_var = tk.BooleanVar(value=False)
         self.upscale_var = tk.BooleanVar(value=False)
+        self.cycles_detection_var = tk.BooleanVar(value=False)
 
         _register_fonts()
         os.makedirs(self.out_folder_var.get(), exist_ok=True)
@@ -475,6 +476,8 @@ class ReplayGUI(tb.Window):
                        bootstyle="round-toggle").grid(row=1, column=2, sticky="w")
         tb.Checkbutton(d_grid, text="Force fringe", variable=self.force_fringe_var,
                        bootstyle="round-toggle").grid(row=2, column=2, sticky="w")
+        tb.Checkbutton(d_grid, text="Cycle detect", variable=self.cycles_detection_var,
+                       bootstyle="round-toggle").grid(row=3, column=2, sticky="w")
 
         # ======== COLUMN 1: UNIFIED INPUT + OVERRIDES ========
         mid = tb.Frame(root)
@@ -883,6 +886,7 @@ class ReplayGUI(tb.Window):
                     no_header=self.no_header_var.get(),
                     no_details=self.no_details_var.get(),
                     dynamic_md=self.dynamic_md_var.get(),
+                    cycles_detection=self.cycles_detection_var.get(),
                 )
                 params = {
                     "force_fringe": self.force_fringe_var.get(),
@@ -1171,6 +1175,8 @@ Examples:
                         help="Hide the stats panel on the right side of the puzzle")
     parser.add_argument("--dynamic-md", action="store_true", default=False,
                         help="Show MD/predicted/MMD timer on the right side of the header bar (disabled by default)")
+    parser.add_argument("--cycles-detection", action="store_true", default=False,
+                        help="EXPERIMENTAL: detect and display cycling tiles in grid stats (may increase analysis time)")
     parser.add_argument("--no-border", action="store_true",
                         help="Suppress tile border outlines")
     parser.add_argument("--no-secondary-border", action="store_true",
@@ -1194,6 +1200,7 @@ Examples:
         no_header=args.no_header,
         no_details=args.no_details,
         dynamic_md=args.dynamic_md,
+        cycles_detection=args.cycles_detection,
     )
 
     if args.speedup <= 0:

@@ -1572,7 +1572,7 @@ def generate_frames(
     # ── Cycles data ──
     all_cycled_tiles = []
     cycles_fix_times = {}
-    if grids_data is not None:
+    if opts.cycles_detection and grids_data is not None:
         all_cycled_tiles = collect_all_cycled_tiles(grids_data)
     if all_cycled_tiles:
         mc_flat = np.array(matrix, dtype=np.int32).flatten()
@@ -2259,7 +2259,7 @@ class ReplayVideoGenerator:
                 prog(scaled, _analysis_weight)
 
         if not force_fringe:
-            grids_data = analyse_grids_initial(matrix, solution_expanded, progress_callback=_analysis_prog, cancel_check=cancel_check)
+            grids_data = analyse_grids_initial(matrix, solution_expanded, progress_callback=_analysis_prog, cancel_check=cancel_check, cycles_detection=opts.cycles_detection)
         else:
             grids_data = {
                 "enableGridsStatus": -1,

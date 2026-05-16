@@ -300,6 +300,7 @@ class RenderOptions:
     no_header: bool = False
     no_details: bool = False
     dynamic_md: bool = False
+    cycles_detection: bool = False
 
 
 @dataclass

@@ -58,6 +58,7 @@ python main.py --solution R2D2L2U2 --no-header --no-details    # puzzle grid onl
 | | `--no-secondary-border` | | Suppress secondary color bar borders |
 | | `--no-numbers` | | Suppress tile number text (improves compression) |
 | | `--force-fringe` | | Force fringe colors (disable grids detection) |
+| | `--cycles-detection` | | EXPERIMENTAL: detect and display cycling tiles in grid stats (may increase analysis time) |
 | **Hardware** | `--no-gpu` | `-g` | Disable GPU acceleration (GPU is auto-detected by default) |
 | **Debug** | `--log` | `-l` | Enable debug logging to `logs/debug_\<timestamp\>.log` |
 

@@ -880,7 +880,7 @@ def _find_truncation_point(matrix, solution, full_w, full_h, _row_of, _col_of):
     return -1, np.array([], dtype=np.int32)
 
 
-def analyse_grids_initial(matrix, solution, progress_callback=None, cancel_check=None):
+def analyse_grids_initial(matrix, solution, progress_callback=None, cancel_check=None, cycles_detection=False):
     _t0 = time.time()
     h = len(matrix)
     w = len(matrix[0])
@@ -889,14 +889,16 @@ def analyse_grids_initial(matrix, solution, progress_callback=None, cancel_check
     _col_of = np.arange(total_cells) % w
     _timing = {"main_loop": 0.0, "scan_fwd": 0.0, "scan_cycles": 0.0, "get_parts": 0.0, "n_calls": 0}
     _lock = threading.Lock()
-    trunc_at, global_cycled = _find_truncation_point(matrix, solution, w, h, _row_of, _col_of)
-    if trunc_at > 0:
-        log.info(f"  truncated solution at move {trunc_at}, earliest corner solved; global cycled {global_cycled.tolist() if len(global_cycled) > 0 else 'none'}")
-        solution = solution[:trunc_at]
-    else:
-        global_cycled = _detect_global_cycled(matrix, solution, w, h, _row_of, _col_of)
-    if len(global_cycled) > 0:
-        log.info(f"  global cycled tiles: {global_cycled.tolist()}")
+    global_cycled = np.array([], dtype=np.int32)
+    if cycles_detection:
+        trunc_at, global_cycled = _find_truncation_point(matrix, solution, w, h, _row_of, _col_of)
+        if trunc_at > 0:
+            log.info(f"  truncated solution at move {trunc_at}, earliest corner solved; global cycled {global_cycled.tolist() if len(global_cycled) > 0 else 'none'}")
+            solution = solution[:trunc_at]
+        else:
+            global_cycled = _detect_global_cycled(matrix, solution, w, h, _row_of, _col_of)
+        if len(global_cycled) > 0:
+            log.info(f"  global cycled tiles: {global_cycled.tolist()}")
     result = analyse_grids(matrix, solution, w, h, w, h, 0, 0, 0, shape_cache={}, progress_callback=progress_callback, progress_total=len(solution), _timing=_timing, _lock=_lock, _row_of=_row_of, _col_of=_col_of, cancel_check=cancel_check, global_cycled=global_cycled)
     elapsed = time.time() - _t0
     log.info(f"  grids analysis: {_timing['n_calls']} calls, {elapsed:.3f}s wall clock")
