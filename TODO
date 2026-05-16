@@ -11,3 +11,5 @@
 - single frame render
 - movetimes override from file
 - puzzle not centered vertically again
+- encoder readme missinformation
+- cpu spikes on idle
