@@ -357,6 +357,7 @@ def render_frame(
     grid_x, grid_y = compute_grid_position(
         opts.grid_only, pad=pad, header_h=header_h,
         canvas_h=canvas_h, puzzle_h=puzzle_h,
+        no_header=opts.no_header,
     )
 
     if prev_canvas is not None and changed_tiles is not None:
@@ -365,21 +366,21 @@ def render_frame(
         draw = ImageDraw.Draw(canvas)
     else:
         if canvas_w is None or canvas_h is None:
-            canvas_w, canvas_h = compute_canvas_dimensions(w, h, tile_size, grid_only=opts.grid_only, pad=pad, header_h=header_h, panel_w=panel_w)
-            if not opts.grid_only:
+            canvas_w, canvas_h = compute_canvas_dimensions(w, h, tile_size, grid_only=opts.grid_only, pad=pad, header_h=header_h, panel_w=panel_w, no_details=opts.no_details)
+            if not opts.grid_only and not opts.no_details:
                 panel_w_est = canvas_w - puzzle_w - pad
                 stats_h = _compute_stats_full_height(
                     panel_w_est,
                     has_grid_stages=len(stats_data.get("grid_stages", [])) > 1,
                     quality=quality,
                 )
-                canvas_h = max(canvas_h, header_h + stats_h)
+                canvas_h = max(canvas_h, (0 if opts.no_header else header_h) + stats_h)
                 canvas_h = round_canvas_height(canvas_h)
         canvas = Image.new('RGB', (canvas_w, canvas_h), BG_COLOR)
         draw = ImageDraw.Draw(canvas)
 
     # ─── Timer Bar (left: time, right: MD/predicted/MMD) ─────────
-    if not opts.grid_only:
+    if not opts.grid_only and not opts.no_header:
         timer_bg_bbox = (0, 0, canvas_w, header_h)
         draw_filled_rect(draw, timer_bg_bbox, TIMER_BG)
         tf = max(12, header_h - 12)
@@ -389,17 +390,21 @@ def render_frame(
         else:
             timer_img = render_timer_text(timer_text, font_size=tf)
         tw, th = timer_img.size
-        tx = pad
+        if opts.dynamic_md:
+            tx = pad
+        else:
+            tx = (canvas_w - tw) // 2
         ty = (header_h - th) // 2
         canvas.paste(timer_img, (tx, ty), timer_img)
 
-        right_text = stats_data.get("timer_right_text", "") if stats_data else ""
-        if right_text:
-            right_img = render_timer_text(right_text, font_size=tf)
-            rtw, rth = right_img.size
-            rx = canvas_w - rtw - pad
-            ry = (header_h - rth) // 2
-            canvas.paste(right_img, (rx, ry), right_img)
+        if opts.dynamic_md:
+            right_text = stats_data.get("timer_right_text", "") if stats_data else ""
+            if right_text:
+                right_img = render_timer_text(right_text, font_size=tf)
+                rtw, rth = right_img.size
+                rx = canvas_w - rtw - pad
+                ry = (header_h - rth) // 2
+                canvas.paste(right_img, (rx, ry), right_img)
 
     # ─── Puzzle Grid ──────────────────────────────────────────────
     if gpu_grid is not None:
@@ -482,10 +487,11 @@ def render_frame(
                     canvas.paste(tex, (sx, sy), tex)
 
     # ─── Stats Panel ──────────────────────────────────────────────
-    if not opts.grid_only:
+    if not opts.grid_only and not opts.no_details:
+        panel_y_start = 0 if (opts.no_header or opts.grid_only) else header_h
         panel_x, panel_y, panel_w, panel_h = compute_panel_rect(
             grid_x, puzzle_w, canvas_w, grid_y, canvas_h,
-            pad=pad, panel_y=header_h,
+            pad=pad, panel_y=panel_y_start,
         )
 
         if panel_w > 0 and panel_h > 0:
@@ -1427,7 +1433,7 @@ def generate_frames(
         last_moves = cum_moves
 
     log.info(f"  grid_stages: n_stages={n_stages}, filtered_stages={filtered_stages}")
-    layout = compute_layout(quality, w, h, opts.grid_only)
+    layout = compute_layout(quality, w, h, opts.grid_only, no_header=opts.no_header, no_details=opts.no_details)
     tile_size = layout["tile_size"]
     font_size = layout["font_size"]
     log.info(f"  tile_size={tile_size}, pad={layout['pad']}, header_h={layout['header_h']}, panel_w={layout['panel_w']}, font_size={font_size}")
@@ -1713,7 +1719,7 @@ def generate_frames(
     log.info(f"  render decision: use_gpu={use_gpu}, total_video_frames={len(frame_state)}, unique_states={len(states_needed)} ({len(states_needed)*100//len(frame_state) if len(frame_state) > 0 else 0}%%)")
 
     # Pre-compute static stats base + layout for static/dynamic split (both paths)
-    if not opts.grid_only:
+    if not opts.grid_only and not opts.no_details:
         first_needed = states_needed[0] if states_needed else 0
         first_stats = frame_params[first_needed]["stats_data"]
         first_is_accurate = frame_params[first_needed]["is_movetimes_accurate"]

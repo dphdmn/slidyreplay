@@ -155,12 +155,14 @@ def should_draw_secondary_border_rect(tile_size: int, rect: tuple[int, int, int,
 
 
 def compute_grid_position(grid_only: bool, pad: int = None, header_h: int = None,
-                          canvas_h: int = None, puzzle_h: int = None) -> tuple[int, int]:
+                          canvas_h: int = None, puzzle_h: int = None,
+                          no_header: bool = False) -> tuple[int, int]:
     if header_h is None:
         header_h = HEADER_H
-    base_y = 0 if grid_only else header_h
-    if grid_only and canvas_h is not None and puzzle_h is not None:
-        avail_h = canvas_h if grid_only else max(0, canvas_h - header_h)
+    hide_header = grid_only or no_header
+    base_y = 0 if hide_header else header_h
+    if hide_header and canvas_h is not None and puzzle_h is not None:
+        avail_h = canvas_h
         extra_h = max(0, avail_h - puzzle_h)
         base_y += extra_h // 2
     return 0, base_y
@@ -209,7 +211,8 @@ def round_canvas_height(h: int) -> int:
     return (h + 1) // 2 * 2
 
 
-def compute_layout(quality: int, puzzle_w: int, puzzle_h: int, grid_only: bool = False) -> dict:
+def compute_layout(quality: int, puzzle_w: int, puzzle_h: int, grid_only: bool = False,
+                   no_header: bool = False, no_details: bool = False) -> dict:
     """Compute layout parameters from a target video height preset.
     Canvas height is always the exact quality — no edge padding.
     pad = gap between puzzle grid and stats panel (small).
@@ -220,7 +223,8 @@ def compute_layout(quality: int, puzzle_w: int, puzzle_h: int, grid_only: bool =
     panel_w = max(80, int(round(STATS_PANEL_WIDTH * scale)))
 
     max_dim = max(puzzle_w, puzzle_h)
-    if grid_only:
+    hide_header = grid_only or no_header
+    if hide_header:
         avail_h = quality
     else:
         avail_h = quality - header_h
@@ -232,7 +236,7 @@ def compute_layout(quality: int, puzzle_w: int, puzzle_h: int, grid_only: bool =
     puzzle_px_w = puzzle_w * tile_size
     puzzle_px_h = puzzle_h * tile_size
 
-    if grid_only:
+    if grid_only or no_details:
         canvas_w = (puzzle_px_w + 1) // 2 * 2
     else:
         canvas_w = (puzzle_px_w + gap + panel_w + 1) // 2 * 2
@@ -253,7 +257,8 @@ def compute_canvas_dimensions(puzzle_w: int, puzzle_h: int, tile_size: int,
                               grid_only: bool = False,
                               pad: int = None, header_h: int = None,
                               panel_w: int = None,
-                              quality: int = None) -> tuple[int, int]:
+                              quality: int = None,
+                              no_details: bool = False) -> tuple[int, int]:
     if puzzle_w < 1 or puzzle_h < 1:
         raise ValueError(f"puzzle dimensions must be >= 1, got {puzzle_w}x{puzzle_h}")
     if tile_size < 1:
@@ -269,7 +274,7 @@ def compute_canvas_dimensions(puzzle_w: int, puzzle_h: int, tile_size: int,
     puzzle_px_w = puzzle_w * tile_size
     puzzle_px_h = puzzle_h * tile_size
 
-    if grid_only:
+    if grid_only or no_details:
         cw = (puzzle_px_w + 1) // 2 * 2
         if quality is not None:
             ch = (quality + 1) // 2 * 2
@@ -292,6 +297,9 @@ class RenderOptions:
     no_border: bool = False
     no_secondary_border: bool = False
     no_numbers: bool = False
+    no_header: bool = False
+    no_details: bool = False
+    dynamic_md: bool = False
 
 
 @dataclass

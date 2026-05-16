@@ -202,6 +202,9 @@ class ReplayGUI(tb.Window):
         self.no_border_var = tk.BooleanVar(value=False)
         self.no_secondary_border_var = tk.BooleanVar(value=False)
         self.no_numbers_var = tk.BooleanVar(value=False)
+        self.no_header_var = tk.BooleanVar(value=False)
+        self.no_details_var = tk.BooleanVar(value=False)
+        self.dynamic_md_var = tk.BooleanVar(value=False)
         self.upscale_var = tk.BooleanVar(value=False)
 
         _register_fonts()
@@ -421,6 +424,17 @@ class ReplayGUI(tb.Window):
         tb.Checkbutton(render_opts_row, text="No sec border", variable=self.no_secondary_border_var,
                        bootstyle="round-toggle").pack(side="left", padx=(0, 10))
         tb.Checkbutton(render_opts_row, text="No numbers", variable=self.no_numbers_var,
+                       bootstyle="round-toggle").pack(side="left")
+        r += 1
+
+        # Render toggles row 2
+        render_opts_row2 = tb.Frame(settings)
+        render_opts_row2.grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
+        tb.Checkbutton(render_opts_row2, text="No header", variable=self.no_header_var,
+                       bootstyle="round-toggle").pack(side="left", padx=(0, 10))
+        tb.Checkbutton(render_opts_row2, text="No details", variable=self.no_details_var,
+                       bootstyle="round-toggle").pack(side="left", padx=(0, 10))
+        tb.Checkbutton(render_opts_row2, text="Dynamic MD", variable=self.dynamic_md_var,
                        bootstyle="round-toggle").pack(side="left")
         r += 1
 
@@ -782,6 +796,9 @@ class ReplayGUI(tb.Window):
                 no_border=self.no_border_var.get(),
                 no_secondary_border=self.no_secondary_border_var.get(),
                 no_numbers=self.no_numbers_var.get(),
+                no_header=self.no_header_var.get(),
+                no_details=self.no_details_var.get(),
+                dynamic_md=self.dynamic_md_var.get(),
             )
             params = {
                 "force_fringe": self.force_fringe_var.get(),
@@ -903,6 +920,9 @@ class ReplayGUI(tb.Window):
                     no_border=self.no_border_var.get(),
                     no_secondary_border=self.no_secondary_border_var.get(),
                     no_numbers=self.no_numbers_var.get(),
+                    no_header=self.no_header_var.get(),
+                    no_details=self.no_details_var.get(),
+                    dynamic_md=self.dynamic_md_var.get(),
                 ),
             }
 
@@ -1194,9 +1214,15 @@ Examples:
     parser.add_argument("--log", "-l", action="store_true", default=False,
                         help="Enable debug logging to file (logs/debug_<timestamp>.log)")
     parser.add_argument("--no-layout", action="store_true",
-                        help="Only render the puzzle grid on dark background — no timer bar, no stats panel")
+                        help="Only render the puzzle grid on dark background — no timer bar, no stats panel (shortcut for --no-header --no-details)")
     parser.add_argument("--grid-only", action="store_true", dest="no_layout",
                         help=argparse.SUPPRESS)
+    parser.add_argument("--no-header", action="store_true", default=False,
+                        help="Hide the timer header bar (time/moves/tps and MD display)")
+    parser.add_argument("--no-details", action="store_true", default=False,
+                        help="Hide the stats panel on the right side of the puzzle")
+    parser.add_argument("--dynamic-md", action="store_true", default=False,
+                        help="Show MD/predicted/MMD timer on the right side of the header bar (disabled by default)")
     parser.add_argument("--no-border", action="store_true",
                         help="Suppress tile border outlines")
     parser.add_argument("--no-secondary-border", action="store_true",
@@ -1217,6 +1243,9 @@ Examples:
         no_border=args.no_border,
         no_secondary_border=args.no_secondary_border,
         no_numbers=args.no_numbers,
+        no_header=args.no_header,
+        no_details=args.no_details,
+        dynamic_md=args.dynamic_md,
     )
 
     if args.speedup <= 0:

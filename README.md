@@ -23,6 +23,10 @@ python main.py --solution R2D2L2U2 --time 30 -c 28 --slow-render -o small.mp4
 python main.py --solution R2D2L2U2 --no-layout --no-numbers -o clean.mp4
 python main.py --solution R2D2L2U2 --upscale --encoder libx265 -o high_quality.mp4
 python main.py --solution R2D2L2U2 -q 720 -s 2.0 -o fast.mp4
+python main.py --solution R2D2L2U2 --no-header                 # hide timer bar, keep stats panel
+python main.py --solution R2D2L2U2 --no-details                # hide stats panel, keep timer
+python main.py --solution R2D2L2U2 --dynamic-md                # show right-side MD timer
+python main.py --solution R2D2L2U2 --no-header --no-details    # puzzle grid only (= --no-layout)
 ```
 
 ## CLI Reference
@@ -46,7 +50,10 @@ python main.py --solution R2D2L2U2 -q 720 -s 2.0 -o fast.mp4
 | | `--slow-render` | | Slower encode, ~33% smaller file (p7 for NVENC, slow for libx264). Auto-enabled on CPU. |
 | | `--encoder` | | Force video encoder (choices below). Auto-detected if not set. |
 | | `--upscale` | | Re-encode to 2K (2560×1440). Only applies when quality < 1440p. Keeps original too. |
-| **Render** | `--no-layout` | | Render only the puzzle grid — no timer bar, no stats panel |
+| **Render** | `--no-layout` | | Shortcut for `--no-header --no-details` (puzzle grid only) |
+| | `--no-header` | | Hide the timer header bar (time/moves/tps and MD display) |
+| | `--no-details` | | Hide the stats panel on the right side of the puzzle |
+| | `--dynamic-md` | | Show MD/predicted/MMD timer on the right of the header (off by default — timer centered instead) |
 | | `--no-border` | | Suppress tile border outlines |
 | | `--no-secondary-border` | | Suppress secondary color bar borders |
 | | `--no-numbers` | | Suppress tile number text (improves compression) |
