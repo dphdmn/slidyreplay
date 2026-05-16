@@ -15,10 +15,10 @@ Launches a dark-themed GUI with URL, File, and Manual input tabs, FPS slider, GP
 ### CLI
 
 ```
-python main.py --solution R2D2L2U2 --size 3x3 --tps 10 -o replay.mp4
-python main.py -u "https://slidysim.github.io/?replay=..." -o replay.mp4
-python main.py -f input.txt -o replay.mp4
-python main.py -b solutions.txt -q 2160
+python main.py --solution R2D2L2U2 --size 3x3 --tps 10          # auto-named in replays/
+python main.py -u "https://slidysim.github.io/?replay=..."     # auto-named in replays/
+python main.py -f input.txt                                     # auto-named in replays/
+python main.py -b solutions.txt -q 2160                         # batch, auto-named in replays/
 python main.py --solution R2D2L2U2 --time 30 -c 28 --slow-render -o small.mp4
 python main.py --solution R2D2L2U2 --no-layout --no-numbers -o clean.mp4
 python main.py --solution R2D2L2U2 --upscale --encoder libx265 -o high_quality.mp4
@@ -39,7 +39,7 @@ python main.py --solution R2D2L2U2 -q 720 -s 2.0 -o fast.mp4
 | | `--time` | | Total time in seconds (omit if using `--tps`) |
 | | `--movetimes` | | Comma-separated move timings in seconds (overrides `--tps`/`--time`) |
 | | `--speedup` | `-s` | Speed multiplier (e.g. `2.0` = 2× faster, `0.5` = half speed) (default: 1.0) |
-| **Output** | `--output` | `-o` | Output file (default: `replay.mp4`) |
+| **Output** | `--output` | `-o` | Output file path (default: auto-generated name in `replays/` folder) |
 | | `--quality` | `-q` | Render quality — canvas height (720, 1080, 1440, 2160) |
 | | `--fps` | | Output framerate (default: 60) |
 | **Encoder** | `--compression` | `-c` | Video encoder quality 10–40, lower = fewer artifacts but larger file (default: 18) |
@@ -84,9 +84,11 @@ Logs are written to `logs/debug_YYYYMMDD_HHMMSS.log`.
 
 ## Output Format
 
-Generated files follow the pattern: `<size>_<total_time>_<moves>_<tps>_movetimes.mp4`
+By default, files are saved to the `replays/` folder with auto-generated names following the pattern: `<size>_<total_time>_<moves>_<tps>_movetimes.mp4`
 
 Example: `8x8_23.564_707_30.003_movetimes_5.mp4`
+
+Use `-o <path>` to save to a custom location with a specific filename.
 
 ## GPU Acceleration
 
@@ -133,7 +135,7 @@ Run your own benchmarks with `python benchmark.py`.
 ### Benchmark script
 
 ```
-python benchmark.py                 # all puzzles: small (CPU+GPU) + big (GPU only)
+python benchmark.py                 # full benchmark run
 python benchmark.py --gpu-only      # GPU only (both layout and no-layout)
 python benchmark.py --cpu-only      # CPU only
 python benchmark.py --layout        # layout only (both GPU and CPU)

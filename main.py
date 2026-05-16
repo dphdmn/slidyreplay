@@ -1177,7 +1177,7 @@ Examples:
     parser.add_argument("--time", type=float, help="Total time in seconds")
     parser.add_argument("--size", help="Puzzle size (e.g. 3x3, 5x5)")
     parser.add_argument("--scramble", help="Scramble string")
-    parser.add_argument("--output", "-o", default="replay.mp4", help="Output file path")
+    parser.add_argument("--output", "-o", default=None, help="Output file path (default: auto-generated name in replays/ folder)")
     parser.add_argument("--quality", "-q", type=int, default=1080, help="Target video quality (720, 1080, 1440, 2160)")
     parser.add_argument("--compression", "-c", type=int, default=18, help="Video encoder quality (10-40, lower = fewer artifacts but larger file, default: 18)")
     parser.add_argument("--slow-render", action="store_true", default=False, help="Slower encode, ~33%% smaller file (p7 for NVENC, slow for libx264)")
@@ -1302,15 +1302,15 @@ Examples:
             parser.print_help()
             sys.exit(1)
 
-        batch_out = args.output or "replay.mp4"
+        replays_dir = os.path.join(script_dir, "replays")
+        if args.output is None:
+            os.makedirs(replays_dir, exist_ok=True)
 
         if len(items) > 1 and args.batch:
             # Batch mode: collect all items and render via batch_render
             batch_items = []
             for idx, item in enumerate(items):
                 mode, val = item if isinstance(item, tuple) else ("manual", item)
-                root, ext = os.path.splitext(batch_out)
-                output_path = f"{root}_{idx+1:03d}{ext}"
 
                 kwargs = dict(quality=args.quality, fps=args.fps, compression=args.compression,
                               slow_render=slow_render, encoder_preset=args.encoder_preset, speed_factor=args.speedup, force_fringe=args.force_fringe, upscale=args.upscale, encoder_override=args.encoder)
@@ -1334,6 +1334,17 @@ Examples:
                     if movetimes:
                         kwargs["movetimes"] = movetimes
 
+                if args.output is not None:
+                    root, ext = os.path.splitext(args.output)
+                    output_path = f"{root}_{idx+1:03d}{ext}"
+                else:
+                    base_name = _generate_filename(
+                        sol, kwargs.get("tps"), kwargs.get("time"),
+                        kwargs.get("movetimes", -1), kwargs.get("size"),
+                        index=idx + 1, speed_factor=args.speedup,
+                        scramble=kwargs.get("scramble"))
+                    output_path = _pick_output_filename(replays_dir, base_name)
+
                 batch_items.append({"solution": sol, "output_path": output_path, "opts": opts, **kwargs})
 
             gen = ReplayVideoGenerator()
@@ -1343,17 +1354,26 @@ Examples:
             for idx, item in enumerate(items):
                 mode, val = item if isinstance(item, tuple) else ("manual", item)
 
-                if len(items) > 1 and mode == "batch":
-                    root, ext = os.path.splitext(batch_out)
-                    output_path = f"{root}_{idx+1:03d}{ext}"
-                else:
-                    output_path = batch_out
-
                 if mode in ("url", "batch"):
                     try:
                         sol, tps, scramble, movetimes = parse_replay_url(val)
                     except Exception:
                         sol, tps, scramble, movetimes = val, args.tps, args.scramble, None
+
+                    if args.output is not None:
+                        if len(items) > 1:
+                            root, ext = os.path.splitext(args.output)
+                            output_path = f"{root}_{idx+1:03d}{ext}"
+                        else:
+                            output_path = args.output
+                    else:
+                        base_name = _generate_filename(
+                            sol, tps or args.tps, None,
+                            movetimes if movetimes else -1, None,
+                            index=idx + 1 if len(items) > 1 else 0,
+                            speed_factor=args.speedup, scramble=scramble)
+                        output_path = _pick_output_filename(replays_dir, base_name)
+
                     run_single(sol, output_path, opts=opts,
                                tps=tps or args.tps, scramble=scramble,
                                movetimes=movetimes, quality=args.quality,
@@ -1362,6 +1382,16 @@ Examples:
                                speed_factor=args.speedup, force_fringe=args.force_fringe,
                                upscale=args.upscale, encoder_override=args.encoder)
                 else:
+                    if args.output is not None:
+                        output_path = args.output
+                    else:
+                        base_name = _generate_filename(
+                            val, args.tps, args.time,
+                            movetimes if movetimes else -1, args.size,
+                            index=idx + 1 if len(items) > 1 else 0,
+                            speed_factor=args.speedup, scramble=args.scramble)
+                        output_path = _pick_output_filename(replays_dir, base_name)
+
                     run_single(val, output_path, opts=opts,
                                tps=None if movetimes else args.tps, time=args.time,
                                scramble=args.scramble, size=args.size,
