@@ -567,6 +567,14 @@ class GPURenderer:
                                         _gl = f"{_cum_s:>{_stage_w1}} | {_split_s:<{_stage_w2}}  | {_label:<{_stage_w4}}"
                                     _pt(_sb, _gl, _gs_atlas, _gs_x, _stage_y_positions[_i], _white_rgb)
 
+                            # ── Cycles (static white) ──
+                            _cycles_lines = _layout.get("cycles_lines")
+                            _cycles_y_val = _layout.get("cycles_y")
+                            if _cycles_lines and _cycles_y_val is not None:
+                                _cyc_line_h = _gs_atlas[32].shape[0] + 8
+                                for _li, _line in enumerate(_cycles_lines):
+                                    _pt(_sb, _line, _gs_atlas, _gs_x, _cycles_y_val + _li * _cyc_line_h, _white_rgb)
+
                             _static_base_gpu = _sb
                             _sb_h, _sb_w = _static_base_gpu.shape[:2]
                             _static_base_pil = overlay_render_data.get("static_base")
@@ -664,6 +672,19 @@ class GPURenderer:
                                         _sa = _src[:, :, 3:4]
                                         _dst = canvas[0, _hy:_hy + _hh, _hx:_hx + _hw]
                                         _dst[:, :, :3] = _src[:, :, :3] * _sa + _dst[:, :, :3] * (1 - _sa)
+
+                            # ── Cycles (cyan overlay for entries whose fix time reached) ──
+                            _cycles_entry_data = _layout.get("cycles_entry_data", [])
+                            if _cycles_entry_data:
+                                _ctm = _sd.get("cur_time_ms", 0)
+                                _cft = _sd.get("cycles_fix_times", {})
+                                for _ed in _cycles_entry_data:
+                                    _tile = _ed["tile"]
+                                    if _tile is not None:
+                                        _fix_ms = _cft.get(_tile)
+                                        if _fix_ms is not None and _ctm >= _fix_ms:
+                                            _pt(canvas[0:1], _ed["text"], _gs_atlas,
+                                                px + _ed["panel_x"], py + _ed["panel_y"], _cyan_rgb_sb)
                 else:
                     first_stats_arr = frame_params_list[batch_start].get("stats_arr")
                     if first_stats_arr is not None:

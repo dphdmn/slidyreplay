@@ -944,7 +944,8 @@ def get_data_by_level(cl):
     return {
         "mainColors": get_main_colors_by_level(cl),
         "secondaryColors": get_secondary_colors_by_level(cl),
-        "activeZone": get_active_zone_by_level(cl)
+        "activeZone": get_active_zone_by_level(cl),
+        "cycledTiles": cl.get("cycledTiles", []),
     }
 
 
@@ -963,11 +964,29 @@ def generate_grids_stats(grids_data):
     for k in list(levels.keys()):
         sig = (str(levels[k]["mainColors"]), str(levels[k]["secondaryColors"]))
         if sig in seen:
-            levels[k] = seen[sig]
+            existing = seen[sig]
+            existing_ct = existing.get("cycledTiles", [])
+            current_ct = levels[k].get("cycledTiles", [])
+            if existing_ct or current_ct:
+                merged = list(set(existing_ct + current_ct))
+                existing["cycledTiles"] = merged
+            levels[k] = existing
         else:
             seen[sig] = levels[k]
 
     return levels
+
+
+def collect_all_cycled_tiles(grids_data):
+    tiles = set()
+    def walk(node):
+        if node:
+            ct = node.get("cycledTiles", [])
+            tiles.update(ct)
+            walk(node.get("nextLayerFirst"))
+            walk(node.get("nextLayerSecond"))
+    walk(grids_data)
+    return sorted(tiles)
 
 
 def get_grids_state(grids_states, move_index):

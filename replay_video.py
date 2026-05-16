@@ -35,6 +35,7 @@ from sliding_puzzles import decompress_string_to_array, read_solve_data, parse_r
 
 from grids_analysis import (
     CT_MAP, analyse_grids_initial, generate_grids_stats, filter_grid_stages,
+    collect_all_cycled_tiles,
 )
 
 from track_progress import ProgressTracker, CPU_PHASE_WEIGHTS, GPU_PHASE_WEIGHTS, BATCH_PHASE_WEIGHTS
@@ -288,6 +289,61 @@ def format_time_str(ms: int) -> str:
     return f"{minutes}:{sec:06.3f}"
 
 
+def _wrap_cycles_text(cyc_text, font, max_line_w):
+    if not cyc_text:
+        return []
+    prefix = "cyc: "
+    body = cyc_text[len(prefix):]
+    items = [x.strip() for x in body.split(",")]
+    lines = []
+    prefix_w = font.getbbox(prefix)[2]
+    comma_w = font.getbbox(", ")[2]
+    current = prefix
+    current_w = prefix_w
+    for item in items:
+        item_w = font.getbbox(item)[2]
+        sep_w = 0 if current == prefix else comma_w
+        if current_w + sep_w + item_w > max_line_w and current != prefix:
+            lines.append(current)
+            current = prefix + item
+            current_w = prefix_w + item_w
+        else:
+            if current != prefix:
+                current += ", "
+                current_w += comma_w
+            current += item
+            current_w += item_w
+    if current:
+        lines.append(current)
+    return lines
+
+
+def _render_cycles_lines_on_draw(draw, lines, x, y, cur_time_ms, cycles_fix_times, font, done_color, pending_color):
+    line_h = font.getbbox("Xy")[3] - font.getbbox("Xy")[1]
+    for line in lines:
+        prefix = "cyc: "
+        body = line[len(prefix):]
+        entries = [e.strip() for e in body.split(",")]
+        cx = x
+        draw.text((cx, y), prefix, fill=(*pending_color, 255), font=font)
+        cx += font.getbbox(prefix)[2]
+        for i, entry in enumerate(entries):
+            if i > 0:
+                draw.text((cx, y), ", ", fill=(*pending_color, 255), font=font)
+                cx += font.getbbox(", ")[2]
+            tile_str = entry.split("(")[0] if "(" in entry else entry
+            try:
+                tile = int(tile_str)
+                fix_ms = cycles_fix_times.get(tile)
+                color = done_color if (fix_ms is not None and cur_time_ms >= fix_ms) else pending_color
+            except ValueError:
+                color = pending_color
+            draw.text((cx, y), entry, fill=(*color, 255), font=font)
+            cx += font.getbbox(entry)[2]
+        y += line_h + 8
+    return y
+
+
 # ─── Puzzle Rendering ──────────────────────────────────────────────
 
 def draw_filled_rect(draw, bbox, color):
@@ -372,6 +428,7 @@ def render_frame(
                 stats_h = _compute_stats_full_height(
                     panel_w_est,
                     has_grid_stages=len(stats_data.get("grid_stages", [])) > 1,
+                    has_cycles=bool(stats_data.get("cycles_display", "")),
                     quality=quality,
                 )
                 canvas_h = max(canvas_h, (0 if opts.no_header else header_h) + stats_h)
@@ -682,49 +739,68 @@ def _render_stats_full(stats_data, is_movetimes_accurate, panel_w, quality=1080,
     # ── Grid stages ──
     stages = stats_data.get("grid_stages", [])
     cur_stage = stats_data.get("grid_current", 0)
-    if len(stages) > 1:
+    show_stages = len(stages) > 1 or (len(stages) == 1 and stats_data.get("cycles_display", ""))
+    if show_stages:
         gb = gs_hf.getbbox("Grid stages")
         add(px, y, "Grid stages", CYAN, gs_hf)
         y += (gb[3] - gb[1]) + 14
-        raw_lines = []
-        for st in stages:
-            if st["cum_time"] > 0:
-                cum_s = format_time_str(st["cum_time"])
-                split_s = format_time_str(st["split_time"])
-                mvtps_s = f"({st['split_moves']}/{st['split_tps']:.1f})"
-            else:
-                cum_s = str(st["cum_moves"])
-                split_s = f"(+{st['split_moves']})"
-                mvtps_s = ""
-            raw_lines.append((cum_s, split_s, mvtps_s, st["label"]))
-        if raw_lines:
-            w1 = max(len(l[0]) for l in raw_lines)
-            w2 = max(len(l[1]) for l in raw_lines)
-            w3 = max(len(l[2]) for l in raw_lines) if any(l[2] for l in raw_lines) else 0
-            w4 = max(len(l[3]) for l in raw_lines)
-            formatted = []
-            for cum_s, split_s, mvtps_s, label in raw_lines:
-                if '.' in cum_s:
-                    line = f"{cum_s:>{w1}} | {split_s:>{w2}} {mvtps_s:<{w3}} | {label:<{w4}}"
+        if len(stages) > 1:
+            raw_lines = []
+            for st in stages:
+                if st["cum_time"] > 0:
+                    cum_s = format_time_str(st["cum_time"])
+                    split_s = format_time_str(st["split_time"])
+                    mvtps_s = f"({st['split_moves']}/{st['split_tps']:.1f})"
                 else:
-                    line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
-                formatted.append(line)
-            max_line_w = max(gs_lf.getbbox(l)[2] for l in formatted)
-            gs_x = max(6, (panel_w - max_line_w) // 2)
-        for i, line in enumerate(formatted):
-            color = CYAN if i == cur_stage else WHITE
-            add(gs_x, y, line, color, gs_lf)
-            y += (gs_lf.getbbox(line)[3] - gs_lf.getbbox(line)[1]) + 8
+                    cum_s = str(st["cum_moves"])
+                    split_s = f"(+{st['split_moves']})"
+                    mvtps_s = ""
+                raw_lines.append((cum_s, split_s, mvtps_s, st["label"]))
+            if raw_lines:
+                w1 = max(len(l[0]) for l in raw_lines)
+                w2 = max(len(l[1]) for l in raw_lines)
+                w3 = max(len(l[2]) for l in raw_lines) if any(l[2] for l in raw_lines) else 0
+                w4 = max(len(l[3]) for l in raw_lines)
+                formatted = []
+                for cum_s, split_s, mvtps_s, label in raw_lines:
+                    if '.' in cum_s:
+                        line = f"{cum_s:>{w1}} | {split_s:>{w2}} {mvtps_s:<{w3}} | {label:<{w4}}"
+                    else:
+                        line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
+                    formatted.append(line)
+                max_line_w = max(gs_lf.getbbox(l)[2] for l in formatted)
+                gs_x = max(6, (panel_w - max_line_w) // 2)
+            for i, line in enumerate(formatted):
+                color = CYAN if i == cur_stage else WHITE
+                add(gs_x, y, line, color, gs_lf)
+                y += (gs_lf.getbbox(line)[3] - gs_lf.getbbox(line)[1]) + 8
+
+        # ── Cycles lines ──
+        cycles_display = stats_data.get("cycles_display", "")
+        cur_time_ms = stats_data.get("cur_time_ms", 0)
+        cycles_fix_times = stats_data.get("cycles_fix_times", {})
+        cyc_lines_data = None
+        if cycles_display:
+            y += 4
+            max_line_w = max(gs_lf.getbbox(l)[2] for l in formatted) if formatted else panel_w - 2 * gs_x
+            cyc_lines = _wrap_cycles_text(cycles_display, gs_lf, max_line_w)
+            cyc_start_y = y
+            for _ in cyc_lines:
+                y += (gs_lf.getbbox("Xy")[3] - gs_lf.getbbox("Xy")[1]) + 8
+            cyc_lines_data = (cyc_lines, cyc_start_y, cur_time_ms, cycles_fix_times)
 
     total_h = y + 30
     im = Image.new("RGBA", (panel_w, total_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(im)
     for x, y, text, fill, font in lines:
         draw.text((x, y), text, fill=(*fill, 255), font=font)
+    if cyc_lines_data:
+        cyc_lines, cyc_start_y, ctm, cft = cyc_lines_data
+        _render_cycles_lines_on_draw(draw, cyc_lines, gs_x, cyc_start_y, ctm, cft, gs_lf, CYAN, WHITE)
     return im
 
 
-def _compute_stats_full_height(panel_w, has_grid_stages=True, quality=1080):
+def _compute_stats_full_height(panel_w, has_grid_stages=True, has_cycles=False, quality=1080):
     """Estimate total height of the rendered stats panel (new section layout)."""
     li = _stats_layout_info(panel_w, quality)
     data_font = li["data_font"]; hf = li["header_font"]
@@ -750,6 +826,8 @@ def _compute_stats_full_height(panel_w, has_grid_stages=True, quality=1080):
     if has_grid_stages:
         y += (gs_hf.getbbox("Grid stages")[3] - gs_hf.getbbox("Grid stages")[1]) + 14
         y += 4 * ((gs_lf.getbbox("Xy")[3] - gs_lf.getbbox("Xy")[1]) + 8)
+    if has_cycles:
+        y += 4 + 4 * ((gs_lf.getbbox("Xy")[3] - gs_lf.getbbox("Xy")[1]) + 8)
     y += 30
     return y
 
@@ -871,13 +949,51 @@ def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_sta
             stage_y_positions.append(y)
             y += (gs_lf.getbbox(line)[3] - gs_lf.getbbox(line)[1]) + 8
 
+    stage_line_h = gs_lf.getbbox("Xy")[3] - gs_lf.getbbox("Xy")[1] + 4
+
+    # ── Cycles (static white — same pattern as grid stages) ──
+    cycles_display = stats_data.get("cycles_display", "")
+    cycles_lines_list = None
+    cycles_y_pos = None
+    cycles_entry_data = []
+    if cycles_display:
+        y += 4
+        cycles_y_pos = y
+        try:
+            max_line_w = max(gs_lf.getbbox(l)[2] for l in formatted)
+        except (NameError, ValueError):
+            max_line_w = panel_w - 2 * max(6, px)
+        cycles_lines_list = _wrap_cycles_text(cycles_display, gs_lf, max_line_w)
+        prefix = "cyc: "
+        pre_w = gs_lf.getbbox(prefix)[2]
+        comma_w = gs_lf.getbbox(", ")[2]
+        cycles_line_h = gs_lf.getbbox("Xy")[3] - gs_lf.getbbox("Xy")[1] + 8
+        for li, line in enumerate(cycles_lines_list):
+            add(gs_x, y, line, WHITE, gs_lf)
+            body = line[len(prefix):]
+            entries = [e.strip() for e in body.split(",")]
+            cx = pre_w
+            for entry in entries:
+                tile_str = entry.split("(")[0]
+                try:
+                    tile = int(tile_str)
+                except ValueError:
+                    tile = None
+                ew = gs_lf.getbbox(entry)[2]
+                cycles_entry_data.append({
+                    "tile": tile,
+                    "text": entry,
+                    "panel_x": gs_x + cx,
+                    "panel_y": cycles_y_pos + li * cycles_line_h,
+                })
+                cx += ew + comma_w
+            y += cycles_line_h
+
     total_h = y + 30
     im = Image.new("RGBA", (panel_w, total_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(im)
     for x, y, text, fill, font in lines:
         draw.text((x, y), text, fill=(*fill, 255), font=font)
-
-    stage_line_h = gs_lf.getbbox("Xy")[3] - gs_lf.getbbox("Xy")[1] + 4
 
     layout_info = {
         "px": px, "gs_x": gs_x, "inner_w": inner_w,
@@ -895,8 +1011,10 @@ def _make_stats_static_base(panel_w, stats_data, is_movetimes_accurate, grid_sta
         "stage_w2": w2 if len(grid_stages_list) > 1 and raw_lines else 0,
         "stage_w3": w3 if len(grid_stages_list) > 1 and raw_lines else 0,
         "stage_w4": w4 if len(grid_stages_list) > 1 and raw_lines else 0,
+        "cycles_lines": cycles_lines_list,
+        "cycles_y": cycles_y_pos,
+        "cycles_entry_data": cycles_entry_data,
     }
-    return im, layout_info
     return im, layout_info
 # ─── Font Atlas Disk Cache for CPU path ───────────────────────
 _NP_CACHE_DIR = "render_cache"
@@ -1021,6 +1139,18 @@ def _apply_stats_dynamic(stats_data, panel_w, static_base, layout_info, canvas, 
         else:
             line = f"{cum_s:>{w1}} | {split_s:<{w2}}  | {label:<{w4}}"
         overlay_surface(line, gs_lf, CYAN, gs_x, stage_y_positions[cur_stage])
+
+    # ── Cycles (cyan overlay for entries whose fix time has been reached) ──
+    cycles_entry_data = layout_info.get("cycles_entry_data", [])
+    if cycles_entry_data:
+        cur_time_ms = stats_data.get("cur_time_ms", 0)
+        cycles_fix_times = stats_data.get("cycles_fix_times", {})
+        for ed in cycles_entry_data:
+            tile = ed["tile"]
+            if tile is not None:
+                fix_ms = cycles_fix_times.get(tile)
+                if fix_ms is not None and cur_time_ms >= fix_ms:
+                    overlay_surface(ed["text"], gs_lf, CYAN, ed["panel_x"], ed["panel_y"])
 
 
 def prerender_tile_layers(width, height, tile_size, font_size, opts, all_fringe_schemes, grid_states, cancel_check=None):
@@ -1374,6 +1504,7 @@ def generate_frames(
     speed_factor: float = 1.0,
     opts: RenderOptions = RenderOptions(),
     expanded_solution: Optional[str] = None,
+    grids_data: Optional[dict] = None,
 ) -> Tuple[List[Image.Image], List[int]]:
     expanded = expanded_solution if expanded_solution is not None else expand_solution(solution)
     sol_len = len(expanded)
@@ -1437,6 +1568,44 @@ def generate_frames(
         last_moves = cum_moves
 
     log.info(f"  grid_stages: n_stages={n_stages}, filtered_stages={filtered_stages}")
+
+    # ── Cycles data ──
+    all_cycled_tiles = []
+    cycles_fix_times = {}
+    if grids_data is not None:
+        all_cycled_tiles = collect_all_cycled_tiles(grids_data)
+    if all_cycled_tiles:
+        mc_flat = np.array(matrix, dtype=np.int32).flatten()
+        zpt = find_zero(matrix, w, h)
+        zp_idx = zpt[0] * w + zpt[1]
+        tile_pos = np.zeros(w * h + 1, dtype=np.int32)
+        for i, t in enumerate(mc_flat):
+            tile_pos[t] = i
+        tile_set = set(all_cycled_tiles)
+        last_wrong = {}
+        for t in all_cycled_tiles:
+            if tile_pos[t] != t - 1:
+                last_wrong[t] = 0
+        for mi in range(sol_len):
+            move = expanded[mi]
+            dr, dc = _MOVE_DIRS[move]
+            new_zp = zp_idx + dr * w + dc
+            moving_tile = mc_flat[new_zp]
+            mc_flat[zp_idx] = moving_tile
+            mc_flat[new_zp] = 0
+            tile_pos[moving_tile] = zp_idx
+            tile_pos[0] = new_zp
+            zp_idx = new_zp
+            if moving_tile in tile_set and tile_pos[moving_tile] != moving_tile - 1:
+                last_wrong[moving_tile] = mi + 1
+        time_arr = original_fake_times if original_fake_times and len(original_fake_times) > sol_len else fake_times
+        for t in all_cycled_tiles:
+            lw = last_wrong.get(t, -1)
+            if lw >= 0 and lw + 1 < len(time_arr):
+                cycles_fix_times[t] = round(time_arr[lw + 1])
+            elif lw >= 0:
+                cycles_fix_times[t] = round(time_arr[-1])
+
     layout = compute_layout(quality, w, h, opts.grid_only, no_header=opts.no_header, no_details=opts.no_details)
     tile_size = layout["tile_size"]
     font_size = layout["font_size"]
@@ -1593,11 +1762,30 @@ def generate_frames(
             "cubic_estimate": None,
             "speed_playback": f"{speed_factor:.2f}x" if speed_factor != 1.0 else "1.00x",
             "timer_right_text": f"{moved_md} ({predicted_moves} / {mmd_display})",
+            "cur_time_ms": cur_time_ms,
         }
         move_idx = frame_idx - 1 if frame_idx > 0 else 0
         cur_stage_idx = max(0, sum(1 for s in filtered_stages if s <= move_idx) - 1)
         sd["grid_stages"] = grid_stages_list
         sd["grid_current"] = cur_stage_idx
+        if all_cycled_tiles:
+            parts = []
+            tile_data = []
+            for t in all_cycled_tiles:
+                ft = cycles_fix_times.get(t)
+                if ft is not None:
+                    parts.append(f"{t}(→{format_time_str(ft)})")
+                    tile_data.append({"tile": t, "fix_ms": ft})
+                else:
+                    parts.append(str(t))
+                    tile_data.append({"tile": t, "fix_ms": None})
+            sd["cycles_display"] = "cyc: " + ", ".join(parts)
+            sd["cycles_tile_data"] = tile_data
+            sd["cycles_fix_times"] = cycles_fix_times
+        else:
+            sd["cycles_display"] = ""
+            sd["cycles_tile_data"] = []
+            sd["cycles_fix_times"] = {}
         if w * h > 99:
             from replay_generator import get_cubic_estimate
             ce = get_cubic_estimate(round(total_time_ms), w, h)
@@ -2163,6 +2351,7 @@ class ReplayVideoGenerator:
             speed_factor=speed_factor,
             opts=opts,
             expanded_solution=solution_expanded,
+            grids_data=grids_data,
         )
 
         log.info(f"  generate_frames returned: frames_count={len(frames)}, frame_state_map_len={len(frame_state_map)}")
