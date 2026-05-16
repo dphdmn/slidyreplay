@@ -281,6 +281,10 @@ def format_time_str(ms: int) -> str:
         return f"{total_sec:.3f}"
     minutes = int(total_sec // 60)
     sec = total_sec % 60
+    if minutes >= 60:
+        hours = minutes // 60
+        minutes = minutes % 60
+        return f"{hours}:{minutes:02d}:{sec:06.3f}"
     return f"{minutes}:{sec:06.3f}"
 
 
