@@ -946,8 +946,21 @@ class ReplayGUI(tb.Window):
         # All items processed
         log.info("_process_queue: all items done")
 
+    @staticmethod
+    def _time_str(t: float) -> str:
+        total_sec = int(round(t))
+        if total_sec >= 3600:
+            return f"{total_sec // 3600}h{total_sec % 3600 // 60}m"
+        if total_sec >= 60:
+            return f"{total_sec // 60}m{total_sec % 60}s"
+        return f"{t:.1f}s"
+
     def _on_item_progress(self, idx, adjusted_cur, adjusted_tot, desc=None, gpu_stats=None, use_gpu=False):
         item = self._item_progress[idx]
+        if "start_time" not in item:
+            item["start_time"] = time.time()
+            item["last_poll_cur"] = adjusted_cur
+            item["last_poll_time"] = item["start_time"]
         item["adjusted_cur"] = adjusted_cur
         item["adjusted_tot"] = adjusted_tot
         if gpu_stats:
@@ -1006,6 +1019,17 @@ class ReplayGUI(tb.Window):
                 if desc:
                     detail_parts.append(f"{desc}:")
                 detail_parts.append(f"{cur}/{tot} ({self.detail_bar['value'] if tot > 0 else 0}%)")
+
+                st = p.get("start_time")
+                if st and tot > 0 and cur > 0:
+                    item_elapsed = time.time() - st
+                    rate = cur / item_elapsed if item_elapsed > 0 else 0
+                    remaining = tot - cur
+                    eta = remaining / rate if rate > 0 else 0
+                    if item_elapsed >= 1.0:
+                        detail_parts.append(f"{rate:.1f}/s")
+                    detail_parts.append(f"{self._time_str(item_elapsed)}/{self._time_str(eta) if eta < 1e8 else '?'}")
+
                 if gs and gs.get("batch_size"):
                     detail_parts.append(f"GPU: {gs.get('mem_used_mb', 0)}/{gs.get('total_mem_mb', 0)} MB")
                 self.pb_detail_text.set(" ".join(detail_parts))
