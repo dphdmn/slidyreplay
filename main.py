@@ -169,7 +169,7 @@ class ReplayGUI(tb.Window):
         super().__init__(themename="darkly")
         self.withdraw()
         self.title("Replay Video Generator")
-        self.minsize(960, 640)
+        self.minsize(1200, 680)
 
         self.generated_files = []
         self._executor = None
@@ -187,7 +187,7 @@ class ReplayGUI(tb.Window):
         self._quality_presets = {"720p": 720, "1080p": 1080, "1440p (2K)": 1440, "2160p (4K)": 2160}
         self.compression_var = tk.IntVar(value=18)
         self.slow_render_var = tk.BooleanVar(value=False)
-        self.speed_factor_var = tk.StringVar(value="1.0")
+        self.speed_factor_var = tk.StringVar(value="1")
 
         self.tps_var = tk.StringVar()
         self.time_var = tk.StringVar()
@@ -232,49 +232,71 @@ class ReplayGUI(tb.Window):
         root = tb.Frame(self, padding=8)
         root.pack(fill="both", expand=True)
 
-        # ── Two-column layout using grid ──
-        root.grid_columnconfigure(0, weight=1, minsize=400)
-        root.grid_columnconfigure(1, weight=1, minsize=440)
-        root.grid_rowconfigure(1, weight=1)
+        # ── Three-column layout using grid ──
+        root.grid_columnconfigure(0, weight=1, minsize=360)
+        root.grid_columnconfigure(1, weight=1, minsize=360)
+        root.grid_columnconfigure(2, weight=1, minsize=360)
+        root.grid_rowconfigure(0, weight=1)
 
-        # ======== LEFT COLUMN ========
-        left = tb.Frame(root)
-        left.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, 4))
-        left.grid_rowconfigure(1, weight=1)
-        left.grid_columnconfigure(0, weight=1)
-
-        # ── Settings (top of left) ──
-        settings = tb.LabelFrame(left, text="Settings")
-        settings.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        # ======== COLUMN 0: SETTINGS ========
+        settings = tb.LabelFrame(root, text="Settings")
+        settings.grid(row=0, column=0, sticky="nsew", padx=(0, 3))
         settings.grid_columnconfigure(0, weight=1)
 
         r = 0
+        _sec_font = (FONT_FAMILY, 9, "bold")
+        _tog_font = (FONT_FAMILY, 9)
 
-        # ── OUTPUT ──
-        tb.Separator(settings, bootstyle="secondary").grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
+        # ════════ OUTPUT ════════
+        tb.Label(settings, text="OUTPUT", font=_sec_font, bootstyle="secondary").grid(
+            row=r, column=0, sticky="w", padx=12, pady=(6, 0))
         r += 1
+        tb.Separator(settings, bootstyle="secondary").grid(
+            row=r, column=0, sticky="ew", pady=(1, 4), padx=12)
+        r += 1
+
         out_row = tb.Frame(settings)
-        out_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
+        out_row.grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
         out_row.grid_columnconfigure(1, weight=1)
-        tb.Label(out_row, text="Output folder", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        tb.Label(out_row, text="Output folder", font=(FONT_FAMILY, 9)).grid(
+            row=0, column=0, sticky="w", padx=(0, 6))
         self.out_entry = tb.Entry(out_row, textvariable=self.out_folder_var)
         self.out_entry.grid(row=0, column=1, sticky="ew", padx=(0, 4))
         tb.Button(out_row, text="Browse...", command=self._browse_output,
                   bootstyle="secondary-outline", width=9).grid(row=0, column=2)
         r += 1
 
-        # ── VIDEO ──
-        tb.Separator(settings, bootstyle="secondary").grid(row=r, column=0, sticky="ew", pady=(6, 4), padx=12)
+        # ════════ QUALITY ════════
+        tb.Label(settings, text="QUALITY", font=_sec_font, bootstyle="secondary").grid(
+            row=r, column=0, sticky="w", padx=12, pady=(6, 0))
+        r += 1
+        tb.Separator(settings, bootstyle="secondary").grid(
+            row=r, column=0, sticky="ew", pady=(1, 4), padx=12)
         r += 1
 
+        # Quality preset
+        qual_row = tb.Frame(settings)
+        qual_row.grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
+        qual_row.grid_columnconfigure(1, weight=1)
+        tb.Label(qual_row, text="Quality:", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        quality_combo = ttk.Combobox(qual_row, textvariable=self.quality_preset_var,
+                                     values=list(self._quality_presets.keys()),
+                                     state="readonly", width=14)
+        quality_combo.grid(row=0, column=1, sticky="w")
+        def _on_quality_change(*_):
+            self._update_quality_warning()
+        self.quality_preset_var.trace_add("write", _on_quality_change)
+        r += 1
+
+        # FPS
         fps_row = tb.Frame(settings)
-        fps_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
+        fps_row.grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
         fps_row.grid_columnconfigure(1, weight=1)
-        tb.Label(fps_row, text="FPS", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        tb.Label(fps_row, text="FPS:", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
         self.fps_scale = tb.Scale(fps_row, from_=5, to=240,
                                   variable=self.fps_var, orient="horizontal")
         self.fps_scale.grid(row=0, column=1, sticky="ew", padx=(0, 6))
-        self.fps_label = tb.Label(fps_row, text="60", width=5, font=(FONT_FAMILY, 9))
+        self.fps_label = tb.Label(fps_row, text="60", width=4, font=(FONT_FAMILY, 9))
         self.fps_label.grid(row=0, column=2)
         def _snap_fps(*_):
             v = self.fps_var.get()
@@ -285,30 +307,48 @@ class ReplayGUI(tb.Window):
         self.fps_var.trace_add("write", _snap_fps)
         r += 1
 
-        speed_row = tb.Frame(settings)
-        speed_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
-        speed_row.grid_columnconfigure(1, weight=1)
-        tb.Label(speed_row, text="Speed (×)", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
-        self.speed_entry = tb.Entry(speed_row, textvariable=self.speed_factor_var, width=10)
-        self.speed_entry.grid(row=0, column=1, sticky="w", padx=(0, 6))
-        r += 1
-
-        compression_row = tb.Frame(settings)
-        compression_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
-        compression_row.grid_columnconfigure(1, weight=1)
-        tb.Label(compression_row, text="Compression (lower = fewer artifacts, larger file)", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
-        compression_scale = tb.Scale(compression_row, from_=10, to=40, variable=self.compression_var, orient="horizontal",
-                              bootstyle="primary", length=200)
-        compression_scale.grid(row=0, column=1, sticky="ew", padx=(0, 6))
-        self.compression_value_lbl = tb.Label(compression_row, text=str(self.compression_var.get()), font=(FONT_FAMILY, 9, "bold"), width=3)
-        self.compression_value_lbl.grid(row=0, column=2, sticky="w")
+        # Compression + range desc (side by side)
+        comp_row = tb.Frame(settings)
+        comp_row.grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
+        comp_row.grid_columnconfigure(1, weight=1)
+        tb.Label(comp_row, text="Compression:", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        compression_scale = tb.Scale(comp_row, from_=10, to=40, variable=self.compression_var,
+                                     orient="horizontal", bootstyle="primary")
+        compression_scale.grid(row=0, column=1, sticky="ew", padx=(0, 4))
+        self.compression_value_lbl = tb.Label(comp_row, text=str(self.compression_var.get()),
+                                               font=(FONT_FAMILY, 9, "bold"), width=3)
+        self.compression_value_lbl.grid(row=0, column=2, sticky="w", padx=(0, 8))
+        tb.Label(comp_row, text="10 (best) – 40 (smallest)", font=(FONT_FAMILY, 8),
+                 foreground="#888").grid(row=0, column=3, sticky="w")
         def _on_compression_change(*_):
             self.compression_value_lbl.config(text=str(self.compression_var.get()))
         self.compression_var.trace_add("write", _on_compression_change)
         r += 1
 
-        # ── RENDERING ──
-        tb.Separator(settings, bootstyle="secondary").grid(row=r, column=0, sticky="ew", pady=(6, 4), padx=12)
+        # Speed
+        spd_row = tb.Frame(settings)
+        spd_row.grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
+        spd_row.grid_columnconfigure(1, weight=1)
+        tb.Label(spd_row, text="Speed:", font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.speed_entry = tb.Entry(spd_row, textvariable=self.speed_factor_var, width=8)
+        self.speed_entry.grid(row=0, column=1, sticky="w")
+        tb.Label(spd_row, text="2.0 = 2× faster, 0.5 = half speed", font=(FONT_FAMILY, 8),
+                 foreground="#888").grid(row=0, column=2, sticky="w", padx=(6, 0))
+        r += 1
+
+        # Quality RAM warning (conditional — no upscale fluff)
+        self.quality_warning = tb.Label(settings, text="", font=(FONT_FAMILY, 8),
+                                        foreground="#ffa500", anchor="w")
+        self.quality_warning.grid(row=r, column=0, sticky="ew", pady=(0, 4), padx=12)
+        self.quality_warning.grid_remove()
+        r += 1
+
+        # ════════ RENDER ════════
+        tb.Label(settings, text="RENDER", font=_sec_font, bootstyle="secondary").grid(
+            row=r, column=0, sticky="w", padx=12, pady=(6, 0))
+        r += 1
+        tb.Separator(settings, bootstyle="secondary").grid(
+            row=r, column=0, sticky="ew", pady=(1, 4), padx=12)
         r += 1
 
         self._gpu_available = False
@@ -322,61 +362,63 @@ class ReplayGUI(tb.Window):
             pass
         self.use_gpu_var = tk.BooleanVar(value=self._gpu_available)
 
-        # GPU + toggles row
-        chk_row = tb.Frame(settings)
-        chk_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
-        self.gpu_toggle = tb.Checkbutton(
-            chk_row, text="GPU acceleration", variable=self.use_gpu_var,
-            bootstyle="round-toggle success"
-        )
-        self.gpu_toggle.pack(side="left", padx=(0, 12))
-        tb.Checkbutton(chk_row, text="Force fringe", variable=self.force_fringe_var,
-                       bootstyle="round-toggle").pack(side="left", padx=(0, 12))
-        tb.Label(chk_row, text="Quality:", font=(FONT_FAMILY, 9)).pack(side="left", padx=(0, 4))
-        quality_combo = ttk.Combobox(chk_row, textvariable=self.quality_preset_var,
-                                    values=list(self._quality_presets.keys()),
-                                    state="readonly", width=12)
-        quality_combo.pack(side="left")
-        def _on_quality_change(*_):
-            self._update_quality_warning()
-        self.quality_preset_var.trace_add("write", _on_quality_change)
+        # GPU row: toggle + status text inline
+        gpu_row = tb.Frame(settings)
+        gpu_row.grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
+        self.gpu_toggle = tb.Checkbutton(gpu_row, text="GPU acceleration",
+                                          variable=self.use_gpu_var,
+                                          bootstyle="round-toggle success")
+        self.gpu_toggle.pack(side="left", padx=(0, 8))
+        self.gpu_status = tb.Label(gpu_row, text="", font=(FONT_FAMILY, 9), foreground="#888")
+        self.gpu_status.pack(side="left")
         r += 1
 
-        # GPU info
-        self.gpu_info_lbl = tb.Label(settings, font=(FONT_FAMILY, 9), anchor="w")
-        self.gpu_info_lbl.grid(row=r, column=0, sticky="ew", pady=(0, 4), padx=12)
-        if self._gpu_available:
-            self.gpu_info_lbl.config(text=f"GPU ON ({self._gpu_name})", bootstyle="success")
-        else:
-            self.gpu_info_lbl.config(text="Not available — install CUDA (see README)", bootstyle="secondary")
-
-        # Quality RAM warning (atlas prerender uses significant RAM)
-        self.quality_warning = tb.Label(settings, text="", font=(FONT_FAMILY, 8), foreground="#ffa500", anchor="w")
-        self.quality_warning.grid(row=r, column=0, sticky="ew", pady=(0, 4), padx=12)
-        self.quality_warning.grid_remove()
-
-        def _on_gpu_toggle():
-            if self.use_gpu_var.get():
-                if self._gpu_available:
-                    self.gpu_info_lbl.config(text=f"GPU ON ({self._gpu_name})", bootstyle="success")
-                else:
-                    self.gpu_info_lbl.config(text="GPU not available — install CUDA (see README)", bootstyle="secondary")
-            else:
-                self.gpu_info_lbl.config(text="GPU OFF (CPU)", bootstyle="secondary")
-                self.slow_render_var.set(True)
-            _update_slow_render_desc()
-        self.gpu_toggle.config(command=_on_gpu_toggle)
-        r += 1
-
-        # Slow render (single line: checkbox + inline description)
+        # Slow render row
         slow_row = tb.Frame(settings)
-        slow_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
-        self.slow_render_cb = tb.Checkbutton(slow_row, text="Slow render", variable=self.slow_render_var,
+        slow_row.grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
+        self.slow_render_cb = tb.Checkbutton(slow_row, text="Slow render",
+                                              variable=self.slow_render_var,
                                               bootstyle="round-toggle")
         self.slow_render_cb.pack(side="left")
         self.slow_render_desc = tb.Label(slow_row, text="~33% smaller file, ~33% longer",
                                           font=(FONT_FAMILY, 9), foreground="#888")
         self.slow_render_desc.pack(side="left", padx=(8, 0))
+        r += 1
+
+        # Upscale
+        up_row = tb.Frame(settings)
+        up_row.grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
+        self.upscale_cb = tb.Checkbutton(up_row, text="Upscale to 2K",
+                                          variable=self.upscale_var,
+                                          bootstyle="round-toggle")
+        self.upscale_cb.pack(side="left")
+        tb.Label(up_row, text="Re-encode to 2560×1440 for best YouTube quality",
+                 font=(FONT_FAMILY, 9), foreground="#888").pack(side="left", padx=(8, 0))
+        self.upscale_var.trace_add("write", lambda *_: self._update_quality_warning())
+        r += 1
+
+        # Encoder
+        enc_row = tb.Frame(settings)
+        enc_row.grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
+        tb.Label(enc_row, text="Encoder:", font=(FONT_FAMILY, 9)).pack(side="left", padx=(0, 6))
+        self.encoder_var = tk.StringVar(value="Auto")
+        available = _get_available_encoders()
+        enc_values = ["Auto"] + available
+        enc_combo = ttk.Combobox(enc_row, textvariable=self.encoder_var,
+                                 values=enc_values, state="readonly", width=16)
+        enc_combo.pack(side="left")
+        r += 1
+
+        def _update_gpu_status():
+            if self.use_gpu_var.get():
+                if self._gpu_available:
+                    self.gpu_status.config(text=f"ON — {self._gpu_name}", bootstyle="success")
+                else:
+                    self.gpu_status.config(text="Not available — install CUDA", bootstyle="secondary")
+            else:
+                self.gpu_status.config(text="OFF (CPU)", bootstyle="secondary")
+                self.slow_render_var.set(True)
+            _update_slow_render_desc()
 
         def _update_slow_render_desc():
             if not self.use_gpu_var.get():
@@ -386,61 +428,59 @@ class ReplayGUI(tb.Window):
             else:
                 self.slow_render_desc.config(text="")
         self.slow_render_var.trace_add("write", lambda *_: _update_slow_render_desc())
-        self.after(10, _update_slow_render_desc)
+        self.gpu_toggle.config(command=_update_gpu_status)
+        self.after(10, _update_gpu_status)
+
+        # ════════ DISPLAY ════════
+        tb.Label(settings, text="DISPLAY", font=_sec_font, bootstyle="secondary").grid(
+            row=r, column=0, sticky="w", padx=12, pady=(6, 0))
+        r += 1
+        tb.Separator(settings, bootstyle="secondary").grid(
+            row=r, column=0, sticky="ew", pady=(1, 4), padx=12)
         r += 1
 
-        # Upscale to 2K
-        upscale_row = tb.Frame(settings)
-        upscale_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
-        self.upscale_cb = tb.Checkbutton(upscale_row, text="Upscale to 2K", variable=self.upscale_var,
-                                          bootstyle="round-toggle")
-        self.upscale_cb.pack(side="left")
-        self.upscale_desc = tb.Label(upscale_row, text="Re-encode to 2560×1440 for best YouTube quality",
-                                      font=(FONT_FAMILY, 9), foreground="#888")
-        self.upscale_desc.pack(side="left", padx=(8, 0))
-        self.upscale_var.trace_add("write", lambda *_: self._update_quality_warning())
+        d_grid = tb.Frame(settings)
+        d_grid.grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
+        d_grid.grid_columnconfigure(0, weight=1)
+        d_grid.grid_columnconfigure(1, weight=1)
+        d_grid.grid_columnconfigure(2, weight=1)
         r += 1
 
-        # Encoder override
-        enc_row = tb.Frame(settings)
-        enc_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
-        tb.Label(enc_row, text="Encoder:", font=(FONT_FAMILY, 9)).pack(side="left", padx=(0, 6))
-        self.encoder_var = tk.StringVar(value="Auto")
-        available = _get_available_encoders()
-        enc_values = ["Auto"] + available
-        enc_combo = ttk.Combobox(enc_row, textvariable=self.encoder_var,
-                                 values=enc_values,
-                                 state="readonly", width=18)
-        enc_combo.pack(side="left")
-        r += 1
+        _col_hdr = {"font": (FONT_FAMILY, 9), "foreground": "#aaa", "anchor": "w"}
 
-        # Render toggles
-        render_opts_row = tb.Frame(settings)
-        render_opts_row.grid(row=r, column=0, sticky="ew", pady=(4, 4), padx=12)
-        tb.Checkbutton(render_opts_row, text="No layout", variable=self.no_layout_var,
-                       bootstyle="round-toggle").pack(side="left", padx=(0, 10))
-        tb.Checkbutton(render_opts_row, text="No border", variable=self.no_border_var,
-                       bootstyle="round-toggle").pack(side="left", padx=(0, 10))
-        tb.Checkbutton(render_opts_row, text="No sec border", variable=self.no_secondary_border_var,
-                       bootstyle="round-toggle").pack(side="left", padx=(0, 10))
-        tb.Checkbutton(render_opts_row, text="No numbers", variable=self.no_numbers_var,
-                       bootstyle="round-toggle").pack(side="left")
-        r += 1
+        # Column 0: Puzzle
+        tb.Label(d_grid, text="Puzzle", **_col_hdr).grid(row=0, column=0, sticky="w", pady=(0, 2))
+        tb.Checkbutton(d_grid, text="No border", variable=self.no_border_var,
+                       bootstyle="round-toggle").grid(row=1, column=0, sticky="w")
+        tb.Checkbutton(d_grid, text="No sec border", variable=self.no_secondary_border_var,
+                       bootstyle="round-toggle").grid(row=2, column=0, sticky="w")
+        tb.Checkbutton(d_grid, text="No numbers", variable=self.no_numbers_var,
+                       bootstyle="round-toggle").grid(row=3, column=0, sticky="w")
 
-        # Render toggles row 2
-        render_opts_row2 = tb.Frame(settings)
-        render_opts_row2.grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
-        tb.Checkbutton(render_opts_row2, text="No header", variable=self.no_header_var,
-                       bootstyle="round-toggle").pack(side="left", padx=(0, 10))
-        tb.Checkbutton(render_opts_row2, text="No details", variable=self.no_details_var,
-                       bootstyle="round-toggle").pack(side="left", padx=(0, 10))
-        tb.Checkbutton(render_opts_row2, text="Dynamic MD", variable=self.dynamic_md_var,
-                       bootstyle="round-toggle").pack(side="left")
-        r += 1
+        # Column 1: Layout
+        tb.Label(d_grid, text="Layout", **_col_hdr).grid(row=0, column=1, sticky="w", pady=(0, 2))
+        tb.Checkbutton(d_grid, text="No header", variable=self.no_header_var,
+                       bootstyle="round-toggle").grid(row=1, column=1, sticky="w")
+        tb.Checkbutton(d_grid, text="No details", variable=self.no_details_var,
+                       bootstyle="round-toggle").grid(row=2, column=1, sticky="w")
+        tb.Checkbutton(d_grid, text="No layout", variable=self.no_layout_var,
+                       bootstyle="round-toggle").grid(row=3, column=1, sticky="w")
 
-        # ── Notebook (below settings) ──
-        nb = tb.Notebook(left, bootstyle="dark")
-        nb.grid(row=1, column=0, sticky="nsew")
+        # Column 2: Extra
+        tb.Label(d_grid, text="Extra", **_col_hdr).grid(row=0, column=2, sticky="w", pady=(0, 2))
+        tb.Checkbutton(d_grid, text="Dynamic MD", variable=self.dynamic_md_var,
+                       bootstyle="round-toggle").grid(row=1, column=2, sticky="w")
+        tb.Checkbutton(d_grid, text="Force fringe", variable=self.force_fringe_var,
+                       bootstyle="round-toggle").grid(row=2, column=2, sticky="w")
+
+        # ======== COLUMN 1: INPUTS ========
+        mid = tb.Frame(root)
+        mid.grid(row=0, column=1, sticky="nsew", padx=(3, 3))
+        mid.grid_rowconfigure(0, weight=1)
+        mid.grid_columnconfigure(0, weight=1)
+
+        nb = tb.Notebook(mid, bootstyle="dark")
+        nb.grid(row=0, column=0, sticky="nsew")
         self.nb = nb
 
         url_tab = tb.Frame(nb, padding=8)
@@ -449,6 +489,17 @@ class ReplayGUI(tb.Window):
         nb.add(url_tab, text="URL")
         nb.add(file_tab, text="File")
         nb.add(manual_tab, text="Manual")
+
+        # -- URL tab --
+        tb.Label(url_tab, text="Replay URLs (one per line):",
+                 font=(FONT_FAMILY, 10, "bold")).pack(anchor="w")
+        self.url_text = scrolledtext.ScrolledText(
+            url_tab, font=(FONT_MONO_FAMILY, 10),
+            bg="#1e1e1e", fg="#d4d4d4", insertbackground="#fff",
+            relief="flat", borderwidth=0, highlightthickness=1,
+            highlightbackground="#3a3a3a", highlightcolor="#3a3a3a")
+        self.url_text.pack(fill="both", expand=True, pady=(4, 0))
+        _setup_placeholder(self.url_text, "# paste URLs here, one per line")
 
         # -- File tab --
         tb.Label(file_tab, text="Single input file (solution or replay URL):",
@@ -463,19 +514,8 @@ class ReplayGUI(tb.Window):
         self.file_meta_var = tk.StringVar(value="No file selected.")
         self.file_meta_label = tb.Label(file_tab, textvariable=self.file_meta_var,
                                         font=(FONT_FAMILY, 9), foreground="#aaaaaa",
-                                        anchor="w", wraplength=500)
+                                        anchor="w", wraplength=300)
         self.file_meta_label.pack(fill="x", anchor="w")
-
-        # -- URL tab --
-        tb.Label(url_tab, text="Replay URLs (one per line):",
-                 font=(FONT_FAMILY, 10, "bold")).pack(anchor="w")
-        self.url_text = scrolledtext.ScrolledText(
-            url_tab, height=8, font=(FONT_MONO_FAMILY, 10),
-            bg="#1e1e1e", fg="#d4d4d4", insertbackground="#fff",
-            relief="flat", borderwidth=0, highlightthickness=1,
-            highlightbackground="#3a3a3a", highlightcolor="#3a3a3a")
-        self.url_text.pack(fill="both", expand=True, pady=(4, 0))
-        _setup_placeholder(self.url_text, "# paste URLs here, one per line")
 
         # -- Manual tab --
         manual_tab.grid_rowconfigure(3, weight=1)
@@ -486,26 +526,26 @@ class ReplayGUI(tb.Window):
         c = 0
         tb.Label(params, text="TPS:", font=(FONT_FAMILY, 9)).grid(row=0, column=c, sticky="w", padx=(0, 2))
         c += 1
-        self.tps_entry = tb.Entry(params, textvariable=self.tps_var, width=10)
-        self.tps_entry.grid(row=0, column=c, padx=(0, 8))
+        self.tps_entry = tb.Entry(params, textvariable=self.tps_var, width=8)
+        self.tps_entry.grid(row=0, column=c, padx=(0, 6))
         c += 1
         tb.Label(params, text="Time (s):", font=(FONT_FAMILY, 9)).grid(row=0, column=c, sticky="w", padx=(0, 2))
         c += 1
-        self.time_entry = tb.Entry(params, textvariable=self.time_var, width=10)
-        self.time_entry.grid(row=0, column=c, padx=(0, 8))
+        self.time_entry = tb.Entry(params, textvariable=self.time_var, width=8)
+        self.time_entry.grid(row=0, column=c, padx=(0, 6))
         c += 1
         tb.Label(params, text="Size:", font=(FONT_FAMILY, 9)).grid(row=0, column=c, sticky="w", padx=(0, 2))
         c += 1
-        self.size_entry = tb.Entry(params, textvariable=self.size_var, width=10)
+        self.size_entry = tb.Entry(params, textvariable=self.size_var, width=8)
         self.size_entry.grid(row=0, column=c)
 
         params2 = tb.Frame(manual_tab)
         params2.grid(row=1, column=0, sticky="ew")
         tb.Label(params2, text="Scramble:", font=(FONT_FAMILY, 9)).pack(side="left")
-        self.scramble_entry = tb.Entry(params2, textvariable=self.scramble_var, width=22)
-        self.scramble_entry.pack(side="left", padx=(4, 8))
+        self.scramble_entry = tb.Entry(params2, textvariable=self.scramble_var, width=18)
+        self.scramble_entry.pack(side="left", padx=(4, 6))
         tb.Label(params2, text="Movetimes:", font=(FONT_FAMILY, 9)).pack(side="left")
-        self.movetimes_entry = tb.Entry(params2, textvariable=self.movetimes_var, width=22)
+        self.movetimes_entry = tb.Entry(params2, textvariable=self.movetimes_var, width=18)
         self.movetimes_entry.pack(side="left", padx=(4, 0))
 
         tb.Label(manual_tab, text="Solution strings (one per line):",
@@ -519,9 +559,9 @@ class ReplayGUI(tb.Window):
         _setup_placeholder(self.solution_text, "# solutions here, one per line")
         self.solution_text.bind("<<Modified>>", self._on_solution_change)
 
-        # ── Action buttons ──
-        act = tb.Frame(left)
-        act.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        # ── Action buttons (below inputs) ──
+        act = tb.Frame(mid)
+        act.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         self.gen_btn = tb.Button(act, text="Generate All", command=self._generate,
                                  bootstyle="success", width=16)
         self.gen_btn.pack(side="left", padx=(0, 6))
@@ -529,9 +569,9 @@ class ReplayGUI(tb.Window):
                                     bootstyle="secondary", state="disabled")
         self.cancel_btn.pack(side="left")
 
-        # ======== RIGHT COLUMN ========
+        # ======== COLUMN 2: PROGRESS + OUTPUTS ========
         right = tb.Frame(root)
-        right.grid(row=0, column=1, rowspan=2, sticky="nsew")
+        right.grid(row=0, column=2, sticky="nsew", padx=(3, 0))
         right.grid_rowconfigure(1, weight=1)
         right.grid_columnconfigure(0, weight=1)
 
@@ -539,7 +579,7 @@ class ReplayGUI(tb.Window):
         prog_frame = tb.LabelFrame(right, text="Progress")
         prog_frame.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         prog_frame.pack_propagate(False)
-        prog_frame.configure(height=120)
+        prog_frame.configure(height=100)
 
         self.progress_bar = tb.Progressbar(prog_frame, mode="determinate",
                                            bootstyle="success-striped")
@@ -557,12 +597,11 @@ class ReplayGUI(tb.Window):
         # ── Generated replays ──
         lst_frame = tb.LabelFrame(right, text="Generated Replays")
         lst_frame.grid(row=1, column=0, sticky="nsew")
-        right.grid_rowconfigure(1, weight=1)
         lst_frame.grid_columnconfigure(0, weight=1)
         lst_frame.grid_rowconfigure(0, weight=1)
 
         self.replay_listbox = tk.Listbox(
-            lst_frame, font=(FONT_MONO_FAMILY, 9), activestyle="none",
+            lst_frame, font=(FONT_MONO_FAMILY, 8), activestyle="none",
             selectbackground="#2a6d9c", selectforeground="white",
             bg="#1a1a1a", fg="#cccccc", relief="flat", borderwidth=0,
             highlightthickness=1, highlightbackground="#333")
@@ -597,13 +636,9 @@ class ReplayGUI(tb.Window):
         h = self._get_quality()
         text = ""
         if h >= 2160:
-            text = "⚠ 4K (2160p) uses very high RAM during atlas prerender — reduce puzzle size if out of memory"
+            text = "⚠ 4K uses very high RAM during atlas prerender"
         elif h >= 1440:
-            text = "⚠ 2K (1440p) uses high RAM during atlas prerender — may cause slowdown or OOM on large puzzles (>=50×50)"
-        if h >= 1440 and self.upscale_var.get():
-            text += "  |  Upscale not needed (already ≥1440p)"
-        elif h < 1440 and self.upscale_var.get():
-            text += "  |  ✓ Upscale to 2K after render"
+            text = "⚠ 2K uses high RAM during atlas prerender"
         if text:
             self.quality_warning.config(text=text)
             self.quality_warning.grid()
@@ -612,7 +647,7 @@ class ReplayGUI(tb.Window):
 
     def _center_window(self):
         self.update_idletasks()
-        w, h = 960, 680
+        w, h = 1200, 720
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
         self.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
