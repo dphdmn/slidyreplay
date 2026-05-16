@@ -500,7 +500,7 @@ class ReplayGUI(tb.Window):
         self._color_vars = {
             "grid1": tk.StringVar(value="C86767"),
             "grid2": tk.StringVar(value="8DB3FF"),
-            "tile_bg": tk.StringVar(value="969696"),
+            "tile_bg": tk.StringVar(value="454545"),
         }
         self._color_previews = {}
 

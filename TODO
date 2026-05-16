@@ -4,7 +4,6 @@
 - move splits and replay_generator stuff parts into separate module/repo
 - Cursor dancing
 - Fringe Hue slider
-- Grids colors select
 - optional timer / md stats - stats panel
 - custom font, font size
 - disable grids bar option
