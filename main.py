@@ -644,12 +644,6 @@ class ReplayGUI(tb.Window):
         # Action buttons
         act = tb.Frame(mid)
         act.pack(fill="x", pady=(6, 0))
-        self.add_btn = tb.Button(act, text="Add to Queue", command=self._add_to_queue,
-                                 bootstyle="primary", width=14)
-        self.add_btn.pack(side="left", padx=(0, 6))
-        self.clear_input_btn = tb.Button(act, text="Clear Input", command=self._clear_input,
-                                         bootstyle="secondary-outline", width=12)
-        self.clear_input_btn.pack(side="left", padx=(0, 6))
         self.gen_btn = tb.Button(act, text="Render", command=self._generate,
                                  bootstyle="success", width=12)
         self.gen_btn.pack(side="left", padx=(0, 6))
