@@ -2300,6 +2300,8 @@ class ReplayVideoGenerator:
         scramble: Optional[str] = None,
         size: Optional[Tuple[int, int]] = None,
         movetimes: Union[int, List[float]] = -1,
+        replay_tps: Optional[float] = None,
+        replay_movetimes: Union[int, List[float]] = -1,
         main_scheme: str = 'fringe',
         force_main: bool = False,
         show_progress: bool = True,
@@ -2351,28 +2353,40 @@ class ReplayVideoGenerator:
         log.info(f"  matrix={width}x{height}, sol_len={sol_len}")
         log.info(f"  expand_solution took {_t_expand_end - _t_expand_start:.3f}s, matrix resolution took {_t_expand_start - _t_matrix_start:.3f}s")
 
-        # Compute TPS and movetimes
-        real_tps = None
+        # Determine movetimes source: user override > replay data > none
+        custom_move_times = None
+        is_movetimes_accurate = False
+        real_tps_from_user_mt = None
+        real_tps_from_replay_mt = None
+
         if isinstance(movetimes, list) and len(movetimes) > 0:
             custom_move_times = movetimes
             is_movetimes_accurate = True
             total_real_time_s = movetimes[-1] / 1000.0 if movetimes[-1] > 0 else 0
             if total_real_time_s > 0:
-                real_tps = sol_len / total_real_time_s
-        else:
-            custom_move_times = None
-            is_movetimes_accurate = False
+                real_tps_from_user_mt = sol_len / total_real_time_s
+        elif isinstance(replay_movetimes, list) and len(replay_movetimes) > 0:
+            custom_move_times = replay_movetimes
+            is_movetimes_accurate = True
+            total_real_time_s = replay_movetimes[-1] / 1000.0 if replay_movetimes[-1] > 0 else 0
+            if total_real_time_s > 0:
+                real_tps_from_replay_mt = sol_len / total_real_time_s
 
-        if time is not None:
+        # TPS priority: user movetimes > user time > user tps > replay movetimes > replay tps > 15
+        if real_tps_from_user_mt is not None:
+            tps_val = real_tps_from_user_mt
+        elif time is not None:
             tps_val = sol_len / time
-        elif real_tps is not None:
-            tps_val = real_tps
         elif tps is not None:
             tps_val = tps
+        elif real_tps_from_replay_mt is not None:
+            tps_val = real_tps_from_replay_mt
+        elif replay_tps is not None and replay_tps > 0:
+            tps_val = replay_tps
         else:
             tps_val = 15
 
-        log.info(f"  tps_val={tps_val}, is_movetimes_accurate={is_movetimes_accurate}, custom_move_times={'list' if isinstance(custom_move_times, list) else None}")
+        log.info(f"  tps_val={tps_val}, is_movetimes_accurate={is_movetimes_accurate}, custom_move_times={'list' if isinstance(custom_move_times, list) else None}, replay_tps={replay_tps}")
 
         # ── Progress setup (moved before analysis so early stages are tracked) ──
         total_frames = sol_len + 1
@@ -2452,12 +2466,12 @@ class ReplayVideoGenerator:
 
         # ── Stage: Timing ──
         _t_timing_start = time_module.time()
-        if isinstance(movetimes, list) and len(movetimes) > 0:
+        if custom_move_times is not None and len(custom_move_times) > 0:
             delays, _fake_unused = calculate_move_timings(solution, tps_val, width, height, speed_factor, expanded_solution=solution_expanded)
             inv = 1.0 / speed_factor if speed_factor != 1.0 else 1.0
-            custom_move_times_sped = [t * inv for t in movetimes]
-            original_fake_times = [0] + list(movetimes)
-            original_custom_move_times = list(movetimes)
+            custom_move_times_sped = [t * inv for t in custom_move_times]
+            original_fake_times = [0] + list(custom_move_times)
+            original_custom_move_times = list(custom_move_times)
             fake_times = [0] + custom_move_times_sped
         else:
             delays, fake_times = calculate_move_timings(solution, tps_val, width, height, speed_factor, expanded_solution=solution_expanded)
@@ -2721,15 +2735,19 @@ def main():
         force_main = True
 
     if args.url:
-        solution, tps, scramble, movetimes = parse_replay_url(args.url)
+        solution, tps_from_url, scramble, movetimes_from_url = parse_replay_url(args.url)
         size = None
+        replay_tps = tps_from_url
+        replay_movetimes = movetimes_from_url if isinstance(movetimes_from_url, list) else -1
+        tps = args.tps
     else:
         if args.solution is None:
             parser.error("provide a solution string or --url")
         solution = args.solution
         tps = args.tps
         scramble = args.scramble
-        movetimes = -1
+        replay_tps = None
+        replay_movetimes = -1
         size = None
         if args.size:
             parts = args.size.lower().split("x")
@@ -2744,7 +2762,9 @@ def main():
         time=args.time,
         scramble=scramble,
         size=size,
-        movetimes=movetimes,
+        movetimes=-1,
+        replay_tps=replay_tps,
+        replay_movetimes=replay_movetimes,
         main_scheme=main_scheme,
         force_main=force_main,
         speed_factor=args.speed,

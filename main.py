@@ -107,7 +107,7 @@ def _open(path, status_callback=None):
                 status_callback("Could not open file: xdg-open not found")
 
 
-def _generate_filename(solution, tps, time_v, movetimes, size_arg=None, index=0, speed_factor=1.0, scramble=None):
+def _generate_filename(solution, tps, time_v, movetimes, size_arg=None, index=0, speed_factor=1.0, scramble=None, replay_tps=None):
     moves = count_moves(solution)
     if isinstance(movetimes, list) and len(movetimes) > 1:
         time_s = movetimes[-1] / 1000.0 if movetimes[-1] > 0 else 0
@@ -121,6 +121,10 @@ def _generate_filename(solution, tps, time_v, movetimes, size_arg=None, index=0,
         time_s = moves / tps
         is_movetimes_accurate = False
         display_tps = tps
+    elif replay_tps and replay_tps > 0:
+        time_s = moves / replay_tps
+        is_movetimes_accurate = False
+        display_tps = replay_tps
     else:
         time_s = 0
         is_movetimes_accurate = False
@@ -1047,21 +1051,24 @@ class ReplayGUI(tb.Window):
         """Parse a single input string (URL or solution) and return queue entry dicts."""
         if text.startswith(("http://", "https://")):
             try:
-                solution, tps, scramble, movetimes = parse_replay_url(text)
+                solution, tps_from_url, scramble, movetimes_from_url = parse_replay_url(text)
             except Exception as e:
                 self.after(0, lambda m=f"Parse error for URL: {e}": self.pb_overall_text.set(m))
                 return []
-            # Apply overrides on top of URL-parsed values
-            if override_tps:
-                tps = float(override_tps)
+            # Store URL-parsed values for replay fallback
+            replay_tps = tps_from_url
+            replay_movetimes = movetimes_from_url if isinstance(movetimes_from_url, list) else -1
+            # Apply user overrides on top
+            tps = float(override_tps) if override_tps else None
             if override_scramble:
                 scramble = override_scramble
-            if override_movetimes:
-                movetimes = [int(x.strip()) for x in override_movetimes.split(",")]
+            movetimes = [int(x.strip()) for x in override_movetimes.split(",")] if override_movetimes else -1
             mode = "url"
         else:
             solution = text
             tps = float(override_tps) if override_tps else None
+            replay_tps = None
+            replay_movetimes = -1
             scramble = override_scramble if override_scramble else None
             movetimes = [int(x.strip()) for x in override_movetimes.split(",")] if override_movetimes else -1
             mode = "manual"
@@ -1080,7 +1087,7 @@ class ReplayGUI(tb.Window):
             tps = moves / time_v
         size = _quick_infer_size(solution, scramble, size_s)
 
-        # Build display name (like filename would be)
+        # Build display name using effective TPS (same priority as rendering)
         if isinstance(movetimes, list) and len(movetimes) > 1 and movetimes[-1] > 0:
             time_s = movetimes[-1] / 1000.0
             is_movetimes_accurate = True
@@ -1093,6 +1100,14 @@ class ReplayGUI(tb.Window):
             time_s = moves / tps
             is_movetimes_accurate = False
             raw_tps = tps
+        elif isinstance(replay_movetimes, list) and len(replay_movetimes) > 1 and replay_movetimes[-1] > 0:
+            time_s = replay_movetimes[-1] / 1000.0
+            is_movetimes_accurate = True
+            raw_tps = moves / time_s
+        elif replay_tps and replay_tps > 0:
+            time_s = moves / replay_tps
+            is_movetimes_accurate = False
+            raw_tps = replay_tps
         else:
             time_s = 0
             is_movetimes_accurate = False
@@ -1118,6 +1133,8 @@ class ReplayGUI(tb.Window):
             "size": size_s,
             "scramble": scramble,
             "movetimes": movetimes if isinstance(movetimes, list) else -1,
+            "replay_tps": replay_tps,
+            "replay_movetimes": replay_movetimes,
             "display_name": display_name,
             "tps_was_overridden": bool(override_tps or override_time),
         }]
@@ -1234,28 +1251,46 @@ class ReplayGUI(tb.Window):
                 }
 
                 solution = entry["solution"]
-                if entry["tps"] is not None:
+                # User overrides for rendering
+                if entry.get("tps_was_overridden") and entry["tps"] is not None:
                     params["tps"] = entry["tps"]
-                if entry["scramble"]:
-                    params["scramble"] = entry["scramble"]
                 if isinstance(entry["movetimes"], list) and len(entry["movetimes"]) > 0:
                     params["movetimes"] = entry["movetimes"]
                 if entry["time"]:
                     params["time"] = entry["time"]
+                # Replay data for fallback
+                if entry.get("replay_tps") is not None:
+                    params["replay_tps"] = entry["replay_tps"]
+                if isinstance(entry.get("replay_movetimes"), list) and len(entry["replay_movetimes"]) > 0:
+                    params["replay_movetimes"] = entry["replay_movetimes"]
+                if entry["scramble"]:
+                    params["scramble"] = entry["scramble"]
                 if entry["size"]:
                     params["size"] = entry["size"]
 
-                if isinstance(entry["movetimes"], list) and len(entry["movetimes"]) > 1:
-                    tps_from_movetimes = count_moves(solution) / (entry["movetimes"][-1] / 1000.0) if entry["movetimes"][-1] > 0 else None
-                    filename_tps = entry["tps"] if entry.get("tps_was_overridden") else (tps_from_movetimes or entry["tps"])
-                else:
+                # Compute effective TPS for filename (same priority as rendering)
+                moves_count = count_moves(solution)
+                use_movetimes = entry["movetimes"] if isinstance(entry["movetimes"], list) and len(entry["movetimes"]) > 1 else (
+                    entry["replay_movetimes"] if isinstance(entry.get("replay_movetimes"), list) and len(entry["replay_movetimes"]) > 1 else None)
+                if isinstance(use_movetimes, list) and len(use_movetimes) > 1 and use_movetimes[-1] > 0:
+                    time_s = use_movetimes[-1] / 1000.0
+                    filename_tps = moves_count / time_s
+                elif entry["time"] and entry["time"] > 0:
+                    time_s = entry["time"]
+                    filename_tps = moves_count / time_s
+                elif entry.get("tps_was_overridden") and entry["tps"] is not None and entry["tps"] > 0:
                     filename_tps = entry["tps"]
+                elif entry.get("replay_tps") and entry["replay_tps"] > 0:
+                    filename_tps = entry["replay_tps"]
+                else:
+                    filename_tps = None
                 filename_time = entry["time"] if entry["time"] else None
                 base_name = _generate_filename(
                     solution, filename_tps, filename_time,
                     entry["movetimes"], entry["size"],
                     index=idx + 1, speed_factor=self._get_speed_factor(),
-                    scramble=entry["scramble"] if entry["scramble"] else None)
+                    scramble=entry["scramble"] if entry["scramble"] else None,
+                    replay_tps=entry.get("replay_tps"))
                 out_path = _pick_output_filename(output_dir, base_name)
 
                 def on_progress(adjusted_cur, adjusted_tot, desc=None, gpu_stats=None, use_gpu=False):
@@ -1676,12 +1711,19 @@ Examples:
                 kwargs = dict(quality=args.quality, fps=args.fps, compression=args.compression,
                               slow_render=slow_render, encoder_preset=args.encoder_preset, speed_factor=args.speedup, main_scheme=main_scheme, force_main=force_main, upscale=args.upscale, encoder_override=args.encoder)
                 try:
-                    sol, tps, scramble, movetimes = parse_replay_url(val)
-                    kwargs["tps"] = tps or args.tps
+                    sol, tps_from_url, scramble, movetimes_from_url = parse_replay_url(val)
+                    # Replay data for fallback
+                    if tps_from_url is not None:
+                        kwargs["replay_tps"] = tps_from_url
+                    if isinstance(movetimes_from_url, list) and movetimes_from_url:
+                        kwargs["replay_movetimes"] = movetimes_from_url
+                    # User TPS override
+                    if args.tps is not None:
+                        kwargs["tps"] = args.tps
+                    if args.time is not None:
+                        kwargs["time"] = args.time
                     if scramble:
                         kwargs["scramble"] = scramble
-                    if isinstance(movetimes, list) and movetimes:
-                        kwargs["movetimes"] = movetimes
                 except Exception:
                     sol = val
                     if args.tps is not None:
@@ -1692,8 +1734,6 @@ Examples:
                         kwargs["scramble"] = args.scramble
                     if args.size:
                         kwargs["size"] = args.size
-                    if movetimes:
-                        kwargs["movetimes"] = movetimes
 
                 if args.output is not None:
                     root, ext = os.path.splitext(args.output)
@@ -1703,7 +1743,8 @@ Examples:
                         sol, kwargs.get("tps"), kwargs.get("time"),
                         kwargs.get("movetimes", -1), kwargs.get("size"),
                         index=idx + 1, speed_factor=args.speedup,
-                        scramble=kwargs.get("scramble"))
+                        scramble=kwargs.get("scramble"),
+                        replay_tps=kwargs.get("replay_tps"))
                     output_path = _pick_output_filename(replays_dir, base_name)
 
                 batch_items.append({"solution": sol, "output_path": output_path, "opts": opts, **kwargs})
@@ -1717,9 +1758,14 @@ Examples:
 
                 if mode in ("url", "batch"):
                     try:
-                        sol, tps, scramble, movetimes = parse_replay_url(val)
+                        sol, tps_from_url, scramble, movetimes_from_url = parse_replay_url(val)
                     except Exception:
-                        sol, tps, scramble, movetimes = val, args.tps, args.scramble, None
+                        sol, tps_from_url, scramble, movetimes_from_url = val, None, None, None
+
+                    replay_tps = tps_from_url
+                    replay_movetimes = movetimes_from_url if isinstance(movetimes_from_url, list) else -1
+                    user_tps = args.tps
+                    user_time = args.time
 
                     if args.output is not None:
                         if len(items) > 1:
@@ -1728,16 +1774,33 @@ Examples:
                         else:
                             output_path = args.output
                     else:
+                        moves_cnt = count_moves(sol)
+                        if user_time and user_time > 0:
+                            eff_tps = moves_cnt / user_time
+                            eff_mt = -1
+                        elif user_tps and user_tps > 0:
+                            eff_tps = user_tps
+                            eff_mt = -1
+                        elif isinstance(replay_movetimes, list) and len(replay_movetimes) > 1 and replay_movetimes[-1] > 0:
+                            eff_tps = moves_cnt / (replay_movetimes[-1] / 1000.0)
+                            eff_mt = -1
+                        elif replay_tps and replay_tps > 0:
+                            eff_tps = replay_tps
+                            eff_mt = -1
+                        else:
+                            eff_tps = None
+                            eff_mt = -1
                         base_name = _generate_filename(
-                            sol, tps or args.tps, None,
-                            movetimes if movetimes else -1, None,
+                            sol, eff_tps, user_time,
+                            eff_mt, None,
                             index=idx + 1 if len(items) > 1 else 0,
                             speed_factor=args.speedup, scramble=scramble)
                         output_path = _pick_output_filename(replays_dir, base_name)
 
                     run_single(sol, output_path, opts=opts,
-                               tps=tps or args.tps, scramble=scramble,
-                               movetimes=movetimes, quality=args.quality,
+                               tps=user_tps, time=user_time, scramble=scramble,
+                               movetimes=-1, replay_tps=replay_tps,
+                               replay_movetimes=replay_movetimes, quality=args.quality,
                                fps=args.fps, compression=args.compression,
                                slow_render=slow_render, encoder_preset=args.encoder_preset,
                                speed_factor=args.speedup, main_scheme=main_scheme,
@@ -1749,20 +1812,21 @@ Examples:
                     else:
                         base_name = _generate_filename(
                             val, args.tps, args.time,
-                            movetimes if movetimes else -1, args.size,
+                            -1, args.size,
                             index=idx + 1 if len(items) > 1 else 0,
                             speed_factor=args.speedup, scramble=args.scramble)
                         output_path = _pick_output_filename(replays_dir, base_name)
 
                     run_single(val, output_path, opts=opts,
-                               tps=None if movetimes else args.tps, time=args.time,
+                               tps=args.tps, time=args.time,
                                scramble=args.scramble, size=args.size,
-                               quality=args.quality, movetimes=movetimes,
+                               movetimes=-1,
+                               quality=args.quality,
                                fps=args.fps, compression=args.compression,
                                slow_render=slow_render, encoder_preset=args.encoder_preset,
-                                speed_factor=args.speedup, main_scheme=main_scheme,
-                                force_main=force_main,
-                                upscale=args.upscale, encoder_override=args.encoder)
+                               speed_factor=args.speedup, main_scheme=main_scheme,
+                               force_main=force_main,
+                               upscale=args.upscale, encoder_override=args.encoder)
     except Exception as e:
         import traceback
         traceback.print_exc()

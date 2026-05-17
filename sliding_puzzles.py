@@ -114,8 +114,14 @@ def parse_replay_url(url: str):
         solve_data = read_solve_data(parsed[1])
         solution = solve_data['solutions']
         tps = solve_data.get('tps', None)
-        if tps == -1 or tps is None:
+        if tps == -1 or tps == "-1" or tps is None:
             tps = None
+        # Fallback to top-level TPS field (parsed[3]) if solve data has none
+        if tps is None and len(parsed) > 3:
+            try:
+                tps = float(parsed[3]) / 1000.0
+            except (ValueError, TypeError, ZeroDivisionError):
+                tps = None
         scramble = None
         movetimes = solve_data.get('move_times', -1)
         if isinstance(movetimes, list) and len(movetimes) > 0:

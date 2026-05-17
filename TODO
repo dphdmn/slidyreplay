@@ -11,7 +11,6 @@
 - small resolution font size issues
 - cpu spikes on idle
 
-- grid corner tile is not affected by brightness
 - replay system does not properly recognize the tps value in non-movetimes accurate replays inputs, falls back to 15
 - progress bars stuck at 99% 97%
 
