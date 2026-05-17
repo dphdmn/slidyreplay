@@ -1489,6 +1489,63 @@ def upscale_video(
     return output_path
 
 
+def _get_anim_info(matrix_after, move_char, w, h):
+    """Determine tile animation parameters from a state after a move.
+
+    Returns (tile_num, src_r, src_c, dst_r, dst_c) where:
+      tile_num — the tile that moved
+      src_r, src_c — where the tile was before the move
+      dst_r, dst_c — where the tile ended up after the move
+    """
+    dr, dc = _MOVE_DIRS[move_char]
+    blank_r, blank_c = find_zero(matrix_after, w, h)
+    blank_flat = blank_r * w + blank_c
+    dest_flat = blank_flat - dr * w - dc
+    dest_r = dest_flat // w
+    dest_c = dest_flat % w
+    tile_num = matrix_after[dest_r][dest_c]
+    return tile_num, blank_r, blank_c, dest_r, dest_c
+
+
+def _render_animation_frame(mat_before, state_params, tile_num, src_r, src_c, dst_r, dst_c, fraction, tile_size, composite_images, composite_lookup, w, h, layout, opts, gpu_img=None):
+    """Render a single animation frame showing the tile at an interpolated position.
+
+    If gpu_img is provided (numpy array from GPU), it is used as the base image
+    and only the grid tile region is patched. Otherwise renders from scratch
+    using render_frame with a modified matrix (two blanks).
+    """
+    grid_x, grid_y = compute_grid_position(
+        opts.grid_only, pad=layout["pad"], header_h=layout["header_h"],
+        canvas_h=layout["canvas_h"], puzzle_h=h * tile_size,
+        no_header=opts.no_header,
+        align_top=opts.adjust_height,
+    )
+    interp_x = int(grid_x + (src_c + (dst_c - src_c) * fraction) * tile_size)
+    interp_y = int(grid_y + (src_r + (dst_r - src_r) * fraction) * tile_size)
+
+    state_sig = id(state_params["grid_state"])
+    lookup = composite_lookup[state_sig]
+
+    if gpu_img is not None:
+        canvas = Image.fromarray(gpu_img.copy())
+        blank_sprite = composite_images[lookup[0]]
+        dst_px = grid_x + dst_c * tile_size
+        dst_py = grid_y + dst_r * tile_size
+        canvas.paste(blank_sprite, (dst_px, dst_py), blank_sprite)
+    else:
+        mat = np.array(mat_before)
+        mat[src_r, src_c] = 0
+        kw = {k: v for k, v in state_params.items() if k in _get_render_frame_args()}
+        kw["matrix"] = mat
+        kw.pop("prev_canvas", None)
+        kw.pop("changed_tiles", None)
+        canvas = render_frame(**kw)
+
+    tile_sprite = composite_images[lookup[tile_num]]
+    canvas.paste(tile_sprite, (interp_x, interp_y), tile_sprite)
+    return canvas
+
+
 def generate_frames(
     matrix: List[List[int]],
     solution: str,
@@ -1960,6 +2017,14 @@ def generate_frames(
     # Pre-compute canvas dimensions for CPU path
     canvas_w_cpu, canvas_h_cpu = layout["canvas_w"], layout["canvas_h"]
 
+    # Pre-compute how many video frames each puzzle state spans (shared with serial path)
+    state_to_count = {}
+    for state_idx in frame_state:
+        state_to_count[state_idx] = state_to_count.get(state_idx, 0) + 1
+
+    ANIM_TIME_BUDGET_MS = 67  # ~4 frames at 60fps, ~2 at 30fps, ~1 at 15fps
+    PAUSE_THRESHOLD_MS = 200  # moves >= this are pauses → teleport
+
     # ── GPU path: render unique states, pipe via frame mapping ──
     if use_gpu and len(frame_params) > 1:
         puzzle_w = w * tile_size
@@ -1975,10 +2040,6 @@ def generate_frames(
             static_layout=static_layout,
         ) if not opts.grid_only else None
 
-        # Pre-compute how many video frames each puzzle state spans
-        state_to_count = {}
-        for state_idx in frame_state:
-            state_to_count[state_idx] = state_to_count.get(state_idx, 0) + 1
         log.info(f"  state_to_count: {len(state_to_count)} unique states, counts={list(state_to_count.values())[:20]}...")
 
         # Open ffmpeg pipe with selected encoder
@@ -1992,12 +2053,52 @@ def generate_frames(
         log_ram("before GPU render")
 
         def handler(img, idx_in_unique, total, free_event=None):
-            count = state_to_count[states_needed[idx_in_unique]]
-            if isinstance(img, np.ndarray):
-                data = memoryview(img)
+            state_idx = states_needed[idx_in_unique]
+            anim_written = False
+            if opts.animate_moves and state_idx > 0:
+                prev_state_idx = states_needed[idx_in_unique - 1]
+                move_idx = state_idx - 1
+                anim_count = 0
+                if move_idx < len(move_times):
+                    if move_idx == 0:
+                        move_dur = move_times[0]
+                    else:
+                        move_dur = move_times[move_idx] - move_times[move_idx - 1]
+                    move_frames = max(1, round(move_dur / frame_time_ms))
+                    max_avail = max(0, state_to_count[state_idx] - 1)
+                    max_by_budget = max(0, round(ANIM_TIME_BUDGET_MS / frame_time_ms))
+                    if move_dur >= PAUSE_THRESHOLD_MS:
+                        anim_count = 0
+                    else:
+                        anim_count = min(max_by_budget, max(0, move_frames - 1), max_avail)
+                if anim_count > 0 and prev_state_idx in frame_params:
+                    move = expanded[move_idx]
+                    matrix_after = np.array(frame_params[state_idx]["matrix"])
+                    tile_num, src_r, src_c, dst_r, dst_c = _get_anim_info(matrix_after, move, w, h)
+                    mat_before = frame_params[prev_state_idx]["matrix"]
+                    for k in range(anim_count):
+                        fraction = (k + 1) / (anim_count + 1)
+                        anim_img = _render_animation_frame(
+                            mat_before, frame_params[state_idx], tile_num,
+                            src_r, src_c, dst_r, dst_c, fraction,
+                            tile_size, composite_images, composite_lookup,
+                            w, h, layout, opts, gpu_img=img,
+                        )
+                        writer.write(anim_img.tobytes(), 1)
+                    anim_written = True
+            if anim_written:
+                if isinstance(img, np.ndarray):
+                    data = memoryview(img)
+                else:
+                    data = img.tobytes()
+                writer.write(data, state_to_count[state_idx] - anim_count, free_event)
             else:
-                data = img.tobytes()
-            writer.write(data, count, free_event)
+                count = state_to_count[state_idx]
+                if isinstance(img, np.ndarray):
+                    data = memoryview(img)
+                else:
+                    data = img.tobytes()
+                writer.write(data, count, free_event)
 
         _gpu_render_step = max(1, len(unique_params) // 100)
         _gpu_render_count = 0
@@ -2045,11 +2146,6 @@ def generate_frames(
     log.info(f"  fonts loaded: took {time_module.time() - _font_start:.3f}s")
     log_ram("CPU: after font load")
 
-    # Pre-compute how many video frames each puzzle state spans (shared with serial path)
-    state_to_count = {}
-    for state_idx in frame_state:
-        state_to_count[state_idx] = state_to_count.get(state_idx, 0) + 1
-
     num_needed = len(states_needed)
     total_video_frames = len(frame_state)
     log_ram("CPU: before render")
@@ -2066,6 +2162,41 @@ def generate_frames(
         for seq_idx, i in enumerate(states_needed):
             if cancel_check and cancel_check():
                 raise CancelError()
+            anim_count = 0
+            anim_written = False
+            if opts.animate_moves and i > 0:
+                prev_i = states_needed[seq_idx - 1]
+                move_idx = i - 1
+                if move_idx < len(move_times):
+                    if move_idx == 0:
+                        move_dur = move_times[0]
+                    else:
+                        move_dur = move_times[move_idx] - move_times[move_idx - 1]
+                    move_frames = max(1, round(move_dur / frame_time_ms))
+                    max_avail = max(0, state_to_count[i] - 1)
+                    max_by_budget = max(0, round(ANIM_TIME_BUDGET_MS / frame_time_ms))
+                    if move_dur >= PAUSE_THRESHOLD_MS:
+                        anim_count = 0
+                    else:
+                        anim_count = min(max_by_budget, max(0, move_frames - 1), max_avail)
+                if anim_count > 0 and prev_i in frame_params:
+                    move = expanded[move_idx]
+                    matrix_after = np.array(frame_params[i]["matrix"])
+                    tile_num, src_r, src_c, dst_r, dst_c = _get_anim_info(matrix_after, move, w, h)
+                    mat_before = frame_params[prev_i]["matrix"]
+                    for k in range(anim_count):
+                        if cancel_check and cancel_check():
+                            raise CancelError()
+                        fraction = (k + 1) / (anim_count + 1)
+                        anim_img = _render_animation_frame(
+                            mat_before, frame_params[i], tile_num,
+                            src_r, src_c, dst_r, dst_c, fraction,
+                            tile_size, composite_images, composite_lookup,
+                            w, h, layout, opts,
+                        )
+                        writer.write(anim_img.tobytes(), 1)
+                        written += 1
+                    anim_written = True
             p = frame_params[i]
             kw = {k: v for k, v in p.items() if k in _get_render_frame_args()}
             if prev_canvas is not None:
@@ -2074,6 +2205,8 @@ def generate_frames(
             prev_canvas = img
 
             count = state_to_count[i]
+            if anim_written:
+                count = state_to_count[i] - anim_count
             data = img.tobytes()
             writer.write(data, count)
             written += count

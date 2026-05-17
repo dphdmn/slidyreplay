@@ -213,6 +213,7 @@ class ReplayGUI(tb.Window):
         self.upscale_var = tk.BooleanVar(value=False)
         self.cycles_detection_var = tk.BooleanVar(value=False)
         self.adjust_height_var = tk.BooleanVar(value=False)
+        self.animate_moves_var = tk.BooleanVar(value=False)
 
         _register_fonts()
         os.makedirs(self.out_folder_var.get(), exist_ok=True)
@@ -487,6 +488,8 @@ class ReplayGUI(tb.Window):
                        bootstyle="round-toggle").grid(row=4, column=2, sticky="w")
         tb.Checkbutton(d_grid, text="Cycle detect", variable=self.cycles_detection_var,
                        bootstyle="round-toggle").grid(row=5, column=2, sticky="w")
+        tb.Checkbutton(d_grid, text="Animate moves", variable=self.animate_moves_var,
+                       bootstyle="round-toggle").grid(row=6, column=2, sticky="w")
 
         # ════════ COLORS ════════
         r += 1
@@ -956,6 +959,7 @@ class ReplayGUI(tb.Window):
                     grid1_color=parse_hex_color(self._color_vars["grid1"].get()),
                     grid2_color=parse_hex_color(self._color_vars["grid2"].get()),
                     tile_bg_color=parse_hex_color(self._color_vars["tile_bg"].get()),
+                    animate_moves=self.animate_moves_var.get(),
                 )
                 params = {
                     "force_fringe": self.force_fringe_var.get(),
@@ -1271,6 +1275,8 @@ Examples:
     parser.add_argument("--adjust-height", action="store_true", default=False,
                         help="Crop canvas height to puzzle content instead of fixed quality preset. "
                              "Aligns puzzle to the top (no centering) and removes bottom gap.")
+    parser.add_argument("--animate-moves", action="store_true", default=False,
+                        help="Animate tile sliding between moves (smooth transitions)")
     parser.add_argument("--grid1-color", type=str, default=None, help="Grid 1 color as hex (e.g. FF0000)")
     parser.add_argument("--grid2-color", type=str, default=None, help="Grid 2 color as hex (e.g. 0000FF)")
     parser.add_argument("--tile-bg-color", type=str, default=None, help="Tile background color as hex")
@@ -1291,6 +1297,7 @@ Examples:
         grid1_color=parse_hex_color(args.grid1_color),
         grid2_color=parse_hex_color(args.grid2_color),
         tile_bg_color=parse_hex_color(args.tile_bg_color),
+        animate_moves=args.animate_moves,
     )
 
     if args.speedup <= 0:

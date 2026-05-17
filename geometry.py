@@ -337,6 +337,7 @@ class RenderOptions:
     grid1_color: Optional[Tuple[int, int, int]] = None
     grid2_color: Optional[Tuple[int, int, int]] = None
     tile_bg_color: Optional[Tuple[int, int, int]] = None
+    animate_moves: bool = False
 
 
 @dataclass
