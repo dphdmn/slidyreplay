@@ -185,9 +185,8 @@ class ReplayGUI(tb.Window):
         self.pb_detail_text = tk.StringVar(value="")
 
         self.fps_var = tk.IntVar(value=60)
-        self.force_fringe_var = tk.BooleanVar(value=False)
-        self.force_rows_var = tk.BooleanVar(value=False)
-        self.force_columns_var = tk.BooleanVar(value=False)
+        self.main_scheme_var = tk.StringVar(value="fringe")
+        self.force_main_var = tk.BooleanVar(value=False)
         self.quality_preset_var = tk.StringVar(value="1080p")
         self._quality_presets = {"720p": 720, "1080p": 1080, "1440p (2K)": 1440, "2160p (4K)": 2160}
         self.compression_var = tk.IntVar(value=18)
@@ -483,12 +482,15 @@ class ReplayGUI(tb.Window):
         tb.Label(d_grid, text="Extra", **_col_hdr).grid(row=0, column=2, sticky="w", pady=(0, 2))
         tb.Checkbutton(d_grid, text="Dynamic MD", variable=self.dynamic_md_var,
                        bootstyle="round-toggle").grid(row=1, column=2, sticky="w")
-        tb.Checkbutton(d_grid, text="Force fringe", variable=self.force_fringe_var,
-                       bootstyle="round-toggle").grid(row=2, column=2, sticky="w")
-        tb.Checkbutton(d_grid, text="Force rows", variable=self.force_rows_var,
+        scheme_frame = tb.Frame(d_grid)
+        scheme_frame.grid(row=2, column=2, sticky="w", pady=(2, 2))
+        tb.Label(scheme_frame, text="Main scheme:", font=(FONT_FAMILY, 9)).pack(side="left", padx=(0, 4))
+        main_scheme_combo = ttk.Combobox(scheme_frame, textvariable=self.main_scheme_var,
+                                         values=["fringe", "rows", "columns"],
+                                         state="readonly", width=9)
+        main_scheme_combo.pack(side="left")
+        tb.Checkbutton(d_grid, text="Force main", variable=self.force_main_var,
                        bootstyle="round-toggle").grid(row=3, column=2, sticky="w")
-        tb.Checkbutton(d_grid, text="Force columns", variable=self.force_columns_var,
-                       bootstyle="round-toggle").grid(row=4, column=2, sticky="w")
         tb.Checkbutton(d_grid, text="Cycle detect", variable=self.cycles_detection_var,
                        bootstyle="round-toggle").grid(row=5, column=2, sticky="w")
         tb.Checkbutton(d_grid, text="Animate moves", variable=self.animate_moves_var,
@@ -966,9 +968,8 @@ class ReplayGUI(tb.Window):
                     animate_moves=self.animate_moves_var.get(),
                 )
                 params = {
-                    "force_fringe": self.force_fringe_var.get(),
-                    "force_rows": self.force_rows_var.get(),
-                    "force_columns": self.force_columns_var.get(),
+                    "main_scheme": self.main_scheme_var.get(),
+                    "force_main": self.force_main_var.get(),
                     "quality": self._get_quality(),
                     "fps": self.fps_var.get(),
                     "compression": self.compression_var.get(),
@@ -1242,12 +1243,13 @@ Examples:
     parser.add_argument("--movetimes", help="Comma-separated move timings (overrides --tps/--time)")
     parser.add_argument("--speedup", "-s", type=float, default=1.0,
                         help="Speed multiplier (e.g. 2.0 = 2x faster video, 0.5 = half speed)")
-    parser.add_argument("--force-fringe", action="store_true", default=False,
-                        help="Force fringe colors (disable grids detection)")
-    parser.add_argument("--force-rows", action="store_true", default=False,
-                        help="Force row stripes (disable grids detection)")
-    parser.add_argument("--force-columns", action="store_true", default=False,
-                        help="Force column stripes (disable grids detection)")
+    parser.add_argument("--force-main", action="store_true", default=False,
+                        help="Force main scheme everywhere (disable grids detection)")
+    parser.add_argument("--main-scheme", type=str, default='fringe', choices=['fringe', 'rows', 'columns'],
+                        help="Color scheme: fringe, rows, or columns (default: fringe)")
+    parser.add_argument("--force-fringe", action="store_true", default=False, help=argparse.SUPPRESS)
+    parser.add_argument("--force-rows", action="store_true", default=False, help=argparse.SUPPRESS)
+    parser.add_argument("--force-columns", action="store_true", default=False, help=argparse.SUPPRESS)
     parser.add_argument("--log", "-l", action="store_true", default=False,
                         help="Enable debug logging to file (logs/debug_<timestamp>.log)")
     parser.add_argument("--no-layout", action="store_true",
@@ -1286,6 +1288,18 @@ Examples:
     parser.add_argument("--tile-bg-color", type=str, default=None, help="Tile background color as hex")
 
     args = parser.parse_args()
+
+    main_scheme = args.main_scheme
+    force_main = args.force_main
+    if args.force_fringe:
+        main_scheme = 'fringe'
+        force_main = True
+    if args.force_rows:
+        main_scheme = 'rows'
+        force_main = True
+    if args.force_columns:
+        main_scheme = 'columns'
+        force_main = True
 
     from geometry import parse_hex_color
     opts = RenderOptions(
@@ -1399,7 +1413,7 @@ Examples:
                 mode, val = item if isinstance(item, tuple) else ("manual", item)
 
                 kwargs = dict(quality=args.quality, fps=args.fps, compression=args.compression,
-                              slow_render=slow_render, encoder_preset=args.encoder_preset, speed_factor=args.speedup, force_fringe=args.force_fringe, force_rows=args.force_rows, force_columns=args.force_columns, upscale=args.upscale, encoder_override=args.encoder)
+                              slow_render=slow_render, encoder_preset=args.encoder_preset, speed_factor=args.speedup, main_scheme=main_scheme, force_main=force_main, upscale=args.upscale, encoder_override=args.encoder)
                 try:
                     sol, tps, scramble, movetimes = parse_replay_url(val)
                     kwargs["tps"] = tps or args.tps
@@ -1465,8 +1479,8 @@ Examples:
                                movetimes=movetimes, quality=args.quality,
                                fps=args.fps, compression=args.compression,
                                slow_render=slow_render, encoder_preset=args.encoder_preset,
-                               speed_factor=args.speedup, force_fringe=args.force_fringe,
-                               force_rows=args.force_rows, force_columns=args.force_columns,
+                               speed_factor=args.speedup, main_scheme=main_scheme,
+                               force_main=force_main,
                                upscale=args.upscale, encoder_override=args.encoder)
                 else:
                     if args.output is not None:
@@ -1485,8 +1499,8 @@ Examples:
                                quality=args.quality, movetimes=movetimes,
                                fps=args.fps, compression=args.compression,
                                slow_render=slow_render, encoder_preset=args.encoder_preset,
-                                speed_factor=args.speedup, force_fringe=args.force_fringe,
-                                force_rows=args.force_rows, force_columns=args.force_columns,
+                                speed_factor=args.speedup, main_scheme=main_scheme,
+                                force_main=force_main,
                                 upscale=args.upscale, encoder_override=args.encoder)
     except Exception as e:
         import traceback

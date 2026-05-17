@@ -164,11 +164,11 @@ def merge_matrices_by_dimension(matrix1, matrix2, match_by_width: bool):
         return np.hstack([matrix1, matrix2])
 
 
-def get_fringe_colors_nxm(width: int, height: int, force_rows=False, force_columns=False):
-    if force_rows:
+def get_fringe_colors_nxm(width: int, height: int, style='fringe'):
+    if style == 'rows':
         colors_list = get_colors(height)
         return get_rows_colors(colors_list, width, height)
-    if force_columns:
+    if style == 'columns':
         colors_list = get_colors(width)
         return get_columns_colors(colors_list, width, height)
 
@@ -205,7 +205,7 @@ def get_mono_colors(color, width: int, height: int):
     return np.full((height, width, 3), color, dtype=np.uint8)
 
 
-def get_all_fringe_schemes(grid_states, force_rows=False, force_columns=False):
+def get_all_fringe_schemes(grid_states, main_scheme='fringe'):
     _t0 = time_module.time()
     # Pre-scan to count unique sizes
     needed = set()
@@ -220,7 +220,7 @@ def get_all_fringe_schemes(grid_states, force_rows=False, force_columns=False):
     for i, pair in enumerate(needed):
         parts = pair.split('x')
         w = int(parts[0]); h = int(parts[1])
-        schemes[pair] = get_fringe_colors_nxm(w, h, force_rows, force_columns)
+        schemes[pair] = get_fringe_colors_nxm(w, h, main_scheme)
     log.info(f"  get_all_fringe_schemes took {time_module.time() - _t0:.3f}s, {len(needed)} unique schemes")
     return schemes
 
@@ -2300,9 +2300,8 @@ class ReplayVideoGenerator:
         scramble: Optional[str] = None,
         size: Optional[Tuple[int, int]] = None,
         movetimes: Union[int, List[float]] = -1,
-        force_fringe: bool = False,
-        force_rows: bool = False,
-        force_columns: bool = False,
+        main_scheme: str = 'fringe',
+        force_main: bool = False,
         show_progress: bool = True,
         speed_factor: float = 1.0,
     quality: int = 1080,
@@ -2319,7 +2318,7 @@ class ReplayVideoGenerator:
         upscale: bool = False,
     ):
         _start_time = time_module.time()
-        log.info(f"generate_simple_replay: output={output_path}, force_fringe={force_fringe}, force_rows={force_rows}, force_columns={force_columns}, fps={fps}, compression={compression}, slow_render={slow_render}, quality={quality}, use_gpu={use_gpu}, upscale={upscale}, encoder_override={encoder_override}")
+        log.info(f"generate_simple_replay: output={output_path}, main_scheme={main_scheme}, force_main={force_main}, fps={fps}, compression={compression}, slow_render={slow_render}, quality={quality}, use_gpu={use_gpu}, upscale={upscale}, encoder_override={encoder_override}")
         log.info(f"  tps={tps}, time={time}, scramble_len={len(scramble) if scramble else 0}, size={size}")
         if tps is not None and time is not None:
             raise ValueError("Provide either tps or time, not both")
@@ -2406,8 +2405,7 @@ class ReplayVideoGenerator:
                 scaled = int(round(_analysis_weight * cur / tot)) if tot > 0 else _analysis_weight
                 prog(scaled, _analysis_weight)
 
-        force_fringe_final = force_fringe or force_rows or force_columns
-        if not force_fringe_final:
+        if not force_main:
             grids_data = analyse_grids_initial(matrix, solution_expanded, progress_callback=_analysis_prog, cancel_check=cancel_check, cycles_detection=opts.cycles_detection)
         else:
             grids_data = {
@@ -2434,7 +2432,7 @@ class ReplayVideoGenerator:
         log.info(f"  generate_grids_stats took {time_module.time() - _t_gridstats_start:.3f}s, {len(grid_states)} states")
 
         _t_schemes_start = time_module.time()
-        all_fringe_schemes = get_all_fringe_schemes(grid_states, force_rows, force_columns)
+        all_fringe_schemes = get_all_fringe_schemes(grid_states, main_scheme)
         log.info(f"  get_all_fringe_schemes took {time_module.time() - _t_schemes_start:.3f}s, {len(all_fringe_schemes)} schemes")
         _t_analysis_end = time_module.time()
         log.info(f"  analysis total took {_t_analysis_end - _t_analysis_start:.3f}s, enableGridsStatus={grids_data.get('enableGridsStatus')}")
@@ -2676,9 +2674,11 @@ def main():
     parser.add_argument("--scramble", type=str, default=None, help="Scramble string")
     parser.add_argument("--size", type=str, default=None, help="Puzzle size (e.g. 4x4)")
     parser.add_argument("--output", type=str, default="replay.mp4", help="Output video path")
-    parser.add_argument("--force-fringe", action="store_true", default=False, help="Force fringe colors (disable grids detection)")
-    parser.add_argument("--force-rows", action="store_true", default=False, help="Force row stripes (disable grids detection)")
-    parser.add_argument("--force-columns", action="store_true", default=False, help="Force column stripes (disable grids detection)")
+    parser.add_argument("--force-main", action="store_true", default=False, help="Force main scheme everywhere (disable grids detection)")
+    parser.add_argument("--main-scheme", type=str, default='fringe', choices=['fringe', 'rows', 'columns'], help="Color scheme: fringe, rows, or columns (default: fringe)")
+    parser.add_argument("--force-fringe", action="store_true", default=False, help=argparse.SUPPRESS)
+    parser.add_argument("--force-rows", action="store_true", default=False, help=argparse.SUPPRESS)
+    parser.add_argument("--force-columns", action="store_true", default=False, help=argparse.SUPPRESS)
     parser.add_argument("--quality", type=int, default=1080, help="Target video quality (360/480/720/1080/1440/2160)")
     parser.add_argument("--speed", type=float, default=1.0, help="Speed factor")
     parser.add_argument("--fps", type=int, default=60, help="Output video frame rate (default: 60)")
@@ -2693,6 +2693,18 @@ def main():
         grid2_color=parse_hex_color(args.grid2_color),
         tile_bg_color=parse_hex_color(args.tile_bg_color),
     )
+
+    main_scheme = args.main_scheme
+    force_main = args.force_main
+    if args.force_fringe:
+        main_scheme = 'fringe'
+        force_main = True
+    if args.force_rows:
+        main_scheme = 'rows'
+        force_main = True
+    if args.force_columns:
+        main_scheme = 'columns'
+        force_main = True
 
     if args.url:
         solution, tps, scramble, movetimes = parse_replay_url(args.url)
@@ -2719,9 +2731,8 @@ def main():
         scramble=scramble,
         size=size,
         movetimes=movetimes,
-        force_fringe=args.force_fringe,
-        force_rows=args.force_rows,
-        force_columns=args.force_columns,
+        main_scheme=main_scheme,
+        force_main=force_main,
         speed_factor=args.speed,
         quality=args.quality,
         fps=args.fps,

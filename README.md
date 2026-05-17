@@ -10,7 +10,7 @@ Generates MP4 videos of sliding puzzle replays from [slidysim](https://slidysim.
 python main.py
 ```
 
-Launches a dark-themed GUI with URL, File, and Manual input tabs, FPS slider, GPU toggle, force fringe toggle, progress panel with ETA, and a generated replays list.
+Launches a dark-themed GUI with URL, File, and Manual input tabs, FPS slider, GPU toggle, main scheme selector, progress panel with ETA, and a generated replays list.
 
 ### CLI
 
@@ -59,9 +59,8 @@ python main.py --solution R2D2L2U2 --no-header --no-details    # puzzle grid onl
 | | `--no-secondary-border` | | Suppress secondary color bar borders |
 | | `--no-grid-bars` | | Suppress secondary grid bar indicators inside tiles |
 | | `--no-numbers` | | Suppress tile number text (improves compression) |
-| | `--force-fringe` | | Force fringe colors (disable grids detection) |
-| | `--force-rows` | | Force row stripes (disable grids detection) |
-| | `--force-columns` | | Force column stripes (disable grids detection) |
+| | `--main-scheme` | | Color scheme: `fringe`, `rows`, or `columns` (default: `fringe`) |
+| | `--force-main` | | Force main scheme everywhere (disable grids detection) |
 | | `--animate-moves` | | Animate tile sliding between moves (smooth transitions) |
 | | `--grid1-color` | | Grid 1 (red sections) color as hex, e.g. `FF0000` |
 | | `--grid2-color` | | Grid 2 (blue sections) color as hex, e.g. `0000FF` |
