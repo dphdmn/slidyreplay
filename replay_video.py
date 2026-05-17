@@ -2122,6 +2122,8 @@ def generate_frames(
                 if gpu_renderer is None:
                     gpu.cleanup()
         finally:
+            if progress_callback:
+                progress_callback(len(unique_params), len(unique_params), use_gpu=True)
             writer.close()
 
         log.info(f"====== STAGE 3 DONE: {time_module.time() - _t_stage3:.1f}s ======")
