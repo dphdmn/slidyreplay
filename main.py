@@ -6,7 +6,9 @@ import os
 import subprocess
 import sys
 import ctypes
+from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
+import dataclasses
 
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
@@ -15,7 +17,7 @@ from replay_video import ReplayVideoGenerator, CancelError, _quick_infer_size, _
 from grids_analysis import generate_grids_stats
 from sliding_puzzles import parse_replay_url
 from replay_generator import count_moves
-from geometry import RenderOptions, parse_hex_color
+from geometry import RenderOptions, parse_hex_color, compute_layout
 from PIL import Image, ImageTk
 from debug_log import get_logger, init_logfile
 
@@ -168,6 +170,85 @@ def _pick_output_filename(output_dir, base_name):
     while os.path.exists(os.path.join(output_dir, f"{stem}_{n}{ext}")):
         n += 1
     return os.path.join(output_dir, f"{stem}_{n}{ext}")
+
+
+def render_puzzle_image(
+    output_path: str,
+    size: str,
+    solution: Optional[str] = None,
+    main_scheme: str = 'fringe',
+    force_main: bool = False,
+    opts: RenderOptions = RenderOptions(),
+    quality: int = 1080,
+):
+    from replay_generator import create_puzzle, expand_solution, parse_scramble
+    from grids_analysis import analyse_grids_initial
+
+    if 'x' in size:
+        parts = size.lower().split('x')
+        w, h = int(parts[0]), int(parts[1])
+    else:
+        raise ValueError("size must be in format WxH")
+
+    if solution:
+        matrix = parse_scramble(w, h, solution)
+        sol_exp = expand_solution(solution)
+        if not force_main:
+            grids_data = analyse_grids_initial(matrix, sol_exp, cycles_detection=opts.cycles_detection)
+        else:
+            grids_data = None
+    else:
+        matrix = create_puzzle(w, h)
+        grids_data = None
+
+    if grids_data is None:
+        grids_data = {"enableGridsStatus": -1, "width": w, "height": h, "offsetW": 0, "offsetH": 0}
+    grid_states = generate_grids_stats(grids_data)
+    keys = sorted([k for k in grid_states.keys() if isinstance(k, (int, float))])
+    first_state = grid_states[keys[0]] if keys else list(grid_states.values())[0]
+
+    all_fringe_schemes = get_all_fringe_schemes(
+        grid_states, main_scheme,
+        saturation=opts.saturation,
+        lightness=opts.brightness,
+        hue_start=opts.hue_start,
+        hue_end=opts.hue_end,
+    )
+
+    layout = compute_layout(quality, w, h, opts.grid_only, no_header=opts.no_header, no_details=opts.no_details, adjust_height=opts.adjust_height)
+    tile_size = layout["tile_size"]
+    font_size = layout["font_size"]
+
+    stats_data = {
+        "moves": [], "current_time": 0,
+        "total_moves": 0, "total_time_ms": 0, "total_tps": 0,
+        "is_movetimes_accurate": False,
+        "score_title": "", "timer_text": "",
+        "grid_stages": [], "grid_current": 0,
+        "cycles_display": "", "cycles_tile_data": [], "cycles_fix_times": {},
+    }
+
+    img = render_frame(
+        matrix=matrix,
+        grid_state=first_state,
+        all_fringe_schemes=all_fringe_schemes,
+        tile_size=tile_size,
+        font_size=font_size,
+        stats_data=stats_data,
+        score_title_text="", timer_text="",
+        is_movetimes_accurate=False,
+        total_moves=0, total_time_ms=0, total_tps=0,
+        opts=opts,
+        quality=quality,
+        pad=layout["pad"],
+        header_h=layout["header_h"],
+        panel_w=layout["panel_w"],
+        canvas_w=layout["canvas_w"],
+        canvas_h=layout["canvas_h"],
+    )
+
+    img.save(output_path, "PNG")
+    print(f"Image saved to: {output_path}")
 
 
 class ReplayGUI(tb.Window):
@@ -1535,6 +1616,9 @@ Examples:
     parser.add_argument("--fps", type=int, default=60, help="Output video frame rate (default: 60)")
     parser.add_argument("--no-gpu", "-g", action="store_true", default=None,
                         help="Disable GPU acceleration")
+    parser.add_argument("--image", action="store_true", default=False,
+                        help="Render a single PNG image instead of a video. Requires --size (e.g. --size 4x4). "
+                             "If solution/url is also provided, renders the initial scrambled puzzle state.")
     parser.add_argument("--batch", "-b", help="File with solutions/URLs (one per line)")
     parser.add_argument("--movetimes", help="Comma-separated move timings (overrides --tps/--time)")
     parser.add_argument("--speedup", "-s", type=float, default=1.0,
@@ -1640,7 +1724,7 @@ Examples:
     if args.log:
         log_path = init_logfile()
 
-    if not any([args.solution, args.url, args.file, args.batch]):
+    if not any([args.solution, args.url, args.file, args.batch, args.image]):
         if getattr(sys, 'frozen', False):
             ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
         gui = ReplayGUI()
@@ -1672,6 +1756,49 @@ Examples:
     else:
         gpu_str = "GPU OFF (CPU fallback)"
     print(f"[ReplayVideoGenerator] {gpu_str}")
+
+    # ── Image mode: render single PNG frame ──
+    if args.image:
+        if not args.size:
+            parser.error("--image requires --size (e.g. --size 4x4)")
+
+        replays_dir = os.path.join(script_dir, "replays")
+        if args.output is None:
+            os.makedirs(replays_dir, exist_ok=True)
+            base_name = f"{args.size}_puzzle.png"
+            output_path = _pick_output_filename(replays_dir, base_name)
+        else:
+            root, ext = os.path.splitext(args.output)
+            output_path = f"{root}.png"
+
+        # Default to grid_only (clean puzzle image) unless user requested layout flags
+        image_opts = opts
+        if not opts.grid_only and not opts.no_header and not opts.no_details and not opts.adjust_height:
+            image_opts = dataclasses.replace(opts, grid_only=True)
+
+        sol = None
+        if args.solution:
+            sol = args.solution
+        elif args.url or args.file:
+            replay_val = args.url
+            if args.file:
+                with open(args.file, "r") as f:
+                    replay_val = f.read().strip()
+            try:
+                sol, _, _, _ = parse_replay_url(replay_val)
+            except Exception:
+                sol = replay_val
+
+        render_puzzle_image(
+            output_path,
+            size=args.size,
+            solution=sol,
+            main_scheme=main_scheme,
+            force_main=force_main,
+            opts=image_opts,
+            quality=args.quality,
+        )
+        sys.exit(0)
 
     def run_single(solution, output, opts=RenderOptions(), **kwargs):
         try:

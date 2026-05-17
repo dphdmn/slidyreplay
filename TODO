@@ -3,7 +3,6 @@
 - batch mode stuff (relays and marathons with data)
 - move splits and replay_generator stuff parts into separate module/repo
 - Cursor dancing
-- Fringe Hue slider
 - custom font, font size
 - single frame render
 - movetimes override from file
