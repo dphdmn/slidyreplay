@@ -328,6 +328,7 @@ class RenderOptions:
     grid_only: bool = False
     no_border: bool = False
     no_secondary_border: bool = False
+    no_grid_bars: bool = False
     no_numbers: bool = False
     no_header: bool = False
     no_details: bool = False
@@ -382,7 +383,7 @@ def prerender_composite_tile(num: int, main_bg, sec_bg, tile_sprites: TileSprite
     if not opts.no_numbers and num != 0:
         nt = tile_sprites.number_texts[num]
         composite.paste(nt, (0, 0), nt)
-    if sec_bg is not None:
+    if sec_bg is not None and not opts.no_grid_bars:
         bar = select_bar(sec_bg, tile_sprites)
         if bar is not None:
             composite.paste(bar, (0, 0), bar)

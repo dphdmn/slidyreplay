@@ -6,9 +6,9 @@
 - Fringe Hue slider
 - optional timer / md stats - stats panel
 - custom font, font size
-- disable grids bar option
 - single frame render
 - movetimes override from file
 - puzzle not centered vertically again
-- encoder readme missinformation
+- small resolution font size issues
 - cpu spikes on idle
+- rework force fringe/lbl/columns, choose main + force main

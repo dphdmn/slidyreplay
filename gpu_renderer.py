@@ -183,17 +183,21 @@ class GPURenderer:
             self._border_mask_inv = 1.0 - border
 
             # Secondary colour bar masks
-            bx0, by0, bx1, by1 = compute_secondary_bar_rect(tile_size, font_size=self.font_size)
-            bar_fill = torch.zeros(tile_size, tile_size, 1, device=cuda_dev, dtype=torch.float32)
-            bar_border = torch.zeros(tile_size, tile_size, 1, device=cuda_dev, dtype=torch.float32)
-            bar_fill[by0:by1, bx0:bx1] = 1.0
-            if should_draw_secondary_border_rect(tile_size, (bx0, by0, bx1, by1)) and not self.opts.no_secondary_border:
-                bar_border[by0, bx0:bx1] = 1.0
-                bar_border[by1 - 1, bx0:bx1] = 1.0
-                bar_border[by0:by1, bx0] = 1.0
-                bar_border[by0:by1, bx1 - 1] = 1.0
-            self._bar_fill = bar_fill
-            self._bar_border = bar_border
+            if self.opts.no_grid_bars:
+                self._bar_fill = torch.zeros(0, device=cuda_dev)
+                self._bar_border = torch.zeros(0, device=cuda_dev)
+            else:
+                bx0, by0, bx1, by1 = compute_secondary_bar_rect(tile_size, font_size=self.font_size)
+                bar_fill = torch.zeros(tile_size, tile_size, 1, device=cuda_dev, dtype=torch.float32)
+                bar_border = torch.zeros(tile_size, tile_size, 1, device=cuda_dev, dtype=torch.float32)
+                bar_fill[by0:by1, bx0:bx1] = 1.0
+                if should_draw_secondary_border_rect(tile_size, (bx0, by0, bx1, by1)) and not self.opts.no_secondary_border:
+                    bar_border[by0, bx0:bx1] = 1.0
+                    bar_border[by1 - 1, bx0:bx1] = 1.0
+                    bar_border[by0:by1, bx0] = 1.0
+                    bar_border[by0:by1, bx1 - 1] = 1.0
+                self._bar_fill = bar_fill
+                self._bar_border = bar_border
 
             # Timer bar background
             tx1, ty1, tx2, ty2 = self.timer_bbox

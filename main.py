@@ -206,6 +206,7 @@ class ReplayGUI(tb.Window):
         self.no_layout_var = tk.BooleanVar(value=False)
         self.no_border_var = tk.BooleanVar(value=False)
         self.no_secondary_border_var = tk.BooleanVar(value=False)
+        self.no_grid_bars_var = tk.BooleanVar(value=False)
         self.no_numbers_var = tk.BooleanVar(value=False)
         self.no_header_var = tk.BooleanVar(value=False)
         self.no_details_var = tk.BooleanVar(value=False)
@@ -464,7 +465,9 @@ class ReplayGUI(tb.Window):
                        bootstyle="round-toggle").grid(row=2, column=0, sticky="w")
         tb.Checkbutton(d_grid, text="No numbers", variable=self.no_numbers_var,
                        bootstyle="round-toggle").grid(row=3, column=0, sticky="w")
-
+        tb.Checkbutton(d_grid, text="No grid bars", variable=self.no_grid_bars_var,
+                       bootstyle="round-toggle").grid(row=4, column=0, sticky="w")
+ 
         # Column 1: Layout
         tb.Label(d_grid, text="Layout", **_col_hdr).grid(row=0, column=1, sticky="w", pady=(0, 2))
         tb.Checkbutton(d_grid, text="No header", variable=self.no_header_var,
@@ -950,6 +953,7 @@ class ReplayGUI(tb.Window):
                     grid_only=self.no_layout_var.get(),
                     no_border=self.no_border_var.get(),
                     no_secondary_border=self.no_secondary_border_var.get(),
+                    no_grid_bars=self.no_grid_bars_var.get(),
                     no_numbers=self.no_numbers_var.get(),
                     no_header=self.no_header_var.get(),
                     no_details=self.no_details_var.get(),
@@ -1262,6 +1266,8 @@ Examples:
                         help="Suppress tile border outlines")
     parser.add_argument("--no-secondary-border", action="store_true",
                         help="Suppress secondary color bar borders")
+    parser.add_argument("--no-grid-bars", action="store_true", default=False,
+                        help="Suppress secondary grid bar indicators inside tiles")
     parser.add_argument("--no-numbers", action="store_true",
                         help="Suppress tile number text")
     parser.add_argument("--upscale", action="store_true", default=False,
@@ -1286,6 +1292,7 @@ Examples:
         grid_only=args.no_layout,
         no_border=args.no_border,
         no_secondary_border=args.no_secondary_border,
+        no_grid_bars=args.no_grid_bars,
         no_numbers=args.no_numbers,
         no_header=args.no_header,
         no_details=args.no_details,

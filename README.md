@@ -57,6 +57,7 @@ python main.py --solution R2D2L2U2 --no-header --no-details    # puzzle grid onl
 | | `--adjust-height` | | Crop canvas height to puzzle content instead of fixed quality preset. Useful when big puzzle doesn't fill the frame due to small tile size |
 | | `--no-border` | | Suppress tile border outlines |
 | | `--no-secondary-border` | | Suppress secondary color bar borders |
+| | `--no-grid-bars` | | Suppress secondary grid bar indicators inside tiles |
 | | `--no-numbers` | | Suppress tile number text (improves compression) |
 | | `--force-fringe` | | Force fringe colors (disable grids detection) |
 | | `--force-rows` | | Force row stripes (disable grids detection) |

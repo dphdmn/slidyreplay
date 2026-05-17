@@ -542,7 +542,7 @@ def render_frame(
                     draw.line([(sx, sy), (sx + tile_size - 1, sy)], fill=TILE_BORDER_COLOR, width=TILE_BORDER_WIDTH)
                     draw.line([(sx, sy), (sx, sy + tile_size - 1)], fill=TILE_BORDER_COLOR, width=TILE_BORDER_WIDTH)
 
-                if sec_bg is not None:
+                if sec_bg is not None and not opts.no_grid_bars: 
                     bx0, by0, bx1, by1 = compute_secondary_bar_rect(tile_size, sx, sy, font_size=font_size)
                     bar_bbox = (bx0, by0, max(bx0, bx1 - 1), max(by0, by1 - 1))
                     draw_filled_rect(draw, bar_bbox, sec_bg)
