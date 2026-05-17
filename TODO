@@ -12,7 +12,6 @@
 - cpu spikes on idle
 
 - grid corner tile is not affected by brightness
-- queue clears up on cancel
 - when main color scheme changes, puzzle is forced to 4x4 again
 - laggs on 20x20
 - make preview adapt to available space

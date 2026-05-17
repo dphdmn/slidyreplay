@@ -1339,6 +1339,9 @@ class ReplayGUI(tb.Window):
                 parts.append(f"{errors} failed")
             msg = " — ".join(parts) + f". {elapsed_str}" if parts else f"Done. {elapsed_str}"
             self.pb_overall_text.set(msg)
+            # Clear queue only on successful render
+            self.render_queue.clear()
+            self._refresh_queue_display()
         except CancelError:
             done_count = sum(1 for p in self._item_progress.values() if p.get("path"))
             self.pb_overall_text.set(f"Cancelled. {done_count} completed. {elapsed_str}")
@@ -1355,9 +1358,6 @@ class ReplayGUI(tb.Window):
             self._executor = None
         self._batch_futures = []
         self._current_item_idx = -1
-        # Clear queue after render
-        self.render_queue.clear()
-        self._refresh_queue_display()
 
     def _add_to_list(self, path):
         self.generated_files.append(path)
