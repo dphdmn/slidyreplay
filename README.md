@@ -65,8 +65,8 @@ python main.py --solution R2D2L2U2 --no-header --no-details    # puzzle grid onl
 | | `--grid1-color` | | Grid 1 (red sections) color as hex, e.g. `FF0000` |
 | | `--grid2-color` | | Grid 2 (blue sections) color as hex, e.g. `0000FF` |
 | | `--tile-bg-color` | | Tile background color as hex, e.g. `969696` |
-| | `--hue-start` | | Hue range start (0–360, default: 0) |
-| | `--hue-end` | | Hue range end (0–360, default: 360) |
+| | `--hue-start` | | Hue range start (0–330, default: 0) |
+| | `--hue-end` | | Hue range end (0–330, default: 330) |
 | | `--saturation` | | Color saturation (0–1, default: 0.78) |
 | | `--brightness` | | Color brightness (0–1, default: 0.6) |
 | | `--cycles-detection` | | EXPERIMENTAL: detect and display cycling tiles in grid stats (may increase analysis time) |

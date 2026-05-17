@@ -191,7 +191,7 @@ class ReplayGUI(tb.Window):
         self.main_scheme_var = tk.StringVar(value="fringe")
         self.force_main_var = tk.BooleanVar(value=False)
         self.hue_start_var = tk.DoubleVar(value=0)
-        self.hue_end_var = tk.DoubleVar(value=360)
+        self.hue_end_var = tk.DoubleVar(value=330)
         self.saturation_var = tk.IntVar(value=78)
         self.brightness_var = tk.IntVar(value=60)
         self._preview_job = None
@@ -589,8 +589,8 @@ class ReplayGUI(tb.Window):
                 self._schedule_preview()
             var.trace_add("write", _on_change)
 
-        _add_slider(self.preview_frame, "Hue start:", self.hue_start_var, 0, 360, "{:.0f}")
-        _add_slider(self.preview_frame, "Hue end:", self.hue_end_var, 0, 360, "{:.0f}")
+        _add_slider(self.preview_frame, "Hue start:", self.hue_start_var, 0, 330, "{:.0f}")
+        _add_slider(self.preview_frame, "Hue end:", self.hue_end_var, 0, 330, "{:.0f}")
         _add_slider(self.preview_frame, "Saturation:", self.saturation_var, 0, 100, "{}%")
         _add_slider(self.preview_frame, "Brightness:", self.brightness_var, 0, 100, "{}%")
 
@@ -1540,7 +1540,7 @@ Examples:
     parser.add_argument("--grid2-color", type=str, default=None, help="Grid 2 color as hex (e.g. 0000FF)")
     parser.add_argument("--tile-bg-color", type=str, default=None, help="Tile background color as hex")
     parser.add_argument("--hue-start", type=float, default=0, help="Hue range start (0-360, default: 0)")
-    parser.add_argument("--hue-end", type=float, default=360, help="Hue range end (0-360, default: 360)")
+    parser.add_argument("--hue-end", type=float, default=330, help="Hue range end (0-330, default: 330)")
     parser.add_argument("--saturation", type=float, default=0.78, help="Color saturation (0-1, default: 0.78)")
     parser.add_argument("--brightness", type=float, default=0.6, help="Color brightness (0-1, default: 0.6)")
 

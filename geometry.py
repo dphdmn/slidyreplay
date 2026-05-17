@@ -28,7 +28,6 @@ BG_COLOR = (18, 18, 18)
 TILE_BG = (69, 69, 69)
 TILE_TEXT_COLOR = (0, 0, 0)
 TILE_BORDER_COLOR = (0, 0, 0)
-NULL_COLOR = (248, 24, 148)
 PANEL_BG = (17, 17, 17)
 PANEL_ALPHA = 0.69
 TIMER_BG = (22, 22, 22)
@@ -340,7 +339,7 @@ class RenderOptions:
     tile_bg_color: Optional[Tuple[int, int, int]] = None
     animate_moves: bool = False
     hue_start: float = 0.0
-    hue_end: float = 360.0
+    hue_end: float = 330.0
     saturation: float = 0.78
     brightness: float = 0.6
 

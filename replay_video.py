@@ -45,7 +45,7 @@ log = get_logger()
 reset_ram_baseline()
 
 from geometry import (PADDING, HEADER_H, STATS_PANEL_WIDTH, INFO_H, TIMER_HEIGHT,
-    BG_COLOR, TILE_BG, TILE_TEXT_COLOR, TILE_BORDER_COLOR, NULL_COLOR,
+    BG_COLOR, TILE_BG, TILE_TEXT_COLOR, TILE_BORDER_COLOR,
     PANEL_BG, PANEL_ALPHA, TIMER_BG, ACCURATE_COLOR, INACCURATE_COLOR,
     WHITE, CYAN, GREEN, GRAY, LIGHT_GRAY,
     TILE_BORDER_WIDTH, TILE_BORDER_RADIUS_RATIO,
@@ -81,7 +81,7 @@ def hsl_to_rgb(h: float, s: float, l: float) -> Tuple[int, int, int]:
     return (round(r * 255), round(g * 255), round(b * 255))
 
 
-def get_colors(num_colors: int, saturation=0.78, lightness=0.6, hue_start=0, hue_end=360) -> List[Tuple[int, int, int]]:
+def get_colors(num_colors: int, saturation=0.78, lightness=0.6, hue_start=0, hue_end=330) -> List[Tuple[int, int, int]]:
     if num_colors < 1:
         return []
     colors = []
@@ -96,7 +96,7 @@ def _fringe_to_np(fringe_list):
     return np.array(fringe_list, dtype=np.uint8)
 
 
-def generate_color_fringe(colors_list, size: int):
+def generate_color_fringe(colors_list, size: int, blank_color=None):
     matrix = [[None] * size for _ in range(size)]
     for i, color in enumerate(colors_list):
         if i == 0:
@@ -112,7 +112,7 @@ def generate_color_fringe(colors_list, size: int):
             for j in range(size):
                 if matrix[j][col_idx] is None:
                     matrix[j][col_idx] = color
-    matrix[size - 1][size - 1] = NULL_COLOR
+    matrix[size - 1][size - 1] = blank_color if blank_color is not None else colors_list[-1]
     return _fringe_to_np(matrix)
 
 
@@ -163,7 +163,7 @@ def merge_matrices_by_dimension(matrix1, matrix2, match_by_width: bool):
         return np.hstack([matrix1, matrix2])
 
 
-def get_fringe_colors_nxm(width: int, height: int, style='fringe', saturation=0.78, lightness=0.6, hue_start=0, hue_end=360):
+def get_fringe_colors_nxm(width: int, height: int, style='fringe', saturation=0.78, lightness=0.6, hue_start=0, hue_end=330):
     if style == 'rows':
         colors_list = get_colors(height, saturation, lightness, hue_start, hue_end)
         return get_rows_colors(colors_list, width, height)
@@ -178,7 +178,8 @@ def get_fringe_colors_nxm(width: int, height: int, style='fringe', saturation=0.
     if start_matrix is None:
         num_colors = sq_size * 2 - 2
         colors_list = get_colors(num_colors, saturation, lightness, hue_start, hue_end)
-        return generate_color_fringe(colors_list, sq_size)
+        blank = hsl_to_rgb(hue_end / 360.0, saturation, lightness)
+        return generate_color_fringe(colors_list, sq_size, blank_color=blank)
 
     orig_w, orig_h = width, height
     start_w = len(start_matrix[0])
@@ -189,7 +190,8 @@ def get_fringe_colors_nxm(width: int, height: int, style='fringe', saturation=0.
     colors_list = get_colors(num_colors, saturation, lightness, hue_start, hue_end)
     start_colors = colors_list[:extra_size]
     square_colors = colors_list[extra_size:]
-    colors_matrix_sq = generate_color_fringe(square_colors, sq_size)
+    blank = hsl_to_rgb(hue_end / 360.0, saturation, lightness)
+    colors_matrix_sq = generate_color_fringe(square_colors, sq_size, blank_color=blank)
 
     match_by_width = orig_w < orig_h
     if not match_by_width:
@@ -204,7 +206,7 @@ def get_mono_colors(color, width: int, height: int):
     return np.full((height, width, 3), color, dtype=np.uint8)
 
 
-def get_all_fringe_schemes(grid_states, main_scheme='fringe', saturation=0.78, lightness=0.6, hue_start=0, hue_end=360):
+def get_all_fringe_schemes(grid_states, main_scheme='fringe', saturation=0.78, lightness=0.6, hue_start=0, hue_end=330):
     _t0 = time_module.time()
     # Pre-scan to count unique sizes
     needed = set()
@@ -1199,7 +1201,6 @@ def prerender_tile_layers(width, height, tile_size, font_size, opts, all_fringe_
     base_sprites[red_t] = _solid_base(red_t, ts, opts)
     base_sprites[blue_t] = _solid_base(blue_t, ts, opts)
     base_sprites[tile_bg] = _solid_base(tile_bg, ts, opts)
-    base_sprites[NULL_COLOR] = _solid_base(NULL_COLOR, ts, opts)
 
     number_texts = {}
     for num in range(w * h + 1):
@@ -2436,7 +2437,7 @@ class ReplayVideoGenerator:
             saturation=opts.saturation if opts else 0.78,
             lightness=opts.brightness if opts else 0.6,
             hue_start=opts.hue_start if opts else 0,
-            hue_end=opts.hue_end if opts else 360,
+            hue_end=opts.hue_end if opts else 330,
         )
         log.info(f"  get_all_fringe_schemes took {time_module.time() - _t_schemes_start:.3f}s, {len(all_fringe_schemes)} schemes")
         _t_analysis_end = time_module.time()
