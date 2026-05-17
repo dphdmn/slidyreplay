@@ -1069,23 +1069,20 @@ class ReplayGUI(tb.Window):
             # Update overall bar
             done_count = sum(1 for p in self._item_progress.values() if p.get("path"))
             elapsed = time.time() - self._start_time
-            elapsed_str = f"{elapsed:.1f}s" if elapsed < 60 else f"{int(elapsed//60)}m {elapsed%60:.0f}s"
 
             overall_pct = (done_count * 100) // total if total else 0
             if overall_pct > 0 and not self.cancel_flag:
-                self.overall_bar["value"] = min(overall_pct, 99)
+                self.overall_bar["value"] = overall_pct
 
             # Simple ETA: avg time per completed item × remaining items
             remaining = total - done_count
-            eta_str = ""
+            total_expected = elapsed
             if done_count > 0 and remaining > 0:
                 avg_per_item = elapsed / done_count
-                eta_secs = avg_per_item * remaining
-                if eta_secs < 60:
-                    eta_str = f" ~{eta_secs:.0f}s"
-                else:
-                    eta_str = f" ~{int(eta_secs//60)}m {eta_secs%60:.0f}s"
-            self.pb_overall_text.set(f"{done_count}/{total} — {elapsed_str}{eta_str}")
+                total_expected = avg_per_item * total
+            self.pb_overall_text.set(
+                f"{done_count}/{total} — {self._time_str(elapsed)}/{self._time_str(total_expected)}"
+            )
 
             # Update detail bar from current item
             cur_idx = self._current_item_idx
@@ -1093,6 +1090,7 @@ class ReplayGUI(tb.Window):
                 p = self._item_progress[cur_idx]
                 cur = p["adjusted_cur"]
                 tot = p["adjusted_tot"]
+                detail_pct = 0
                 if tot > 0:
                     detail_pct = min(cur * 100 // tot, 100)
                     self.detail_bar["value"] = detail_pct
@@ -1101,7 +1099,7 @@ class ReplayGUI(tb.Window):
                 detail_parts = []
                 if desc:
                     detail_parts.append(f"{desc}:")
-                detail_parts.append(f"{cur}/{tot} ({self.detail_bar['value'] if tot > 0 else 0}%)")
+                detail_parts.append(f"{detail_pct}%")
 
                 st = p.get("start_time")
                 if st and tot > 0 and cur > 0:
@@ -1109,13 +1107,13 @@ class ReplayGUI(tb.Window):
                     rate = cur / item_elapsed if item_elapsed > 0 else 0
                     remaining = tot - cur
                     eta = remaining / rate if rate > 0 else 0
-                    if item_elapsed >= 1.0:
-                        detail_parts.append(f"{rate:.1f}/s")
-                    detail_parts.append(f"{self._time_str(item_elapsed)}/{self._time_str(eta) if eta < 1e8 else '?'}")
+                    total_expected = item_elapsed + eta
+                    detail_parts.append(f"{rate:.0f}/s")
+                    detail_parts.append(f"{self._time_str(item_elapsed)}/{self._time_str(total_expected) if total_expected < 1e8 else '?'}")
 
                 if gs and gs.get("batch_size"):
                     detail_parts.append(f"GPU: {gs.get('mem_used_mb', 0)}/{gs.get('total_mem_mb', 0)} MB")
-                self.pb_detail_text.set(" ".join(detail_parts))
+                self.pb_detail_text.set(" | ".join(detail_parts))
 
                 gpu_str = ""
                 gs = p.get("gpu_stats")

@@ -164,6 +164,8 @@ class ProgressTracker:
         """Force progress to 100 % and, in terminal mode, print a final newline."""
         self.total = 100
         self._render_terminal(100, force=True)
+        if self.external_cb:
+            self.external_cb(100, 100)
         if self.show_terminal:
             print()
 
