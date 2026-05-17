@@ -12,10 +12,8 @@
 - cpu spikes on idle
 
 - grid corner tile is not affected by brightness
-- when main color scheme changes, puzzle is forced to 4x4 again
-- laggs on 20x20
-- make preview adapt to available space
 - replay system does not properly recognize the tps value in non-movetimes accurate replays inputs, falls back to 15
+- progress bars stuck at 99% 97%
 
 - reset to default button
 - save settings preset to file

@@ -171,7 +171,8 @@ class ReplayGUI(tb.Window):
         super().__init__(themename="darkly")
         self.withdraw()
         self.title("Replay Video Generator")
-        self.minsize(1280, 720)
+        self._base_w, self._base_h = 1280, 720
+        self.minsize(self._base_w, self._base_h)
 
         self.generated_files = []
         self.render_queue = []
@@ -759,8 +760,26 @@ class ReplayGUI(tb.Window):
 
         # Initial preview
         self.after(100, self._render_preview)
-        self.preview_frame.bind("<Configure>", lambda e: self._schedule_preview())
+        self.bind("<Configure>", self._on_window_configure)
 
+
+    def _on_window_configure(self, event):
+        if event.widget is not self:
+            return
+        state = self.state()
+        prev = getattr(self, '_prev_win_state', None)
+        self._prev_win_state = state
+        if state == "zoomed":
+            if prev != "zoomed":
+                self._prev_root_h = event.height
+                self._schedule_preview()
+        elif state == "iconic":
+            pass
+        elif prev in ("zoomed", "iconic"):
+            self._prev_root_h = event.height
+            self._schedule_preview()
+        elif (event.width, event.height) != (self._base_w, self._base_h):
+            self.geometry(f"{self._base_w}x{self._base_h}")
 
     def _get_speed_factor(self) -> float:
         try:
@@ -932,11 +951,10 @@ class ReplayGUI(tb.Window):
             try:
                 self.update_idletasks()
                 avail_w = self.preview_frame.winfo_width() - 20
-                total_h = self.winfo_height()
+                total_h = self._prev_root_h if self._prev_root_h > 0 else self.winfo_height()
                 file_row_h = max(1, self.file_row.winfo_height())
                 text_h = max(1, self.input_text.winfo_height())
                 ov_h = max(1, self.ov_frame.winfo_height())
-                # layout overhead: preview_frame non-image content + file/text labels + padding
                 other_h = 210
                 avail_h = max(50, total_h - file_row_h - text_h - ov_h - other_h)
                 avail = max(50, min(avail_w, avail_h))
