@@ -195,6 +195,7 @@ class ReplayGUI(tb.Window):
         self.brightness_var = tk.IntVar(value=60)
         self._preview_job = None
         self._preview_photo = None
+        self._preview_sel_idx = -1
         self.quality_preset_var = tk.StringVar(value="1080p")
         self._quality_presets = {"720p": 720, "1080p": 1080, "1440p (2K)": 1440, "2160p (4K)": 2160}
         self.compression_var = tk.IntVar(value=18)
@@ -490,19 +491,12 @@ class ReplayGUI(tb.Window):
         tb.Label(d_grid, text="Extra", **_col_hdr).grid(row=0, column=2, sticky="w", pady=(0, 2))
         tb.Checkbutton(d_grid, text="Dynamic MD", variable=self.dynamic_md_var,
                        bootstyle="round-toggle").grid(row=1, column=2, sticky="w")
-        scheme_frame = tb.Frame(d_grid)
-        scheme_frame.grid(row=2, column=2, sticky="w", pady=(2, 2))
-        tb.Label(scheme_frame, text="Main scheme:", font=(FONT_FAMILY, 9)).pack(side="left", padx=(0, 4))
-        main_scheme_combo = ttk.Combobox(scheme_frame, textvariable=self.main_scheme_var,
-                                         values=["fringe", "rows", "columns"],
-                                         state="readonly", width=9)
-        main_scheme_combo.pack(side="left")
         tb.Checkbutton(d_grid, text="Force main", variable=self.force_main_var,
-                       bootstyle="round-toggle").grid(row=3, column=2, sticky="w")
+                       bootstyle="round-toggle").grid(row=2, column=2, sticky="w")
         tb.Checkbutton(d_grid, text="Cycle detect", variable=self.cycles_detection_var,
-                       bootstyle="round-toggle").grid(row=5, column=2, sticky="w")
+                       bootstyle="round-toggle").grid(row=3, column=2, sticky="w")
         tb.Checkbutton(d_grid, text="Animate moves", variable=self.animate_moves_var,
-                       bootstyle="round-toggle").grid(row=6, column=2, sticky="w")
+                       bootstyle="round-toggle").grid(row=4, column=2, sticky="w")
 
         # ════════ COLORS ════════
         r += 1
@@ -550,23 +544,34 @@ class ReplayGUI(tb.Window):
                 lambda *_, n=name: self._color_previews[n].config(background=f"#{self._color_vars[n].get()}"))
             r += 1
 
+        scheme_row = tb.Frame(settings)
+        scheme_row.grid(row=r, column=0, sticky="ew", pady=(4, 2), padx=12)
+        scheme_row.grid_columnconfigure(1, weight=1)
+        tb.Label(scheme_row, text="Main scheme:", font=(FONT_FAMILY, 9)).grid(row=0, column=0, padx=(0, 6))
+        main_scheme_combo = ttk.Combobox(scheme_row, textvariable=self.main_scheme_var,
+                                         values=["fringe", "rows", "columns"],
+                                         state="readonly", width=9)
+        main_scheme_combo.grid(row=0, column=1, sticky="w")
+        r += 1
+
         # ======== COLUMN 1: UNIFIED INPUT + OVERRIDES ========
-        mid = tb.Frame(root)
-        mid.grid(row=0, column=1, sticky="nsew", padx=(3, 3))
-        mid.grid_propagate(False)
-        mid.grid_columnconfigure(0, weight=1)
+        self.mid = tb.Frame(root)
+        self.mid.grid(row=0, column=1, sticky="nsew", padx=(3, 3))
+        self.mid.grid_propagate(False)
+        self.mid.grid_columnconfigure(0, weight=1)
+        mid = self.mid
 
         # Preview frame
-        preview_frame = tb.LabelFrame(mid, text="Preview")
-        preview_frame.pack(fill="x", pady=(0, 4))
-        preview_inner = tb.Frame(preview_frame)
+        self.preview_frame = tb.LabelFrame(mid, text="Preview")
+        self.preview_frame.pack(fill="x", pady=(0, 4))
+        preview_inner = tb.Frame(self.preview_frame)
         preview_inner.pack(pady=4)
         self._preview_label = tb.Label(preview_inner)
         self._preview_label.pack()
-        self._preview_info = tb.Label(preview_frame, text="4x4 · Fringe",
+        self._preview_info = tb.Label(self.preview_frame, text="4x4 · Fringe",
                                        font=(FONT_FAMILY, 8), foreground="#888")
         self._preview_info.pack(anchor="w", padx=4, pady=(0, 2))
-        tb.Label(preview_frame, text="Select a replay in the queue to preview",
+        tb.Label(self.preview_frame, text="Select a replay in the queue to preview",
                  font=(FONT_FAMILY, 7), foreground="#666").pack(anchor="w", padx=4, pady=(0, 2))
 
         def _add_slider(parent, label, var, from_, to, fmt="{:.0f}"):
@@ -583,24 +588,24 @@ class ReplayGUI(tb.Window):
                 self._schedule_preview()
             var.trace_add("write", _on_change)
 
-        _add_slider(preview_frame, "Hue start:", self.hue_start_var, 0, 360, "{:.0f}")
-        _add_slider(preview_frame, "Hue end:", self.hue_end_var, 0, 360, "{:.0f}")
-        _add_slider(preview_frame, "Saturation:", self.saturation_var, 0, 100, "{}%")
-        _add_slider(preview_frame, "Brightness:", self.brightness_var, 0, 100, "{}%")
+        _add_slider(self.preview_frame, "Hue start:", self.hue_start_var, 0, 360, "{:.0f}")
+        _add_slider(self.preview_frame, "Hue end:", self.hue_end_var, 0, 360, "{:.0f}")
+        _add_slider(self.preview_frame, "Saturation:", self.saturation_var, 0, 100, "{}%")
+        _add_slider(self.preview_frame, "Brightness:", self.brightness_var, 0, 100, "{}%")
 
         # File selection
         tb.Label(mid, text="File:", font=(FONT_FAMILY, 9)).pack(anchor="w")
-        file_row = tb.Frame(mid)
-        file_row.pack(fill="x", pady=(0, 4))
-        file_row.grid_columnconfigure(0, weight=1)
-        self.file_entry = tb.Entry(file_row, textvariable=self.file_path_var)
+        self.file_row = tb.Frame(mid)
+        self.file_row.pack(fill="x", pady=(0, 4))
+        self.file_row.grid_columnconfigure(0, weight=1)
+        self.file_entry = tb.Entry(self.file_row, textvariable=self.file_path_var)
         self.file_entry.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        tb.Button(file_row, text="Browse...", command=self._browse_file,
+        tb.Button(self.file_row, text="Browse...", command=self._browse_file,
                   bootstyle="secondary-outline", width=9).grid(row=0, column=1)
-        self.add_btn = tb.Button(file_row, text="Add to Queue", command=self._add_to_queue,
+        self.add_btn = tb.Button(self.file_row, text="Add to Queue", command=self._add_to_queue,
                                   bootstyle="primary", width=14)
         self.add_btn.grid(row=0, column=2, padx=(4, 0))
-        self.clear_input_btn = tb.Button(file_row, text="Clear Input", command=self._clear_input,
+        self.clear_input_btn = tb.Button(self.file_row, text="Clear Input", command=self._clear_input,
                                           bootstyle="secondary-outline", width=12)
         self.clear_input_btn.grid(row=0, column=3, padx=(4, 0))
 
@@ -617,11 +622,11 @@ class ReplayGUI(tb.Window):
                            "# paste URLs or solution strings here, one per line")
 
         # Override params (always visible, always editable) — inline
-        ov_frame = tb.LabelFrame(mid, text="Override (optional — applied on add to queue)",
+        self.ov_frame = tb.LabelFrame(mid, text="Override (optional — applied on add to queue)",
                                  font=(FONT_FAMILY, 9, "bold"))
-        ov_frame.pack(fill="x", pady=(4, 0))
+        self.ov_frame.pack(fill="x", pady=(4, 0))
 
-        ov_row1 = tb.Frame(ov_frame)
+        ov_row1 = tb.Frame(self.ov_frame)
         ov_row1.pack(fill="x", padx=4, pady=(2, 1))
         def _ov_inline(parent, label, var, w, col):
             tb.Label(parent, text=label, font=(FONT_FAMILY, 9)).grid(row=0, column=col*2, padx=(2, 2))
@@ -632,7 +637,7 @@ class ReplayGUI(tb.Window):
         _ov_inline(ov_row1, "Time (s):", self.time_var, 8, 1)
         _ov_inline(ov_row1, "Size:", self.size_var, 8, 2)
 
-        ov_row2 = tb.Frame(ov_frame)
+        ov_row2 = tb.Frame(self.ov_frame)
         ov_row2.pack(fill="x", padx=4, pady=(0, 2))
         tb.Label(ov_row2, text="Scramble:", font=(FONT_FAMILY, 9)).pack(side="left", padx=(2, 2))
         self.scramble_entry = tb.Entry(ov_row2, width=18, textvariable=self.scramble_var)
@@ -640,16 +645,6 @@ class ReplayGUI(tb.Window):
         tb.Label(ov_row2, text="Movetimes:", font=(FONT_FAMILY, 9)).pack(side="left", padx=(2, 2))
         self.movetimes_entry = tb.Entry(ov_row2, width=18, textvariable=self.movetimes_var)
         self.movetimes_entry.pack(side="left")
-
-        # Action buttons
-        act = tb.Frame(mid)
-        act.pack(fill="x", pady=(6, 0))
-        self.gen_btn = tb.Button(act, text="Render", command=self._generate,
-                                 bootstyle="success", width=12)
-        self.gen_btn.pack(side="left", padx=(0, 6))
-        self.cancel_btn = tb.Button(act, text="Cancel", command=self._cancel,
-                                    bootstyle="secondary", state="disabled")
-        self.cancel_btn.pack(side="left")
 
         # ======== COLUMN 2: PROGRESS + QUEUE + OUTPUTS ========
         right = tb.Frame(root)
@@ -704,7 +699,7 @@ class ReplayGUI(tb.Window):
         self.queue_listbox.configure(yscrollcommand=q_scroll.set)
 
         q_actions = tb.Frame(q_frame)
-        q_actions.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 6))
+        q_actions.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 2))
         tb.Button(q_actions, text="Remove Selected", command=self._remove_selected_from_queue,
                   bootstyle="secondary-outline", width=16).pack(side="left", padx=(0, 4))
         tb.Button(q_actions, text="Clear Queue", command=self._clear_queue,
@@ -714,6 +709,15 @@ class ReplayGUI(tb.Window):
         q_count = tb.Label(q_actions, textvariable=self.queue_count_var,
                            font=(FONT_FAMILY, 8), foreground="#888")
         q_count.pack(side="right")
+
+        q_render = tb.Frame(q_frame)
+        q_render.grid(row=2, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 6))
+        self.gen_btn = tb.Button(q_render, text="Render", command=self._generate,
+                                 bootstyle="success", width=12)
+        self.gen_btn.pack(side="left", padx=(0, 6))
+        self.cancel_btn = tb.Button(q_render, text="Cancel", command=self._cancel,
+                                    bootstyle="secondary", state="disabled")
+        self.cancel_btn.pack(side="left")
 
         # ── Generated replays ──
         lst_frame = tb.LabelFrame(right, text="Generated Replays")
@@ -751,9 +755,11 @@ class ReplayGUI(tb.Window):
         for v in (self.no_border_var, self.no_numbers_var,
                   self.no_grid_bars_var, self.no_secondary_border_var):
             v.trace_add("write", lambda *_: self._schedule_preview())
+        self.force_main_var.trace_add("write", lambda *_: self._schedule_preview())
 
         # Initial preview
         self.after(100, self._render_preview)
+        self.preview_frame.bind("<Configure>", lambda e: self._schedule_preview())
 
 
     def _get_speed_factor(self) -> float:
@@ -811,7 +817,25 @@ class ReplayGUI(tb.Window):
             sel = self.queue_listbox.curselection()
             if sel and sel[0] < len(self.render_queue):
                 item = self.render_queue[sel[0]]
-            if item is not None:
+                self._preview_sel_idx = sel[0]
+            elif self._preview_sel_idx >= 0 and self._preview_sel_idx < len(self.render_queue):
+                item = self.render_queue[self._preview_sel_idx]
+
+            if item is None and not self.size_var.get().strip():
+                if self._preview_sel_idx >= 0:
+                    return
+                w = h = 4
+                info_text = "4x4 · Fringe"
+                sat = self.saturation_var.get() / 100.0
+                light = self.brightness_var.get() / 100.0
+                hue_start = self.hue_start_var.get()
+                hue_end = self.hue_end_var.get()
+                scheme = self.main_scheme_var.get()
+                grid_data = {"enableGridsStatus": -1, "width": 4, "height": 4, "offsetW": 0, "offsetH": 0}
+                grid_states = generate_grids_stats(grid_data)
+                first_state = list(grid_states.values())[0]
+                matrix = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 0]]
+            elif item is not None:
                 sol = item.get("solution", "")
                 sc = item.get("scramble")
                 from replay_generator import expand_solution, scramble_to_puzzle, create_puzzle as cp
@@ -836,10 +860,9 @@ class ReplayGUI(tb.Window):
                         from replay_generator import reverse_solution, apply_moves
                         init_matrix = apply_moves(init_matrix, reverse_solution(expand_solution(sol)))
 
-                if w * h > 400:
-                    total_cells = w * h
+                if w > 16 or h > 16:
+                    info_text = f"{w}x{h} · {self.main_scheme_var.get().capitalize()} ({w}x{h} puzzle too large for a dynamic preview)"
                     w = h = 4
-                    info_text = f"{w}x{h} · {self.main_scheme_var.get().capitalize()} (puzzle too large)"
                     sat = self.saturation_var.get() / 100.0
                     light = self.brightness_var.get() / 100.0
                     hue_start = self.hue_start_var.get()
@@ -859,7 +882,10 @@ class ReplayGUI(tb.Window):
                     scheme = self.main_scheme_var.get()
 
                     exp_sol = expand_solution(sol)
-                    grids_data = analyse_grids_initial(init_matrix, exp_sol, cycles_detection=True)
+                    if self.force_main_var.get():
+                        grids_data = {"enableGridsStatus": -1, "width": w, "height": h, "offsetW": 0, "offsetH": 0}
+                    else:
+                        grids_data = analyse_grids_initial(init_matrix, exp_sol, cycles_detection=True)
                     grid_states = generate_grids_stats(grids_data)
 
                     keys = sorted([k for k in grid_states.keys() if isinstance(k, (int, float))])
@@ -872,10 +898,9 @@ class ReplayGUI(tb.Window):
                     w = int(parts[0]); h = int(parts[1])
                 if w is None:
                     w = h = 4
-                total_cells = w * h
-                if total_cells > 400:
+                if w > 16 or h > 16:
+                    info_text = f"{w}x{h} · {self.main_scheme_var.get().capitalize()} ({w}x{h} puzzle too large for a dynamic preview)"
                     w = h = 4
-                    info_text = f"{w}x{h} · {self.main_scheme_var.get().capitalize()} (puzzle too large)"
                 else:
                     info_text = f"{w}x{h} · {self.main_scheme_var.get().capitalize()}"
 
@@ -904,8 +929,21 @@ class ReplayGUI(tb.Window):
                 grid2_color=parse_hex_color(self._color_vars["grid2"].get()),
             )
 
-            tile_size = max(16, min(48, 240 // max(w, h)))
-            font_size = max(8, tile_size // 3)
+            try:
+                self.update_idletasks()
+                avail_w = self.preview_frame.winfo_width() - 20
+                total_h = self.winfo_height()
+                file_row_h = max(1, self.file_row.winfo_height())
+                text_h = max(1, self.input_text.winfo_height())
+                ov_h = max(1, self.ov_frame.winfo_height())
+                # layout overhead: preview_frame non-image content + file/text labels + padding
+                other_h = 210
+                avail_h = max(50, total_h - file_row_h - text_h - ov_h - other_h)
+                avail = max(50, min(avail_w, avail_h))
+            except Exception:
+                avail = 200
+            tile_size = max(1, avail // max(w, h))
+            font_size = max(1, tile_size // 3)
 
             stats_data = {
                 "moves": [], "current_time": 0,
@@ -927,7 +965,7 @@ class ReplayGUI(tb.Window):
                 opts=opts,
             )
 
-            img.thumbnail((280, 280), Image.LANCZOS)
+            img.thumbnail((avail, avail), Image.LANCZOS)
             self._preview_photo = ImageTk.PhotoImage(img)
             self._preview_label.config(image=self._preview_photo)
             self._preview_info.config(text=info_text)
@@ -979,6 +1017,11 @@ class ReplayGUI(tb.Window):
 
         if count:
             self._refresh_queue_display()
+            last_idx = len(self.render_queue) - 1
+            self.queue_listbox.selection_clear(0, "end")
+            self.queue_listbox.selection_set(last_idx)
+            self.queue_listbox.activate(last_idx)
+            self._schedule_preview()
             self.input_text.delete("1.0", "end")
 
     def _parse_input_to_entries(self, text, override_tps, override_time,
