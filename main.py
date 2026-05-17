@@ -11,10 +11,12 @@ from concurrent.futures import ThreadPoolExecutor
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 
-from replay_video import ReplayVideoGenerator, CancelError, _quick_infer_size, _get_available_encoders
+from replay_video import ReplayVideoGenerator, CancelError, _quick_infer_size, _get_available_encoders, render_frame, get_all_fringe_schemes
+from grids_analysis import generate_grids_stats
 from sliding_puzzles import parse_replay_url
 from replay_generator import count_moves
-from geometry import RenderOptions
+from geometry import RenderOptions, parse_hex_color
+from PIL import Image, ImageTk
 from debug_log import get_logger, init_logfile
 
 log = get_logger()
@@ -169,7 +171,7 @@ class ReplayGUI(tb.Window):
         super().__init__(themename="darkly")
         self.withdraw()
         self.title("Replay Video Generator")
-        self.minsize(750, 700)
+        self.minsize(1280, 720)
 
         self.generated_files = []
         self.render_queue = []
@@ -187,6 +189,12 @@ class ReplayGUI(tb.Window):
         self.fps_var = tk.IntVar(value=60)
         self.main_scheme_var = tk.StringVar(value="fringe")
         self.force_main_var = tk.BooleanVar(value=False)
+        self.hue_start_var = tk.DoubleVar(value=0)
+        self.hue_end_var = tk.DoubleVar(value=360)
+        self.saturation_var = tk.IntVar(value=78)
+        self.brightness_var = tk.IntVar(value=60)
+        self._preview_job = None
+        self._preview_photo = None
         self.quality_preset_var = tk.StringVar(value="1080p")
         self._quality_presets = {"720p": 720, "1080p": 1080, "1440p (2K)": 1440, "2160p (4K)": 2160}
         self.compression_var = tk.IntVar(value=18)
@@ -544,9 +552,41 @@ class ReplayGUI(tb.Window):
 
         # ======== COLUMN 1: UNIFIED INPUT + OVERRIDES ========
         mid = tb.Frame(root)
-        mid.grid(row=0, column=1, sticky="ns", padx=(3, 3))
+        mid.grid(row=0, column=1, sticky="nsew", padx=(3, 3))
         mid.grid_propagate(False)
         mid.grid_columnconfigure(0, weight=1)
+
+        # Preview frame
+        preview_frame = tb.LabelFrame(mid, text="Preview")
+        preview_frame.pack(fill="x", pady=(0, 4))
+        preview_inner = tb.Frame(preview_frame)
+        preview_inner.pack(pady=4)
+        self._preview_label = tb.Label(preview_inner)
+        self._preview_label.pack()
+        self._preview_info = tb.Label(preview_frame, text="4x4 · Fringe",
+                                       font=(FONT_FAMILY, 8), foreground="#888")
+        self._preview_info.pack(anchor="w", padx=4, pady=(0, 2))
+        tb.Label(preview_frame, text="Select a replay in the queue to preview",
+                 font=(FONT_FAMILY, 7), foreground="#666").pack(anchor="w", padx=4, pady=(0, 2))
+
+        def _add_slider(parent, label, var, from_, to, fmt="{:.0f}"):
+            row = tb.Frame(parent)
+            row.pack(fill="x", padx=8, pady=(0, 2))
+            row.grid_columnconfigure(1, weight=1)
+            tb.Label(row, text=label, font=(FONT_FAMILY, 8)).grid(row=0, column=0, sticky="w", padx=(0, 4))
+            tb.Scale(row, from_=from_, to=to, variable=var, orient="horizontal", bootstyle="primary").grid(
+                row=0, column=1, sticky="ew", padx=(0, 4))
+            val_lbl = tb.Label(row, text=fmt.format(var.get()), width=4, font=(FONT_FAMILY, 8, "bold"))
+            val_lbl.grid(row=0, column=2, sticky="w")
+            def _on_change(*_, v=var, lbl=val_lbl, f=fmt):
+                lbl.config(text=f.format(v.get()))
+                self._schedule_preview()
+            var.trace_add("write", _on_change)
+
+        _add_slider(preview_frame, "Hue start:", self.hue_start_var, 0, 360, "{:.0f}")
+        _add_slider(preview_frame, "Hue end:", self.hue_end_var, 0, 360, "{:.0f}")
+        _add_slider(preview_frame, "Saturation:", self.saturation_var, 0, 100, "{}%")
+        _add_slider(preview_frame, "Brightness:", self.brightness_var, 0, 100, "{}%")
 
         # File selection
         tb.Label(mid, text="File:", font=(FONT_FAMILY, 9)).pack(anchor="w")
@@ -557,42 +597,49 @@ class ReplayGUI(tb.Window):
         self.file_entry.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         tb.Button(file_row, text="Browse...", command=self._browse_file,
                   bootstyle="secondary-outline", width=9).grid(row=0, column=1)
+        self.add_btn = tb.Button(file_row, text="Add to Queue", command=self._add_to_queue,
+                                  bootstyle="primary", width=14)
+        self.add_btn.grid(row=0, column=2, padx=(4, 0))
+        self.clear_input_btn = tb.Button(file_row, text="Clear Input", command=self._clear_input,
+                                          bootstyle="secondary-outline", width=12)
+        self.clear_input_btn.grid(row=0, column=3, padx=(4, 0))
 
         # Main text area for URLs / solutions
         tb.Label(mid, text="URLs / Solution strings (one per line):",
                  font=(FONT_FAMILY, 10, "bold")).pack(anchor="w", pady=(4, 0))
         self.input_text = scrolledtext.ScrolledText(
-            mid, font=(FONT_MONO_FAMILY, 10),
+            mid, font=(FONT_MONO_FAMILY, 10), height=6,
             bg="#1e1e1e", fg="#d4d4d4", insertbackground="#fff",
             relief="flat", borderwidth=0, highlightthickness=1,
             highlightbackground="#3a3a3a", highlightcolor="#3a3a3a")
-        self.input_text.pack(fill="both", expand=True, pady=(2, 0))
+        self.input_text.pack(fill="x", pady=(2, 0))
         _setup_placeholder(self.input_text,
                            "# paste URLs or solution strings here, one per line")
 
-        # Override params (always visible, always editable) — each on its own line
+        # Override params (always visible, always editable) — inline
         ov_frame = tb.LabelFrame(mid, text="Override (optional — applied on add to queue)",
                                  font=(FONT_FAMILY, 9, "bold"))
         ov_frame.pack(fill="x", pady=(4, 0))
 
-        def _ov_entry(container, label, width=8):
-            r = tb.Frame(container)
-            r.pack(fill="x", padx=4, pady=(0, 1))
-            tb.Label(r, text=label, font=(FONT_FAMILY, 9)).pack(side="left", padx=(2, 4))
-            e = tb.Entry(r, width=width)
-            e.pack(side="left")
+        ov_row1 = tb.Frame(ov_frame)
+        ov_row1.pack(fill="x", padx=4, pady=(2, 1))
+        def _ov_inline(parent, label, var, w, col):
+            tb.Label(parent, text=label, font=(FONT_FAMILY, 9)).grid(row=0, column=col*2, padx=(2, 2))
+            e = tb.Entry(parent, width=w, textvariable=var)
+            e.grid(row=0, column=col*2+1, padx=(0, 6))
             return e
+        _ov_inline(ov_row1, "TPS:", self.tps_var, 8, 0)
+        _ov_inline(ov_row1, "Time (s):", self.time_var, 8, 1)
+        _ov_inline(ov_row1, "Size:", self.size_var, 8, 2)
 
-        self.tps_entry = _ov_entry(ov_frame, "TPS:", 8)
-        self.tps_entry.config(textvariable=self.tps_var)
-        self.time_entry = _ov_entry(ov_frame, "Time (s):", 8)
-        self.time_entry.config(textvariable=self.time_var)
-        self.size_entry = _ov_entry(ov_frame, "Size:", 8)
-        self.size_entry.config(textvariable=self.size_var)
-        self.scramble_entry = _ov_entry(ov_frame, "Scramble:", 18)
-        self.scramble_entry.config(textvariable=self.scramble_var)
-        self.movetimes_entry = _ov_entry(ov_frame, "Movetimes:", 18)
-        self.movetimes_entry.config(textvariable=self.movetimes_var)
+        ov_row2 = tb.Frame(ov_frame)
+        ov_row2.pack(fill="x", padx=4, pady=(0, 2))
+        tb.Label(ov_row2, text="Scramble:", font=(FONT_FAMILY, 9)).pack(side="left", padx=(2, 2))
+        self.scramble_entry = tb.Entry(ov_row2, width=18, textvariable=self.scramble_var)
+        self.scramble_entry.pack(side="left", padx=(0, 6))
+        tb.Label(ov_row2, text="Movetimes:", font=(FONT_FAMILY, 9)).pack(side="left", padx=(2, 2))
+        self.movetimes_entry = tb.Entry(ov_row2, width=18, textvariable=self.movetimes_var)
+        self.movetimes_entry.pack(side="left")
 
         # Action buttons
         act = tb.Frame(mid)
@@ -701,6 +748,18 @@ class ReplayGUI(tb.Window):
         tb.Button(lst_actions, text="Clear", command=self._clear_list,
                   bootstyle="secondary-outline", width=8).pack(side="left")
 
+        # ── Trigger preview on any relevant change ──
+        self.main_scheme_var.trace_add("write", lambda *_: self._schedule_preview())
+        self.size_var.trace_add("write", lambda *_: self._schedule_preview())
+        self.queue_listbox.bind("<<ListboxSelect>>", lambda e: self._schedule_preview())
+        for name in ("grid1", "grid2", "tile_bg"):
+            self._color_vars[name].trace_add("write", lambda *_: self._schedule_preview())
+        for v in (self.no_border_var, self.no_numbers_var,
+                  self.no_grid_bars_var, self.no_secondary_border_var):
+            v.trace_add("write", lambda *_: self._schedule_preview())
+
+        # Initial preview
+        self.after(100, self._render_preview)
 
 
     def _get_speed_factor(self) -> float:
@@ -727,7 +786,7 @@ class ReplayGUI(tb.Window):
 
     def _center_window(self):
         self.update_idletasks()
-        w, h = 1200, 720
+        w, h = 1280, 720
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
         self.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
@@ -745,6 +804,141 @@ class ReplayGUI(tb.Window):
         if path:
             self.file_path_var.set(path)
 
+
+    def _schedule_preview(self):
+        if self._preview_job:
+            self.after_cancel(self._preview_job)
+        self._preview_job = self.after(30, self._render_preview)
+
+    def _render_preview(self):
+        try:
+            w = h = None
+            item = None
+            sel = self.queue_listbox.curselection()
+            if sel and sel[0] < len(self.render_queue):
+                item = self.render_queue[sel[0]]
+            if item is not None:
+                sol = item.get("solution", "")
+                sc = item.get("scramble")
+                from replay_generator import expand_solution, scramble_to_puzzle, create_puzzle as cp
+                from grids_analysis import analyse_grids_initial
+
+                if sc:
+                    init_matrix = scramble_to_puzzle(sc)
+                    h = len(init_matrix)
+                    w = len(init_matrix[0])
+                else:
+                    sz = _quick_infer_size(
+                        item.get("solution", ""),
+                        item.get("scramble"),
+                        item.get("size"),
+                    )
+                    if sz:
+                        w, h = sz
+                    if w is None:
+                        w = h = 4
+                    init_matrix = cp(w, h)
+                    if sol:
+                        from replay_generator import reverse_solution, apply_moves
+                        init_matrix = apply_moves(init_matrix, reverse_solution(expand_solution(sol)))
+
+                if w * h > 400:
+                    total_cells = w * h
+                    w = h = 4
+                    info_text = f"{w}x{h} · {self.main_scheme_var.get().capitalize()} (puzzle too large)"
+                    sat = self.saturation_var.get() / 100.0
+                    light = self.brightness_var.get() / 100.0
+                    hue_start = self.hue_start_var.get()
+                    hue_end = self.hue_end_var.get()
+                    scheme = self.main_scheme_var.get()
+                    grid_data = {"enableGridsStatus": -1, "width": w, "height": h, "offsetW": 0, "offsetH": 0}
+                    grid_states = generate_grids_stats(grid_data)
+                    first_state = list(grid_states.values())[0]
+                    matrix = [[r * w + c + 1 for c in range(w)] for r in range(h)]
+                    matrix[h-1][w-1] = 0
+                else:
+                    info_text = f"{w}x{h} · {self.main_scheme_var.get().capitalize()}"
+                    sat = self.saturation_var.get() / 100.0
+                    light = self.brightness_var.get() / 100.0
+                    hue_start = self.hue_start_var.get()
+                    hue_end = self.hue_end_var.get()
+                    scheme = self.main_scheme_var.get()
+
+                    exp_sol = expand_solution(sol)
+                    grids_data = analyse_grids_initial(init_matrix, exp_sol, cycles_detection=True)
+                    grid_states = generate_grids_stats(grids_data)
+
+                    keys = sorted([k for k in grid_states.keys() if isinstance(k, (int, float))])
+                    first_state = grid_states[keys[0]] if keys else list(grid_states.values())[0]
+                    matrix = cp(w, h)
+            else:
+                raw = self.size_var.get().strip()
+                if raw and 'x' in raw:
+                    parts = raw.lower().split('x')
+                    w = int(parts[0]); h = int(parts[1])
+                if w is None:
+                    w = h = 4
+                total_cells = w * h
+                if total_cells > 400:
+                    w = h = 4
+                    info_text = f"{w}x{h} · {self.main_scheme_var.get().capitalize()} (puzzle too large)"
+                else:
+                    info_text = f"{w}x{h} · {self.main_scheme_var.get().capitalize()}"
+
+                sat = self.saturation_var.get() / 100.0
+                light = self.brightness_var.get() / 100.0
+                hue_start = self.hue_start_var.get()
+                hue_end = self.hue_end_var.get()
+                scheme = self.main_scheme_var.get()
+
+                grid_data = {"enableGridsStatus": -1, "width": w, "height": h, "offsetW": 0, "offsetH": 0}
+                grid_states = generate_grids_stats(grid_data)
+                first_state = list(grid_states.values())[0]
+                matrix = [[r * w + c + 1 for c in range(w)] for r in range(h)]
+                matrix[h-1][w-1] = 0
+
+            all_fringe_schemes = get_all_fringe_schemes(grid_states, scheme, sat, light, hue_start, hue_end)
+
+            opts = RenderOptions(
+                grid_only=True,
+                no_border=self.no_border_var.get(),
+                no_numbers=self.no_numbers_var.get(),
+                no_grid_bars=self.no_grid_bars_var.get(),
+                no_secondary_border=self.no_secondary_border_var.get(),
+                tile_bg_color=parse_hex_color(self._color_vars["tile_bg"].get()),
+                grid1_color=parse_hex_color(self._color_vars["grid1"].get()),
+                grid2_color=parse_hex_color(self._color_vars["grid2"].get()),
+            )
+
+            tile_size = max(16, min(48, 240 // max(w, h)))
+            font_size = max(8, tile_size // 3)
+
+            stats_data = {
+                "moves": [], "current_time": 0,
+                "total_moves": 0, "total_time_ms": 0, "total_tps": 0,
+                "is_movetimes_accurate": False,
+                "score_title": "", "timer_text": "",
+            }
+
+            img = render_frame(
+                matrix=matrix,
+                grid_state=first_state,
+                all_fringe_schemes=all_fringe_schemes,
+                tile_size=tile_size,
+                font_size=font_size,
+                stats_data=stats_data,
+                score_title_text="", timer_text="",
+                is_movetimes_accurate=False,
+                total_moves=0, total_time_ms=0, total_tps=0,
+                opts=opts,
+            )
+
+            img.thumbnail((280, 280), Image.LANCZOS)
+            self._preview_photo = ImageTk.PhotoImage(img)
+            self._preview_label.config(image=self._preview_photo)
+            self._preview_info.config(text=info_text)
+        except Exception as e:
+            log.warning(f"Preview update failed: {e}")
 
 
     def _add_to_queue(self):
@@ -966,6 +1160,10 @@ class ReplayGUI(tb.Window):
                     grid2_color=parse_hex_color(self._color_vars["grid2"].get()),
                     tile_bg_color=parse_hex_color(self._color_vars["tile_bg"].get()),
                     animate_moves=self.animate_moves_var.get(),
+                    hue_start=self.hue_start_var.get(),
+                    hue_end=self.hue_end_var.get(),
+                    saturation=self.saturation_var.get() / 100.0,
+                    brightness=self.brightness_var.get() / 100.0,
                 )
                 params = {
                     "main_scheme": self.main_scheme_var.get(),
@@ -1286,6 +1484,10 @@ Examples:
     parser.add_argument("--grid1-color", type=str, default=None, help="Grid 1 color as hex (e.g. FF0000)")
     parser.add_argument("--grid2-color", type=str, default=None, help="Grid 2 color as hex (e.g. 0000FF)")
     parser.add_argument("--tile-bg-color", type=str, default=None, help="Tile background color as hex")
+    parser.add_argument("--hue-start", type=float, default=0, help="Hue range start (0-360, default: 0)")
+    parser.add_argument("--hue-end", type=float, default=360, help="Hue range end (0-360, default: 360)")
+    parser.add_argument("--saturation", type=float, default=0.78, help="Color saturation (0-1, default: 0.78)")
+    parser.add_argument("--brightness", type=float, default=0.6, help="Color brightness (0-1, default: 0.6)")
 
     args = parser.parse_args()
 
@@ -1317,6 +1519,10 @@ Examples:
         grid2_color=parse_hex_color(args.grid2_color),
         tile_bg_color=parse_hex_color(args.tile_bg_color),
         animate_moves=args.animate_moves,
+        hue_start=args.hue_start,
+        hue_end=args.hue_end,
+        saturation=args.saturation,
+        brightness=args.brightness,
     )
 
     if args.speedup <= 0:

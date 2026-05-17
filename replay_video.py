@@ -81,14 +81,13 @@ def hsl_to_rgb(h: float, s: float, l: float) -> Tuple[int, int, int]:
     return (round(r * 255), round(g * 255), round(b * 255))
 
 
-def get_colors(num_colors: int) -> List[Tuple[int, int, int]]:
+def get_colors(num_colors: int, saturation=0.78, lightness=0.6, hue_start=0, hue_end=360) -> List[Tuple[int, int, int]]:
     if num_colors < 1:
         return []
     colors = []
-    color_step = 360.0 / num_colors
     for i in range(num_colors):
-        hue = i * color_step
-        colors.append(hsl_to_rgb(hue / 360.0, 0.78, 0.6))
+        hue = hue_start + (i / max(num_colors, 1)) * (hue_end - hue_start)
+        colors.append(hsl_to_rgb(hue / 360.0, saturation, lightness))
     return colors
 
 
@@ -164,12 +163,12 @@ def merge_matrices_by_dimension(matrix1, matrix2, match_by_width: bool):
         return np.hstack([matrix1, matrix2])
 
 
-def get_fringe_colors_nxm(width: int, height: int, style='fringe'):
+def get_fringe_colors_nxm(width: int, height: int, style='fringe', saturation=0.78, lightness=0.6, hue_start=0, hue_end=360):
     if style == 'rows':
-        colors_list = get_colors(height)
+        colors_list = get_colors(height, saturation, lightness, hue_start, hue_end)
         return get_rows_colors(colors_list, width, height)
     if style == 'columns':
-        colors_list = get_colors(width)
+        colors_list = get_colors(width, saturation, lightness, hue_start, hue_end)
         return get_columns_colors(colors_list, width, height)
 
     puzzle = create_puzzle(width, height)
@@ -178,7 +177,7 @@ def get_fringe_colors_nxm(width: int, height: int, style='fringe'):
 
     if start_matrix is None:
         num_colors = sq_size * 2 - 2
-        colors_list = get_colors(num_colors)
+        colors_list = get_colors(num_colors, saturation, lightness, hue_start, hue_end)
         return generate_color_fringe(colors_list, sq_size)
 
     orig_w, orig_h = width, height
@@ -187,7 +186,7 @@ def get_fringe_colors_nxm(width: int, height: int, style='fringe'):
     sq_size = len(sq_matrix)
     extra_size = max(orig_w, orig_h) - sq_size
     num_colors = extra_size + sq_size * 2 - 2
-    colors_list = get_colors(num_colors)
+    colors_list = get_colors(num_colors, saturation, lightness, hue_start, hue_end)
     start_colors = colors_list[:extra_size]
     square_colors = colors_list[extra_size:]
     colors_matrix_sq = generate_color_fringe(square_colors, sq_size)
@@ -205,7 +204,7 @@ def get_mono_colors(color, width: int, height: int):
     return np.full((height, width, 3), color, dtype=np.uint8)
 
 
-def get_all_fringe_schemes(grid_states, main_scheme='fringe'):
+def get_all_fringe_schemes(grid_states, main_scheme='fringe', saturation=0.78, lightness=0.6, hue_start=0, hue_end=360):
     _t0 = time_module.time()
     # Pre-scan to count unique sizes
     needed = set()
@@ -220,7 +219,7 @@ def get_all_fringe_schemes(grid_states, main_scheme='fringe'):
     for i, pair in enumerate(needed):
         parts = pair.split('x')
         w = int(parts[0]); h = int(parts[1])
-        schemes[pair] = get_fringe_colors_nxm(w, h, main_scheme)
+        schemes[pair] = get_fringe_colors_nxm(w, h, main_scheme, saturation, lightness, hue_start, hue_end)
     log.info(f"  get_all_fringe_schemes took {time_module.time() - _t0:.3f}s, {len(needed)} unique schemes")
     return schemes
 
@@ -2432,7 +2431,13 @@ class ReplayVideoGenerator:
         log.info(f"  generate_grids_stats took {time_module.time() - _t_gridstats_start:.3f}s, {len(grid_states)} states")
 
         _t_schemes_start = time_module.time()
-        all_fringe_schemes = get_all_fringe_schemes(grid_states, main_scheme)
+        all_fringe_schemes = get_all_fringe_schemes(
+            grid_states, main_scheme,
+            saturation=opts.saturation if opts else 0.78,
+            lightness=opts.brightness if opts else 0.6,
+            hue_start=opts.hue_start if opts else 0,
+            hue_end=opts.hue_end if opts else 360,
+        )
         log.info(f"  get_all_fringe_schemes took {time_module.time() - _t_schemes_start:.3f}s, {len(all_fringe_schemes)} schemes")
         _t_analysis_end = time_module.time()
         log.info(f"  analysis total took {_t_analysis_end - _t_analysis_start:.3f}s, enableGridsStatus={grids_data.get('enableGridsStatus')}")
@@ -2686,12 +2691,20 @@ def main():
     parser.add_argument("--grid1-color", type=str, default=None, help="Grid 1 color as hex (e.g. FF0000 for red)")
     parser.add_argument("--grid2-color", type=str, default=None, help="Grid 2 color as hex (e.g. 0000FF for blue)")
     parser.add_argument("--tile-bg-color", type=str, default=None, help="Tile background color as hex")
+    parser.add_argument("--hue-start", type=float, default=0, help="Hue range start (0-360, default: 0)")
+    parser.add_argument("--hue-end", type=float, default=360, help="Hue range end (0-360, default: 360)")
+    parser.add_argument("--saturation", type=float, default=0.78, help="Color saturation (0-1, default: 0.78)")
+    parser.add_argument("--brightness", type=float, default=0.6, help="Color brightness (0-1, default: 0.6)")
 
     args = parser.parse_args()
     opts = RenderOptions(
         grid1_color=parse_hex_color(args.grid1_color),
         grid2_color=parse_hex_color(args.grid2_color),
         tile_bg_color=parse_hex_color(args.tile_bg_color),
+        hue_start=args.hue_start,
+        hue_end=args.hue_end,
+        saturation=args.saturation,
+        brightness=args.brightness,
     )
 
     main_scheme = args.main_scheme

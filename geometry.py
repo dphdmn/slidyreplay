@@ -339,6 +339,10 @@ class RenderOptions:
     grid2_color: Optional[Tuple[int, int, int]] = None
     tile_bg_color: Optional[Tuple[int, int, int]] = None
     animate_moves: bool = False
+    hue_start: float = 0.0
+    hue_end: float = 360.0
+    saturation: float = 0.78
+    brightness: float = 0.6
 
 
 @dataclass
