@@ -10,7 +10,7 @@ Generates MP4 videos of sliding puzzle replays from [slidysim](https://slidysim.
 python main.py
 ```
 
-Launches a dark-themed GUI with URL, File, and Manual input tabs, FPS slider, GPU toggle, main scheme selector, progress panel with ETA, and a generated replays list.
+Launches a fully functional GUI with nearly all custom options, backed by the same CLI interface.
 
 ### CLI
 
