@@ -4,9 +4,13 @@
 - move splits and replay_generator stuff parts into separate module/repo
 - Cursor dancing
 - custom font, font size
-- single frame render
 - movetimes override from file
 - puzzle not centered vertically again
 - small resolution font size issues
 - reset to default button
 - save settings preset to file
+
+- single frame render
+- remove initial tile size limit, or whatever is forcing puzzle preview to that small size
+- ranges for brightness / saturation
+- fix header height shifting (probably because of the timer, or the way animation works?) (adjusted height very likely implemented weirdly)
