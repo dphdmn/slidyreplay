@@ -61,6 +61,7 @@ python main.py --solution R2D2L2U2 --no-header --no-details    # puzzle grid onl
 | | `--force-fringe` | | Force fringe colors (disable grids detection) |
 | | `--force-rows` | | Force row stripes (disable grids detection) |
 | | `--force-columns` | | Force column stripes (disable grids detection) |
+| | `--animate-moves` | | Animate tile sliding between moves (smooth transitions) |
 | | `--grid1-color` | | Grid 1 (red sections) color as hex, e.g. `FF0000` |
 | | `--grid2-color` | | Grid 2 (blue sections) color as hex, e.g. `0000FF` |
 | | `--tile-bg-color` | | Tile background color as hex, e.g. `969696` |
@@ -84,8 +85,8 @@ Available encoders are auto-detected in priority order — the first supported e
 | 8 | `libx264` | — | `-crf` (0–51, default fallback) |
 
 - **`--compression`** (`-c`) maps to the encoder's quality flag with an offset to normalize across encoders (the value 10–40 is translated per-encoder).
-- **`--slow-render`** (`-R`) switches to a slower preset: `p7` for NVENC, `quality` for AMF, `veryslow` for QSV, `slow` for libx264/libx265. This typically reduces file size by ~33% at the cost of ~33% longer encode time.
-- **`--encoder`** (`-e`) overrides auto-detection to force a specific encoder. Useful when multiple GPUs are present or you want software encoding on a GPU-capable system.
+- **`--slow-render`** switches to a slower preset: `p7` for NVENC, `quality` for AMF, `veryslow` for QSV, `slow` for libx264/libx265. This typically reduces file size by ~33% at the cost of ~33% longer encode time.
+- **`--encoder`** overrides auto-detection to force a specific encoder. Useful when multiple GPUs are present or you want software encoding on a GPU-capable system.
 
 Debug logging is **disabled by default**. Pass `--log` (`-l`) to enable:
 
