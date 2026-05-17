@@ -209,6 +209,14 @@ class ReplayGUI(tb.Window):
 
         self.tps_var = tk.StringVar()
         self.time_var = tk.StringVar()
+        def _clear_other_tps(*_):
+            if self.tps_var.get():
+                self.time_var.set('')
+        def _clear_other_time(*_):
+            if self.time_var.get():
+                self.tps_var.set('')
+        self.tps_var.trace_add('write', _clear_other_tps)
+        self.time_var.trace_add('write', _clear_other_time)
         self.size_var = tk.StringVar()
         self.scramble_var = tk.StringVar()
         self.movetimes_var = tk.StringVar()
