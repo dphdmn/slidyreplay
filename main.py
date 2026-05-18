@@ -293,6 +293,12 @@ class ReplayGUI(tb.Window):
         self.saturation_max_var = tk.IntVar(value=78)
         self.brightness_min_var = tk.IntVar(value=60)
         self.brightness_max_var = tk.IntVar(value=60)
+        self._color_vars = {
+            "grid1": tk.StringVar(value="C86767"),
+            "grid2": tk.StringVar(value="8DB3FF"),
+            "tile_bg": tk.StringVar(value="454545"),
+        }
+        self._color_previews = {}
         self._preview_job = None
         self._preview_photo = None
         self._preview_sel_idx = -1
@@ -606,61 +612,7 @@ class ReplayGUI(tb.Window):
         tb.Checkbutton(d_grid, text="Animate moves", variable=self.animate_moves_var,
                        bootstyle="round-toggle").grid(row=4, column=2, sticky="w")
 
-        # ════════ COLORS ════════
-        r += 1
-        tb.Label(settings, text="COLORS", font=_sec_font, bootstyle="secondary").grid(
-            row=r, column=0, sticky="w", padx=12, pady=(6, 0))
-        r += 1
-        tb.Separator(settings, bootstyle="secondary").grid(
-            row=r, column=0, sticky="ew", pady=(1, 4), padx=12)
-        r += 1
-
-        self._color_vars = {
-            "grid1": tk.StringVar(value="C86767"),
-            "grid2": tk.StringVar(value="8DB3FF"),
-            "tile_bg": tk.StringVar(value="454545"),
-        }
-        self._color_previews = {}
-
-        def _pick_color(name: str, label: str):
-            initial = self._color_vars[name].get()
-            rgb = colorchooser.askcolor(
-                color=f"#{initial}", title=f"Choose {label}",
-                parent=self)
-            if rgb[0] is not None:
-                r_, g_, b_ = [int(x) for x in rgb[0]]
-                hex_str = f"{r_:02X}{g_:02X}{b_:02X}"
-                self._color_vars[name].set(hex_str)
-
-        _color_labels = [
-            ("grid1", "Grid 1 (red grids):"),
-            ("grid2", "Grid 2 (blue grids):"),
-            ("tile_bg", "Tile background:"),
-        ]
-        for name, label in _color_labels:
-            row_f = tb.Frame(settings)
-            row_f.grid(row=r, column=0, sticky="ew", pady=1, padx=12)
-            row_f.grid_columnconfigure(1, weight=1)
-            preview = tb.Label(row_f, text="    ", background=f"#{self._color_vars[name].get()}")
-            preview.grid(row=0, column=0, padx=(0, 6))
-            self._color_previews[name] = preview
-            tb.Label(row_f, text=label, font=(FONT_FAMILY, 9)).grid(row=0, column=1, sticky="w")
-            tb.Button(row_f, text="Pick", bootstyle="secondary-outline",
-                      command=lambda n=name, lbl=label: _pick_color(n, lbl),
-                      width=5).grid(row=0, column=2, padx=(4, 0))
-            self._color_vars[name].trace_add("write",
-                lambda *_, n=name: self._color_previews[n].config(background=f"#{self._color_vars[n].get()}"))
-            r += 1
-
-        scheme_row = tb.Frame(settings)
-        scheme_row.grid(row=r, column=0, sticky="ew", pady=(4, 2), padx=12)
-        scheme_row.grid_columnconfigure(1, weight=1)
-        tb.Label(scheme_row, text="Main scheme:", font=(FONT_FAMILY, 9)).grid(row=0, column=0, padx=(0, 6))
-        main_scheme_combo = ttk.Combobox(scheme_row, textvariable=self.main_scheme_var,
-                                         values=["fringe", "rows", "columns"],
-                                         state="readonly", width=9)
-        main_scheme_combo.grid(row=0, column=1, sticky="w")
-        r += 1
+        # ════════ COLORS (moved to Preview section) ════════
 
         # ======== COLUMN 1: UNIFIED INPUT + OVERRIDES ========
         self.mid = tb.Frame(root)
@@ -671,23 +623,26 @@ class ReplayGUI(tb.Window):
 
         # Preview frame – sliders left, preview image right
         self.preview_frame = tb.LabelFrame(mid, text="Preview")
-        self.preview_frame.pack(fill="x", pady=(0, 4))
+        self.preview_frame.pack(fill="both", expand=True, pady=(0, 4))
         preview_container = tb.Frame(self.preview_frame)
-        preview_container.pack(fill="x", pady=4, padx=2)
+        preview_container.pack(fill="both", expand=True, pady=4, padx=2)
         preview_container.grid_columnconfigure(0, weight=0)
         preview_container.grid_columnconfigure(1, weight=1)
+        preview_container.grid_rowconfigure(0, weight=1)
 
         sliders_frame = tb.Frame(preview_container)
         sliders_frame.grid(row=0, column=0, sticky="ns", padx=(0, 8))
 
         preview_right = tb.Frame(preview_container)
         preview_right.grid(row=0, column=1, sticky="nsew")
+        preview_right.grid_rowconfigure(0, weight=1)
+        preview_right.grid_columnconfigure(0, weight=1)
         self._preview_right_frame = preview_right
         self._preview_label = tb.Label(preview_right)
-        self._preview_label.pack()
+        self._preview_label.grid(row=0, column=0, sticky="nsew")
         self._preview_info = tb.Label(preview_right, text="4x4 · Fringe",
                                        font=(FONT_FAMILY, 8), foreground="#888")
-        self._preview_info.pack(anchor="w")
+        self._preview_info.grid(row=1, column=0, sticky="w")
 
         def _add_slider(parent, label, var, from_, to, fmt="{:.0f}"):
             row = tb.Frame(parent)
@@ -709,6 +664,40 @@ class ReplayGUI(tb.Window):
         _add_slider(sliders_frame, "Sat max:", self.saturation_max_var, 0, 100, "{}%")
         _add_slider(sliders_frame, "Bright min:", self.brightness_min_var, 0, 100, "{}%")
         _add_slider(sliders_frame, "Bright max:", self.brightness_max_var, 0, 100, "{}%")
+
+        # Color scheme options
+        sep = tb.Frame(sliders_frame, height=2, bootstyle="secondary")
+        sep.pack(fill="x", padx=4, pady=(3, 2))
+        scheme_row = tb.Frame(sliders_frame)
+        scheme_row.pack(fill="x", padx=4, pady=(0, 2))
+        scheme_row.grid_columnconfigure(1, weight=1)
+        tb.Label(scheme_row, text="Scheme:", font=(FONT_FAMILY, 8)).grid(
+            row=0, column=0, sticky="w", padx=(0, 4))
+        main_scheme_combo = ttk.Combobox(scheme_row, textvariable=self.main_scheme_var,
+                                         values=["fringe", "rows", "columns"],
+                                         state="readonly", width=9)
+        main_scheme_combo.grid(row=0, column=1, sticky="ew")
+
+        def _preview_pick_color(name):
+            initial = self._color_vars[name].get()
+            rgb = colorchooser.askcolor(color=f"#{initial}", parent=self)
+            if rgb[0] is not None:
+                r_, g_, b_ = [int(x) for x in rgb[0]]
+                self._color_vars[name].set(f"{r_:02X}{g_:02X}{b_:02X}")
+        for name, label in [("grid1", "Grid 1 (red grids):"), ("grid2", "Grid 2 (blue grids):"), ("tile_bg", "Tile background:")]:
+            row = tb.Frame(sliders_frame)
+            row.pack(fill="x", padx=4, pady=(0, 1))
+            preview = tb.Label(row, text="    ", background=f"#{self._color_vars[name].get()}")
+            preview.pack(side="left", padx=(0, 4))
+            self._color_previews[name] = preview
+            tb.Label(row, text=label, font=(FONT_FAMILY, 8)).pack(side="left", padx=(0, 4))
+            tb.Button(row, text="Pick", bootstyle="secondary-outline",
+                      command=lambda n=name: _preview_pick_color(n),
+                      width=5).pack(side="right")
+            self._color_vars[name].trace_add("write",
+                lambda *_, n=name: self._color_previews[n].config(background=f"#{self._color_vars[n].get()}"))
+        tb.Label(sliders_frame, text="Select a replay in the queue to preview",
+                 font=(FONT_FAMILY, 7), foreground="#666").pack(anchor="w", padx=4, pady=(2, 0))
 
         # File selection
         tb.Label(mid, text="File:", font=(FONT_FAMILY, 9)).pack(anchor="w")
@@ -1085,7 +1074,9 @@ class ReplayGUI(tb.Window):
 
             try:
                 self.update_idletasks()
-                avail = max(50, self._preview_right_frame.winfo_width() - 10)
+                avail_w = max(20, self._preview_right_frame.winfo_width() - 10)
+                avail_h = max(20, self._preview_right_frame.winfo_height() - 30)
+                avail = max(50, min(avail_w, avail_h))
             except Exception:
                 avail = 200
             tile_size = max(1, avail // max(w, h))
