@@ -13,4 +13,6 @@
 - single frame render
 - remove initial tile size limit, or whatever is forcing puzzle preview to that small size
 - ranges for brightness / saturation
-- fix header height shifting (probably because of the timer, or the way animation works?) (adjusted height very likely implemented weirdly)
+- fix header height shifting
+no border + animate moves causes the bug, issue happens on CPU render only
+it's also noticeable, but not as badly with just no border

@@ -449,7 +449,7 @@ def render_frame(
 
     # ─── Timer Bar (left: time, right: MD/predicted/MMD) ─────────
     if not opts.grid_only and not opts.no_header:
-        timer_bg_bbox = (0, 0, canvas_w, header_h)
+        timer_bg_bbox = (0, 0, canvas_w, header_h - 1)
         draw_filled_rect(draw, timer_bg_bbox, TIMER_BG)
         tf = max(12, header_h - 12)
 
