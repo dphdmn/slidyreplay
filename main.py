@@ -176,12 +176,14 @@ def render_puzzle_image(
     output_path: str,
     size: str,
     solution: Optional[str] = None,
+    scramble_str: Optional[str] = None,
+    show_solved: bool = False,
     main_scheme: str = 'fringe',
     force_main: bool = False,
     opts: RenderOptions = RenderOptions(),
     quality: int = 1080,
 ):
-    from replay_generator import create_puzzle, expand_solution, parse_scramble
+    from replay_generator import create_puzzle, expand_solution, parse_scramble, scramble_to_puzzle
     from grids_analysis import analyse_grids_initial
 
     if 'x' in size:
@@ -190,15 +192,23 @@ def render_puzzle_image(
     else:
         raise ValueError("size must be in format WxH")
 
-    if solution:
+    # Determine displayed matrix
+    if scramble_str:
+        matrix = scramble_to_puzzle(scramble_str)
+    elif solution and not show_solved:
         matrix = parse_scramble(w, h, solution)
+    else:
+        matrix = create_puzzle(w, h)
+
+    # Grid analysis from solution (for coloring in both scrambled and solved modes)
+    if solution:
         sol_exp = expand_solution(solution)
+        analysis_matrix = parse_scramble(w, h, solution)
         if not force_main:
-            grids_data = analyse_grids_initial(matrix, sol_exp, cycles_detection=opts.cycles_detection)
+            grids_data = analyse_grids_initial(analysis_matrix, sol_exp, cycles_detection=opts.cycles_detection)
         else:
             grids_data = None
     else:
-        matrix = create_puzzle(w, h)
         grids_data = None
 
     if grids_data is None:
@@ -740,6 +750,17 @@ class ReplayGUI(tb.Window):
         self.movetimes_entry = tb.Entry(ov_row2, width=18, textvariable=self.movetimes_var)
         self.movetimes_entry.pack(side="left")
 
+        ov_row3 = tb.Frame(self.ov_frame)
+        ov_row3.pack(fill="x", padx=4, pady=(2, 3))
+        self.render_img_btn = tb.Button(
+            ov_row3, text="Render Image",
+            command=self._render_image_from_gui,
+            bootstyle="info-outline",
+        )
+        self.render_img_btn.pack(side="left", padx=2)
+        tb.Label(ov_row3, text="Render a single PNG with current colors/options",
+                 font=(FONT_FAMILY, 9)).pack(side="left", padx=(6, 2))
+
         # ======== COLUMN 2: PROGRESS + QUEUE + OUTPUTS ========
         right = tb.Frame(root)
         right.grid(row=0, column=2, sticky="nsew", padx=(3, 0))
@@ -1083,6 +1104,108 @@ class ReplayGUI(tb.Window):
         except Exception as e:
             log.warning(f"Preview update failed: {e}")
 
+    def _render_image_from_gui(self):
+        import threading as _thr
+        def _task():
+            try:
+                from geometry import parse_hex_color
+                out_dir = self.out_folder_var.get().strip() or os.path.join(script_dir, "replays")
+                os.makedirs(out_dir, exist_ok=True)
+                quality = self._get_quality()
+                scheme = self.main_scheme_var.get()
+                force_main = self.force_main_var.get()
+                sat = self.saturation_var.get() / 100.0
+                light = self.brightness_var.get() / 100.0
+                hue_start = self.hue_start_var.get()
+                hue_end = self.hue_end_var.get()
+                opts = RenderOptions(
+                    grid_only=self.no_layout_var.get(),
+                    no_border=self.no_border_var.get(),
+                    no_secondary_border=self.no_secondary_border_var.get(),
+                    no_grid_bars=self.no_grid_bars_var.get(),
+                    no_numbers=self.no_numbers_var.get(),
+                    no_header=self.no_header_var.get(),
+                    no_details=self.no_details_var.get(),
+                    dynamic_md=self.dynamic_md_var.get(),
+                    cycles_detection=self.cycles_detection_var.get(),
+                    adjust_height=self.adjust_height_var.get(),
+                    grid1_color=parse_hex_color(self._color_vars["grid1"].get()),
+                    grid2_color=parse_hex_color(self._color_vars["grid2"].get()),
+                    tile_bg_color=parse_hex_color(self._color_vars["tile_bg"].get()),
+                    animate_moves=self.animate_moves_var.get(),
+                    hue_start=hue_start, hue_end=hue_end,
+                    saturation=sat, brightness=light,
+                )
+                opts = dataclasses.replace(opts, grid_only=True, adjust_height=True)
+
+                sel = self.queue_listbox.curselection()
+                item = None
+                if sel and sel[0] < len(self.render_queue):
+                    item = self.render_queue[sel[0]]
+
+                if item is not None:
+                    sol = item.get("solution", "")
+                    sc = item.get("scramble")
+                    sz = item.get("size")
+                    item_w = item.get("width")
+                    item_h = item.get("height")
+                    if sz:
+                        size_str = sz
+                    elif item_w and item_h:
+                        size_str = f"{item_w}x{item_h}"
+                    else:
+                        from replay_video import _quick_infer_size
+                        inferred = _quick_infer_size(sol, sc, sz)
+                        if inferred:
+                            size_str = f"{inferred[0]}x{inferred[1]}"
+                        else:
+                            size_str = "4x4"
+
+                    stem = os.path.join(out_dir, size_str)
+                    scrambled_path = stem + '_scrambled.png'
+                    solved_path = stem + '_solved.png'
+                    if os.path.exists(scrambled_path) or os.path.exists(solved_path):
+                        n = 1
+                        while os.path.exists(f"{stem}_{n}_scrambled.png") or os.path.exists(f"{stem}_{n}_solved.png"):
+                            n += 1
+                        stem = f"{stem}_{n}"
+                        scrambled_path = stem + '_scrambled.png'
+                        solved_path = stem + '_solved.png'
+
+                    render_puzzle_image(
+                        scrambled_path, size=size_str, solution=sol, scramble_str=sc,
+                        show_solved=False,
+                        main_scheme=scheme, force_main=force_main,
+                        opts=opts, quality=quality,
+                    )
+                    render_puzzle_image(
+                        solved_path, size=size_str, solution=sol, scramble_str=None,
+                        show_solved=True,
+                        main_scheme=scheme, force_main=force_main,
+                        opts=opts, quality=quality,
+                    )
+                    self.after(0, lambda: self._add_to_list(scrambled_path))
+                    self.after(0, lambda: self._add_to_list(solved_path))
+                else:
+                    size_str = self.size_var.get().strip() or "4x4"
+                    sc = self.scramble_var.get().strip() or None
+                    if sc:
+                        base_name = f"{size_str}_scramble.png"
+                    else:
+                        base_name = f"{size_str}_puzzle.png"
+                    output_path = _pick_output_filename(out_dir, base_name)
+                    render_puzzle_image(
+                        output_path, size=size_str, scramble_str=sc,
+                        main_scheme=scheme, force_main=force_main,
+                        opts=opts, quality=quality,
+                    )
+                    self.after(0, lambda: self._add_to_list(output_path))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self.after(0, lambda e=e: self.progress_text.set(f"Image render error: {e}"))
+
+        _thr.Thread(target=_task, daemon=True).start()
 
     def _add_to_queue(self):
         """Parse input text and overrides, add entries to render queue."""
@@ -1570,6 +1693,7 @@ class ReplayGUI(tb.Window):
         self.gen_btn.config(state=st)
         self.add_btn.config(state=st)
         self.clear_input_btn.config(state=st)
+        self.render_img_btn.config(state=st)
         self.cancel_btn.config(state="normal" if busy else "disabled")
 
     def _on_close(self):
@@ -1617,8 +1741,9 @@ Examples:
     parser.add_argument("--no-gpu", "-g", action="store_true", default=None,
                         help="Disable GPU acceleration")
     parser.add_argument("--image", action="store_true", default=False,
-                        help="Render a single PNG image instead of a video. Requires --size (e.g. --size 4x4). "
-                             "If solution/url is also provided, renders the initial scrambled puzzle state.")
+                        help="Render PNG image(s) instead of a video. Requires --size (e.g. --size 4x4). "
+                             "If solution/url is also provided, renders two images: scrambled first state "
+                             "and solved state with analysis. Use --scramble to render a custom position.")
     parser.add_argument("--batch", "-b", help="File with solutions/URLs (one per line)")
     parser.add_argument("--movetimes", help="Comma-separated move timings (overrides --tps/--time)")
     parser.add_argument("--speedup", "-s", type=float, default=1.0,
@@ -1757,24 +1882,14 @@ Examples:
         gpu_str = "GPU OFF (CPU fallback)"
     print(f"[ReplayVideoGenerator] {gpu_str}")
 
-    # ── Image mode: render single PNG frame ──
+    # ── Image mode: render PNG frame(s) ──
     if args.image:
         if not args.size:
             parser.error("--image requires --size (e.g. --size 4x4)")
 
         replays_dir = os.path.join(script_dir, "replays")
-        if args.output is None:
-            os.makedirs(replays_dir, exist_ok=True)
-            base_name = f"{args.size}_puzzle.png"
-            output_path = _pick_output_filename(replays_dir, base_name)
-        else:
-            root, ext = os.path.splitext(args.output)
-            output_path = f"{root}.png"
 
-        # Default to grid_only (clean puzzle image) unless user requested layout flags
-        image_opts = opts
-        if not opts.grid_only and not opts.no_header and not opts.no_details and not opts.adjust_height:
-            image_opts = dataclasses.replace(opts, grid_only=True)
+        image_opts = dataclasses.replace(opts, grid_only=True, adjust_height=True)
 
         sol = None
         if args.solution:
@@ -1789,15 +1904,45 @@ Examples:
             except Exception:
                 sol = replay_val
 
-        render_puzzle_image(
-            output_path,
-            size=args.size,
-            solution=sol,
-            main_scheme=main_scheme,
-            force_main=force_main,
-            opts=image_opts,
-            quality=args.quality,
-        )
+        if sol:
+            # Render 2 images: scrambled first state + solved state with analysis
+            if args.output is None:
+                os.makedirs(replays_dir, exist_ok=True)
+                stem = os.path.join(replays_dir, args.size)
+            else:
+                stem = os.path.splitext(args.output)[0]
+            scrambled_path = stem + '_scrambled.png'
+            solved_path = stem + '_solved.png'
+            render_puzzle_image(
+                scrambled_path, size=args.size, solution=sol,
+                show_solved=False,
+                main_scheme=main_scheme, force_main=force_main,
+                opts=image_opts, quality=args.quality,
+            )
+            render_puzzle_image(
+                solved_path, size=args.size, solution=sol,
+                show_solved=True,
+                main_scheme=main_scheme, force_main=force_main,
+                opts=image_opts, quality=args.quality,
+            )
+        else:
+            # Single image: custom scramble or solved puzzle
+            if args.output is None:
+                os.makedirs(replays_dir, exist_ok=True)
+                if args.scramble:
+                    base_name = f"{args.size}_scramble.png"
+                else:
+                    base_name = f"{args.size}_puzzle.png"
+                output_path = _pick_output_filename(replays_dir, base_name)
+            else:
+                root, ext = os.path.splitext(args.output)
+                output_path = f"{root}.png"
+            render_puzzle_image(
+                output_path, size=args.size,
+                scramble_str=args.scramble,
+                main_scheme=main_scheme, force_main=force_main,
+                opts=image_opts, quality=args.quality,
+            )
         sys.exit(0)
 
     def run_single(solution, output, opts=RenderOptions(), **kwargs):

@@ -751,6 +751,9 @@ def _render_stats_full(stats_data, is_movetimes_accurate, panel_w, quality=1080,
     stages = stats_data.get("grid_stages", [])
     cur_stage = stats_data.get("grid_current", 0)
     show_stages = len(stages) > 1 or (len(stages) == 1 and stats_data.get("cycles_display", ""))
+    formatted = []
+    gs_x = 6
+    cyc_lines_data = None
     if show_stages:
         gb = gs_hf.getbbox("Grid stages")
         add(px, y, "Grid stages", CYAN, gs_hf)
@@ -790,7 +793,6 @@ def _render_stats_full(stats_data, is_movetimes_accurate, panel_w, quality=1080,
         cycles_display = stats_data.get("cycles_display", "")
         cur_time_ms = stats_data.get("cur_time_ms", 0)
         cycles_fix_times = stats_data.get("cycles_fix_times", {})
-        cyc_lines_data = None
         if cycles_display:
             y += 4
             max_line_w = max(gs_lf.getbbox(l)[2] for l in formatted) if formatted else panel_w - 2 * gs_x

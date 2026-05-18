@@ -29,6 +29,14 @@ python main.py --solution R2D2L2U2 --dynamic-md                # show right-side
 python main.py --solution R2D2L2U2 --no-header --no-details    # puzzle grid only (= --no-layout)
 ```
 
+```
+python main.py --image --size 4x4                                 # solved puzzle image
+python main.py --image --size 4x4 --scramble "4 1 2/7 8 3/6 5 0" # custom scramble image
+python main.py --image --solution R2D2L2U2 --size 3x3            # scrambled + solved images
+python main.py --image --size 5x5 --no-numbers --main-scheme rows
+python main.py --image -f replay.txt --size 4x4 -o output.png    # explicit output path
+```
+
 ## CLI Reference
 
 | Category | Flag | Short | Description |
@@ -37,6 +45,7 @@ python main.py --solution R2D2L2U2 --no-header --no-details    # puzzle grid onl
 | | `--url` | `-u` | Replay URL |
 | | `--file` | `-f` | File containing a replay URL or solution string |
 | | `--batch` | `-b` | File with solutions/URLs (one per line) |
+| | `--image` | | Render PNG image(s) instead of video. Requires `--size`. See [Image Mode](#image-mode) below |
 | **Puzzle** | `--size` | | Puzzle size (e.g. `3x3`, `10x10`) |
 | | `--scramble` | | Scramble string |
 | **Timing** | `--tps` | | Tiles per second (omit if using `--time`) |
@@ -100,6 +109,25 @@ python main.py --solution R2D2L2U2 -l          # CLI with logging
 ```
 
 Logs are written to `logs/debug_YYYYMMDD_HHMMSS.log`.
+
+## Image Mode
+
+The `--image` flag renders single-frame PNG images rather than videos. Images always render the puzzle grid only.
+
+### Behavior by input
+
+| Input | Output |
+|-------|--------|
+| `--size 4x4` only | One image: solved puzzle → `4x4_puzzle.png` |
+| `--size 4x4 --scramble "..."` | One image: that custom scramble → `4x4_scramble.png` |
+| `--size 3x3 --solution R2D2L2U2` | Two images: `3x3_scrambled.png` (first state) + `3x3_solved.png` (solved with analysis colors) |
+| `--url` / `--file` + `--size` | Two images, same as solution. Replay URL is parsed for the solution |
+
+### GUI "Render Image" button
+
+Located in the **Override** section of the GUI (next to the Scramble and Movetimes fields). Behavior:
+- **With a queue item selected**: generates two images (scrambled + solved with analysis) using current color/display settings, saved to the output folder and listed in the Generated Replays panel
+- **No queue item selected**: generates a single image from the override fields — custom scramble if entered, otherwise a solved puzzle of the given size
 
 ## Output Format
 
