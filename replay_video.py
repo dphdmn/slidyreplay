@@ -2583,8 +2583,9 @@ class ReplayVideoGenerator:
             if total_real_time_s > 0:
                 real_tps_from_user_mt = sol_len / total_real_time_s
         elif isinstance(replay_movetimes, list) and len(replay_movetimes) > 0:
-            custom_move_times = replay_movetimes
-            is_movetimes_accurate = True
+            if tps is None and time is None:
+                custom_move_times = replay_movetimes
+                is_movetimes_accurate = True
             total_real_time_s = replay_movetimes[-1] / 1000.0 if replay_movetimes[-1] > 0 else 0
             if total_real_time_s > 0:
                 real_tps_from_replay_mt = sol_len / total_real_time_s

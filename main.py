@@ -1861,13 +1861,13 @@ class ReplayGUI(tb.Window):
                 }
 
                 solution = entry["solution"]
-                # User overrides for rendering
-                if entry.get("tps_was_overridden") and entry["tps"] is not None:
+                # User overrides for rendering — only pass one of time/tps
+                if entry["time"]:
+                    params["time"] = entry["time"]
+                elif entry.get("tps_was_overridden") and entry["tps"] is not None:
                     params["tps"] = entry["tps"]
                 if isinstance(entry["movetimes"], list) and len(entry["movetimes"]) > 0:
                     params["movetimes"] = entry["movetimes"]
-                if entry["time"]:
-                    params["time"] = entry["time"]
                 # Replay data for fallback
                 if entry.get("replay_tps") is not None:
                     params["replay_tps"] = entry["replay_tps"]
