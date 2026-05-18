@@ -55,7 +55,7 @@ python main.py --image -f replay.txt --size 4x4 -o output.png    # explicit outp
 | | `--scramble` | | Scramble string |
 | **Timing** | `--tps` | | Tiles per second (omit if using `--time`) |
 | | `--time` | | Total time in seconds (omit if using `--tps`) |
-| | `--movetimes` | | Comma-separated move timings in seconds (overrides `--tps`/`--time`) |
+| | `--movetimes` | | File with move timings in ms, one per line or comma-separated (overrides `--tps`/`--time`) |
 | | `--speedup` | `-s` | Speed multiplier (e.g. `2.0` = 2× faster, `0.5` = half speed) (default: 1.0) |
 | **Output** | `--output` | `-o` | Output file path (default: auto-generated name in `replays/` folder) |
 | | `--quality` | `-q` | Render quality — canvas height (720, 1080, 1440, 2160) |

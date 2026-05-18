@@ -1050,8 +1050,12 @@ class ReplayGUI(tb.Window):
         self.scramble_entry = tb.Entry(ov_row2, width=18, textvariable=self.scramble_var)
         self.scramble_entry.pack(side="left", padx=(0, 6))
         tb.Label(ov_row2, text="Movetimes:", font=(FONT_FAMILY, 9)).pack(side="left", padx=(2, 2))
-        self.movetimes_entry = tb.Entry(ov_row2, width=18, textvariable=self.movetimes_var)
-        self.movetimes_entry.pack(side="left")
+        self.movetimes_label = tb.Label(ov_row2, text="No file selected", font=(FONT_FAMILY, 9), width=12, anchor="w")
+        self.movetimes_label.pack(side="left", padx=(0, 2))
+        self.movetimes_btn = tb.Button(ov_row2, text="Browse", command=self._select_movetimes_file, bootstyle="info-outline", padding=(2, 0))
+        self.movetimes_btn.pack(side="left", padx=(0, 2))
+        self.movetimes_clear = tb.Button(ov_row2, text="Clear", command=self._clear_movetimes_file, bootstyle="info-outline", padding=(2, 0))
+        self.movetimes_clear.pack(side="left")
 
         ov_row3 = tb.Frame(self.ov_frame)
         ov_row3.pack(fill="x", padx=4, pady=(2, 3))
@@ -1418,6 +1422,16 @@ class ReplayGUI(tb.Window):
         except Exception as e:
             log.warning(f"Preview update failed: {e}")
 
+    def _select_movetimes_file(self):
+        path = filedialog.askopenfilename(title="Select movetimes file")
+        if path:
+            self.movetimes_var.set(path)
+            self.movetimes_label.config(text=os.path.basename(path))
+
+    def _clear_movetimes_file(self):
+        self.movetimes_var.set("")
+        self.movetimes_label.config(text="No file selected")
+
     def _render_image_from_gui(self):
         import threading as _thr
         def _task():
@@ -1536,7 +1550,14 @@ class ReplayGUI(tb.Window):
         override_time = self.time_var.get().strip()
         override_size = self.size_var.get().strip()
         override_scramble = self.scramble_var.get().strip()
-        override_movetimes = self.movetimes_var.get().strip()
+        mt_path = self.movetimes_var.get().strip()
+        override_movetimes = []
+        if mt_path and os.path.exists(mt_path):
+            try:
+                with open(mt_path, "r") as f:
+                    override_movetimes = [int(x) for line in f for x in line.replace(",", " ").split()]
+            except Exception:
+                override_movetimes = []
 
         # Also read file if set
         file_path = self.file_path_var.get().strip()
@@ -1594,7 +1615,7 @@ class ReplayGUI(tb.Window):
             tps = float(override_tps) if override_tps else None
             if override_scramble:
                 scramble = override_scramble
-            movetimes = [int(x.strip()) for x in override_movetimes.split(",")] if override_movetimes else -1
+            movetimes = list(override_movetimes) if isinstance(override_movetimes, list) and len(override_movetimes) > 0 else -1
             mode = "url"
         else:
             solution = text
@@ -1602,7 +1623,7 @@ class ReplayGUI(tb.Window):
             replay_tps = None
             replay_movetimes = -1
             scramble = override_scramble if override_scramble else None
-            movetimes = [int(x.strip()) for x in override_movetimes.split(",")] if override_movetimes else -1
+            movetimes = list(override_movetimes) if isinstance(override_movetimes, list) and len(override_movetimes) > 0 else -1
             mode = "manual"
 
         time_v = float(override_time) if override_time else None
@@ -2097,7 +2118,7 @@ Examples:
                              "If solution/url is also provided, renders two images: scrambled first state "
                              "and solved state with analysis. Use --scramble to render a custom position.")
     parser.add_argument("--batch", "-b", help="File with solutions/URLs (one per line)")
-    parser.add_argument("--movetimes", help="Comma-separated move timings (overrides --tps/--time)")
+    parser.add_argument("--movetimes", help="File with move timings in ms, one per line or comma-separated (overrides --tps/--time)")
     parser.add_argument("--speedup", "-s", type=float, default=1.0,
                         help="Speed multiplier (e.g. 2.0 = 2x faster video, 0.5 = half speed)")
     parser.add_argument("--force-main", action="store_true", default=False,
@@ -2229,9 +2250,10 @@ Examples:
     if args.upscale and args.quality >= 1440:
         print("[Note] --upscale: source quality already >=1440p, no upscaling performed.", file=sys.stderr)
 
-    movetimes = None
+    movetimes = -1
     if args.movetimes:
-        movetimes = [float(x) for x in args.movetimes.split(",")]
+        with open(args.movetimes, "r") as f:
+            movetimes = [float(x) for line in f for x in line.replace(",", " ").split()]
 
     log_path = None
     if args.log:
@@ -2383,7 +2405,8 @@ Examples:
                 mode, val = item if isinstance(item, tuple) else ("manual", item)
 
                 kwargs = dict(quality=args.quality, fps=args.fps, compression=args.compression,
-                              slow_render=slow_render, encoder_preset=args.encoder_preset, speed_factor=args.speedup, main_scheme=main_scheme, force_main=force_main, upscale=args.upscale, encoder_override=args.encoder)
+                              slow_render=slow_render, encoder_preset=args.encoder_preset, speed_factor=args.speedup, main_scheme=main_scheme, force_main=force_main, upscale=args.upscale, encoder_override=args.encoder,
+                              movetimes=movetimes)
                 try:
                     sol, tps_from_url, scramble, movetimes_from_url = parse_replay_url(val)
                     # Replay data for fallback
@@ -2449,7 +2472,10 @@ Examples:
                             output_path = args.output
                     else:
                         moves_cnt = count_moves(sol)
-                        if user_time and user_time > 0:
+                        if isinstance(movetimes, list) and len(movetimes) > 1 and movetimes[-1] > 0:
+                            eff_tps = moves_cnt / (movetimes[-1] / 1000.0)
+                            eff_mt = movetimes
+                        elif user_time and user_time > 0:
                             eff_tps = moves_cnt / user_time
                             eff_mt = -1
                         elif user_tps and user_tps > 0:
@@ -2473,7 +2499,7 @@ Examples:
 
                     run_single(sol, output_path, opts=opts,
                                tps=user_tps, time=user_time, scramble=scramble,
-                               movetimes=-1, replay_tps=replay_tps,
+                               movetimes=movetimes, replay_tps=replay_tps,
                                replay_movetimes=replay_movetimes, quality=args.quality,
                                fps=args.fps, compression=args.compression,
                                slow_render=slow_render, encoder_preset=args.encoder_preset,
@@ -2494,7 +2520,7 @@ Examples:
                     run_single(val, output_path, opts=opts,
                                tps=args.tps, time=args.time,
                                scramble=args.scramble, size=args.size,
-                               movetimes=-1,
+                               movetimes=movetimes,
                                quality=args.quality,
                                fps=args.fps, compression=args.compression,
                                slow_render=slow_render, encoder_preset=args.encoder_preset,

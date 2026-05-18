@@ -1,11 +1,4 @@
-- concact bulk render results
 - batches optimization idea
-- batch mode stuff (relays and marathons with data)
-- move splits and replay_generator stuff parts into separate module/repo
+- batch mode stuff (relays and marathons with data) / concact bulk render results
 - Cursor dancing
-- custom font, font size
-- movetimes override from file
-- puzzle not centered vertically again
 - small resolution font size issues
-- fix puzzle override in gui updating preview on partial info
-- add error message when trying to override with smaller puzzle size
