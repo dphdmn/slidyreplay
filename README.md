@@ -76,7 +76,7 @@ python main.py --image -f replay.txt --size 4x4 -o output.png    # explicit outp
 | | `--main-scheme` | | Color scheme: `fringe`, `rows`, or `columns` (default: `fringe`) |
 | | `--force-main` | | Force main scheme everywhere (disable grids detection) |
 | | `--animate-moves` | | Animate tile sliding between moves (smooth transitions) |
-| `--cursor-dance` | | Path to cursor image (PNG recommended) that dances along tile moves. Cursor traces the blank's path via Bézier arcs, timed by movetimes. Transparency is preserved. |
+| | `--cursor-dance` | | Path to cursor image (PNG recommended) that dances along tile moves. Cursor traces the blank's path via Bézier arcs, timed by movetimes. Transparency is preserved. |
 | | `--cycles-detection` | | EXPERIMENTAL: detect and display cycling tiles in grid stats (may increase analysis time) |
 | **Font** | `--font-family` | | Tile number font family (system font name, e.g. `Arial`). Default: `Roboto` |
 | | `--font-bold` | | Use bold variant of the tile number font |
