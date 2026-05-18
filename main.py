@@ -228,7 +228,7 @@ def render_puzzle_image(
         hue_end=opts.hue_end,
     )
 
-    layout = compute_layout(quality, w, h, opts.grid_only, no_header=opts.no_header, no_details=opts.no_details, adjust_height=opts.adjust_height)
+    layout = compute_layout(quality, w, h, opts.grid_only, no_header=opts.no_header, no_details=opts.no_details, adjust_height=opts.adjust_height, font_size_override=opts.font_size_override)
     tile_size = layout["tile_size"]
     font_size = layout["font_size"]
 
@@ -297,6 +297,9 @@ SETTINGS_DEFAULTS = {
     "grid1_color": "C86767",
     "grid2_color": "8DB3FF",
     "tile_bg_color": "454545",
+    "font_family": "",
+    "font_bold": False,
+    "font_size_override": 0,
 }
 
 
@@ -332,6 +335,9 @@ def _gui_get_settings(gui):
     d["grid1_color"] = gui._color_vars["grid1"].get()
     d["grid2_color"] = gui._color_vars["grid2"].get()
     d["tile_bg_color"] = gui._color_vars["tile_bg"].get()
+    d["font_family"] = gui.font_family_var.get()
+    d["font_bold"] = gui.font_bold_var.get()
+    d["font_size_override"] = gui.font_size_override_var.get()
     return d
 
 
@@ -396,6 +402,12 @@ def _gui_apply_settings(gui, d):
         gui._color_vars["grid2"].set(d["grid2_color"])
     if "tile_bg_color" in d:
         gui._color_vars["tile_bg"].set(d["tile_bg_color"])
+    if "font_family" in d:
+        gui.font_family_var.set(d["font_family"])
+    if "font_bold" in d:
+        gui.font_bold_var.set(d["font_bold"])
+    if "font_size_override" in d:
+        gui.font_size_override_var.set(d["font_size_override"])
     gui._schedule_preview()
 
 
@@ -435,6 +447,9 @@ _SETTINGS_TO_ARGS = {
     "grid1_color": ("grid1_color", None),
     "grid2_color": ("grid2_color", None),
     "tile_bg_color": ("tile_bg_color", None),
+    "font_family": ("font_family", None),
+    "font_bold": ("font_bold", None),
+    "font_size_override": ("font_size_override", None),
 }
 
 
@@ -536,6 +551,12 @@ class ReplayGUI(tb.Window):
         self.adjust_height_var = tk.BooleanVar(value=False)
         self.animate_moves_var = tk.BooleanVar(value=False)
 
+        from geometry import get_system_font_families
+        self._system_font_families = get_system_font_families()
+        self.font_family_var = tk.StringVar(value="")
+        self.font_bold_var = tk.BooleanVar(value=False)
+        self.font_size_override_var = tk.IntVar(value=0)
+
         _register_fonts()
         os.makedirs(self.out_folder_var.get(), exist_ok=True)
         self._build_ui()
@@ -614,6 +635,7 @@ class ReplayGUI(tb.Window):
         quality_combo.grid(row=0, column=1, sticky="w")
         def _on_quality_change(*_):
             self._update_quality_warning()
+            self._schedule_preview()
         self.quality_preset_var.trace_add("write", _on_quality_change)
         r += 1
 
@@ -809,6 +831,66 @@ class ReplayGUI(tb.Window):
                        bootstyle="round-toggle").grid(row=3, column=2, sticky="w")
         tb.Checkbutton(d_grid, text="Animate moves", variable=self.animate_moves_var,
                        bootstyle="round-toggle").grid(row=4, column=2, sticky="w")
+
+        # ════════ FONT ════════
+        tb.Label(settings, text="FONT", font=_sec_font, bootstyle="secondary").grid(
+            row=r, column=0, sticky="w", padx=12, pady=(6, 0))
+        r += 1
+        tb.Separator(settings, bootstyle="secondary").grid(
+            row=r, column=0, sticky="ew", pady=(1, 4), padx=12)
+        r += 1
+
+        # Font family combobox
+        font_fam_row = tb.Frame(settings)
+        font_fam_row.grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
+        font_fam_row.grid_columnconfigure(1, weight=1)
+        tb.Label(font_fam_row, text="Font family:", font=(FONT_FAMILY, 9)).grid(
+            row=0, column=0, sticky="w", padx=(0, 6))
+        _font_fam_values = [""] + self._system_font_families
+        font_family_combo = ttk.Combobox(font_fam_row, textvariable=self.font_family_var,
+                                          values=_font_fam_values, state="readonly", width=20)
+        font_family_combo.grid(row=0, column=1, sticky="ew")
+        font_family_combo.bind("<<ComboboxSelected>>", lambda e: self._schedule_preview())
+        r += 1
+
+        # Font bold toggle
+        font_bold_row = tb.Frame(settings)
+        font_bold_row.grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
+        self.font_bold_cb = tb.Checkbutton(font_bold_row, text="Bold",
+                                            variable=self.font_bold_var,
+                                            bootstyle="round-toggle")
+        self.font_bold_cb.pack(side="left")
+        self.font_bold_var.trace_add("write", lambda *_: self._schedule_preview())
+        r += 1
+
+        # Font size override
+        fsize_row = tb.Frame(settings)
+        fsize_row.grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
+        fsize_row.grid_columnconfigure(1, weight=1)
+        tb.Label(fsize_row, text="Font size (px):", font=(FONT_FAMILY, 9)).grid(
+            row=0, column=0, sticky="w", padx=(0, 6))
+        self.font_size_entry = tb.Entry(fsize_row, textvariable=self.font_size_override_var,
+                                         width=8)
+        self.font_size_entry.grid(row=0, column=1, sticky="w")
+        tb.Label(fsize_row, text="0 = auto", font=(FONT_FAMILY, 8),
+                 foreground="#888").grid(row=0, column=2, sticky="w", padx=(6, 0))
+        r += 1
+
+        # Font size override warning
+        self.font_size_warning = tb.Label(settings,
+            text="⚠ Font size override may cause overflow issues",
+            font=(FONT_FAMILY, 8), foreground="#ffa500", anchor="w", wraplength=280)
+        self.font_size_warning.grid(row=r, column=0, sticky="ew", pady=(0, 4), padx=12)
+        self.font_size_warning.grid_remove()
+
+        def _update_font_warning(*_):
+            if self.font_size_override_var.get() > 0:
+                self.font_size_warning.grid()
+            else:
+                self.font_size_warning.grid_remove()
+            self._schedule_preview()
+        self.font_size_override_var.trace_add("write", _update_font_warning)
+        r += 1
 
         # ════════ SETTINGS MANAGEMENT ════════
         tb.Label(settings, text="SETTINGS", font=_sec_font, bootstyle="secondary").grid(
@@ -1092,6 +1174,9 @@ class ReplayGUI(tb.Window):
                   self.no_grid_bars_var, self.no_secondary_border_var):
             v.trace_add("write", lambda *_: self._schedule_preview())
         self.force_main_var.trace_add("write", lambda *_: self._schedule_preview())
+        self.font_family_var.trace_add("write", lambda *_: self._schedule_preview())
+        self.font_bold_var.trace_add("write", lambda *_: self._schedule_preview())
+        self.font_size_override_var.trace_add("write", lambda *_: self._schedule_preview())
 
         # Initial preview
         self.after(100, self._render_preview)
@@ -1113,8 +1198,12 @@ class ReplayGUI(tb.Window):
         elif prev in ("zoomed", "iconic"):
             self._prev_root_h = event.height
             self._schedule_preview()
-        elif (event.width, event.height) != (self._base_w, self._base_h):
-            self.geometry(f"{self._base_w}x{self._base_h}")
+        else:
+            cur = (event.width, event.height)
+            prev_size = getattr(self, '_prev_win_size', None)
+            self._prev_win_size = cur
+            if prev_size is not None and cur != prev_size:
+                self._schedule_preview()
 
     def _get_speed_factor(self) -> float:
         try:
@@ -1126,16 +1215,6 @@ class ReplayGUI(tb.Window):
         return self._quality_presets.get(self.quality_preset_var.get(), 1080)
 
     def _update_quality_warning(self):
-        h = self._get_quality()
-        text = ""
-        if h >= 2160:
-            text = "⚠ 4K uses very high RAM during atlas prerender"
-        elif h >= 1440:
-            text = "⚠ 2K uses high RAM during atlas prerender"
-        if text:
-            self.quality_warning.config(text=text)
-            self.quality_warning.grid()
-        else:
             self.quality_warning.grid_remove()
 
     def _center_window(self):
@@ -1280,6 +1359,7 @@ class ReplayGUI(tb.Window):
 
             all_fringe_schemes = get_all_fringe_schemes(grid_states, scheme, sat_min, sat_max, light_min, light_max, hue_start, hue_end)
 
+            _font_override = self.font_size_override_var.get() or None
             opts = RenderOptions(
                 grid_only=True,
                 no_border=self.no_border_var.get(),
@@ -1289,6 +1369,9 @@ class ReplayGUI(tb.Window):
                 tile_bg_color=parse_hex_color(self._color_vars["tile_bg"].get()),
                 grid1_color=parse_hex_color(self._color_vars["grid1"].get()),
                 grid2_color=parse_hex_color(self._color_vars["grid2"].get()),
+                font_family=self.font_family_var.get() or None,
+                font_bold=self.font_bold_var.get(),
+                font_size_override=_font_override,
             )
 
             try:
@@ -1299,7 +1382,14 @@ class ReplayGUI(tb.Window):
             except Exception:
                 avail = 200
             tile_size = max(1, avail // max(w, h))
-            font_size = max(1, tile_size // 3)
+            # Compute font_size proportional to the final render tile_size
+            final_tile_size = max(1, self._get_quality() // max(w, h))
+            from geometry import compute_font_size
+            if _font_override is not None:
+                # Scale override proportionally from final tile_size to preview tile_size
+                font_size = max(1, round(_font_override * tile_size / final_tile_size))
+            else:
+                font_size = compute_font_size(w, h, tile_size, None)
 
             stats_data = {
                 "moves": [], "current_time": 0,
@@ -1362,6 +1452,9 @@ class ReplayGUI(tb.Window):
                     hue_start=hue_start, hue_end=hue_end,
                     saturation_min=sat_min, saturation_max=sat_max,
                     brightness_min=light_min, brightness_max=light_max,
+                    font_family=self.font_family_var.get() or None,
+                    font_bold=self.font_bold_var.get(),
+                    font_size_override=self.font_size_override_var.get() or None,
                 )
                 opts = dataclasses.replace(opts, grid_only=True, adjust_height=True)
 
@@ -1677,6 +1770,9 @@ class ReplayGUI(tb.Window):
                     saturation_max=self.saturation_max_var.get() / 100.0,
                     brightness_min=self.brightness_min_var.get() / 100.0,
                     brightness_max=self.brightness_max_var.get() / 100.0,
+                    font_family=self.font_family_var.get() or None,
+                    font_bold=self.font_bold_var.get(),
+                    font_size_override=self.font_size_override_var.get() or None,
                 )
                 params = {
                     "main_scheme": self.main_scheme_var.get(),
@@ -2047,6 +2143,13 @@ Examples:
     parser.add_argument("--grid1-color", type=str, default=None, help="Grid 1 color as hex (e.g. FF0000)")
     parser.add_argument("--grid2-color", type=str, default=None, help="Grid 2 color as hex (e.g. 0000FF)")
     parser.add_argument("--tile-bg-color", type=str, default=None, help="Tile background color as hex")
+    parser.add_argument("--font-family", type=str, default=None,
+                        help="Tile number font family (system font name). Default: Roboto")
+    parser.add_argument("--font-bold", action="store_true", default=False,
+                        help="Use bold variant of the tile number font")
+    parser.add_argument("--font-size", type=int, default=None,
+                        help="Override font size in px (auto-computed by default). "
+                             "WARNING: may cause numbers to overflow tiles")
     parser.add_argument("--hue-start", type=float, default=0, help="Hue range start (0-360, default: 0)")
     parser.add_argument("--hue-end", type=float, default=330, help="Hue range end (0-330, default: 330)")
     parser.add_argument("--saturation", type=float, default=None, help="Color saturation for both min and max (0-1)")
@@ -2112,6 +2215,9 @@ Examples:
         saturation_max=args.saturation_max,
         brightness_min=args.brightness_min,
         brightness_max=args.brightness_max,
+        font_family=args.font_family,
+        font_bold=args.font_bold,
+        font_size_override=args.font_size,
     )
 
     if args.speedup <= 0:

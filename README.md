@@ -31,6 +31,7 @@ python main.py --solution R2D2L2U2 --saturation 0.5          # set both min/max 
 python main.py --solution R2D2L2U2 --saturation-min 0.3 --saturation-max 0.9  # gradient across tiles
 python main.py --solution R2D2L2U2 --brightness-min 0.2 --brightness-max 0.8  # brightness gradient
 python main.py --settings my_settings.json --solution R2D2L2U2   # load settings from JSON
+python main.py --solution R2D2L2U2 --font-family Arial --font-bold --font-size 36  # custom tile font
 ```
 
 ```
@@ -76,6 +77,9 @@ python main.py --image -f replay.txt --size 4x4 -o output.png    # explicit outp
 | | `--force-main` | | Force main scheme everywhere (disable grids detection) |
 | | `--animate-moves` | | Animate tile sliding between moves (smooth transitions) |
 | | `--cycles-detection` | | EXPERIMENTAL: detect and display cycling tiles in grid stats (may increase analysis time) |
+| **Font** | `--font-family` | | Tile number font family (system font name, e.g. `Arial`). Default: `Roboto` |
+| | `--font-bold` | | Use bold variant of the tile number font |
+| | `--font-size` | | Override font size in px (auto-computed by default). ⚠ Numbers may overflow tiles |
 | **Colors** | `--grid1-color` | | Grid 1 (red sections) color as hex, e.g. `FF0000` |
 | | `--grid2-color` | | Grid 2 (blue sections) color as hex, e.g. `0000FF` |
 | | `--tile-bg-color` | | Tile background color as hex, e.g. `969696` |
@@ -148,7 +152,10 @@ Settings files use a simple flat JSON structure. Example:
   "brightness_max": 60,
   "grid1_color": "C86767",
   "grid2_color": "8DB3FF",
-  "tile_bg_color": "454545"
+  "tile_bg_color": "454545",
+  "font_family": "",
+  "font_bold": false,
+  "font_size_override": 0
 }
 ```
 

@@ -110,7 +110,8 @@ class GPURenderer:
         self.header_h = header_h if header_h is not None else HEADER_H
         self.layout_panel_w = panel_w if panel_w is not None else STATS_PANEL_WIDTH
         self.tile_size = tile_size
-        self.font_size = compute_font_size(width, height, tile_size)
+        self.font_size = compute_font_size(width, height, tile_size,
+                                           opts.font_size_override if opts else None)
         self.pw = width * tile_size
         self.ph = height * tile_size
 

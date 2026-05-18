@@ -569,7 +569,9 @@ def render_frame(
                         draw.rectangle(bar_bbox, outline=TILE_BORDER_COLOR, width=1)
 
                 if not opts.no_numbers and num != 0 and should_draw_numbers(tile_size, font_size):
-                    tex = render_number_texture(num, tile_size, font_size)
+                    tex = render_number_texture(num, tile_size, font_size,
+                                                font_family=opts.font_family if opts else None,
+                                                font_bold=opts.font_bold if opts else False)
                     canvas.paste(tex, (sx, sy), tex)
 
     # ─── Grid edge borders (right + bottom for edge tiles) ────────
@@ -1230,8 +1232,10 @@ def prerender_tile_layers(width, height, tile_size, font_size, opts, all_fringe_
     base_sprites[tile_bg] = _solid_base(tile_bg, ts, opts)
 
     number_texts = {}
+    _ff = opts.font_family if opts else None
+    _fb = opts.font_bold if opts else False
     for num in range(w * h + 1):
-        number_texts[num] = render_number_texture(num, ts, font_size)
+        number_texts[num] = render_number_texture(num, ts, font_size, font_family=_ff, font_bold=_fb)
 
     bar_sprites = {}
     seen = set()
@@ -1703,7 +1707,7 @@ def generate_frames(
             elif lw >= 0:
                 cycles_fix_times[t] = round(time_arr[-1])
 
-    layout = compute_layout(quality, w, h, opts.grid_only, no_header=opts.no_header, no_details=opts.no_details, adjust_height=opts.adjust_height)
+    layout = compute_layout(quality, w, h, opts.grid_only, no_header=opts.no_header, no_details=opts.no_details, adjust_height=opts.adjust_height, font_size_override=opts.font_size_override)
     tile_size = layout["tile_size"]
     font_size = layout["font_size"]
     log.info(f"  tile_size={tile_size}, pad={layout['pad']}, header_h={layout['header_h']}, panel_w={layout['panel_w']}, font_size={font_size}")
@@ -2164,7 +2168,7 @@ def generate_frames(
     log.info(f"  CPU PATH: {len(states_needed)} unique states to render, canvas={canvas_w_cpu}x{canvas_h_cpu}")
     log_ram("CPU: before font load")
     _font_start = time_module.time()
-    get_font(font_size)
+    get_font(font_size, bold=opts.font_bold if opts else False, family=opts.font_family if opts else None)
     get_font(24, bold=True)
     get_font(20, mono=True)
     get_font(18, bold=True)

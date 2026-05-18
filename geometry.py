@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 from typing import Optional, Tuple
 from dataclasses import dataclass
 from functools import lru_cache
@@ -56,10 +57,223 @@ FONT_FAMILY_MONO_BOLD = os.path.join(_font_dir, "JetBrainsMono-Bold.ttf")
 
 _font_cache = {}
 
-def get_font(size: int, bold: bool = False, mono: bool = False) -> ImageFont.FreeTypeFont:
-    key = (size, bold, mono)
+# ─── System Font Resolution ──────────────────────────────────────
+
+_system_fonts = None
+
+def _build_system_font_map():
+    """Scan OS for installed font files.
+    Returns {family_lower: {"name": original_name, "regular": path_or_None, "bold": path_or_None}}.
+    """
+    font_map = {}
+    if sys.platform == "win32":
+        font_dir = os.path.join(
+            os.environ.get("SystemRoot", "C:\\Windows"), "Fonts"
+        )
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts")
+            for i in range(winreg.QueryInfoKey(key)[1]):
+                try:
+                    name, value, _ = winreg.EnumValue(key, i)
+                    display = re.sub(r'\s*\(.*?\)\s*$', '', name).strip()
+                    if not value or not display:
+                        continue
+                    path = value if os.path.isabs(value) else os.path.join(font_dir, value)
+                    if not os.path.exists(path):
+                        continue
+                    # Determine if this entry is a bold variant
+                    display_lower = display.lower()
+                    is_bold = 'bold' in display_lower and 'thin' not in display_lower
+                    # Derive base family by stripping known style suffixes
+                    base = display
+                    for suffix in [" Bold", " Italic", " Light", " Black",
+                                   " Semibold", " Semilight", " ExtraBold", " Thin"]:
+                        if base.endswith(suffix) and len(base) > len(suffix):
+                            # Also try removing combined suffixes
+                            test = base[:-len(suffix)]
+                            if test.strip():
+                                base = test.strip()
+                            break
+                    # Also handle "Bold Italic" two-word style
+                    if base != display:
+                        # Already stripped one suffix
+                        pass
+                    elif " bold " in display_lower or display_lower.endswith("bold italic"):
+                        base = re.sub(r'\s*bold\s*italic\s*$', '', display, flags=re.IGNORECASE).strip()
+                        if not base or base == display:
+                            base = re.sub(r'\s*bold\s*', '', display, flags=re.IGNORECASE).strip()
+                    for fam_key in (display, base):
+                        if not fam_key:
+                            continue
+                        fl = fam_key.lower()
+                        if fl not in font_map:
+                            font_map[fl] = {"name": fam_key, "regular": None, "bold": None}
+                        if is_bold:
+                            if font_map[fl]["bold"] is None:
+                                font_map[fl]["bold"] = path
+                            # Exact family entries like "Arial Bold" should also resolve as regular
+                            # (loading the bold file is the intended bold look for that family)
+                            if font_map[fl]["regular"] is None and fam_key == display:
+                                font_map[fl]["regular"] = path
+                        else:
+                            if font_map[fl]["regular"] is None:
+                                font_map[fl]["regular"] = path
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    elif sys.platform in ("linux", "darwin"):
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["fc-list", "--format=%{family}\n%{file}\n%{style}\n"],
+                capture_output=True, text=True, timeout=5
+            )
+            lines = result.stdout.strip().split("\n")
+            i = 0
+            while i + 2 < len(lines):
+                families = [f.strip() for f in lines[i].split(",")]
+                path = lines[i + 1].strip()
+                style = lines[i + 2].strip().lower()
+                i += 3
+                if not path or not families[0]:
+                    continue
+                for fam in families:
+                    if not fam:
+                        continue
+                    fl = fam.lower()
+                    if fl not in font_map:
+                        font_map[fl] = {"name": fam, "regular": None, "bold": None}
+                    is_bold = "bold" in style and "thin" not in style
+                    if is_bold:
+                        if font_map[fl]["bold"] is None:
+                            font_map[fl]["bold"] = path
+                    else:
+                        if font_map[fl]["regular"] is None:
+                            font_map[fl]["regular"] = path
+        except Exception:
+            pass
+        # Fallback: scan common font directories
+        if not font_map:
+            _scan_font_dirs(font_map)
+    # Add bundled fonts
+    bundled = [
+        ("Roboto", FONT_FAMILY, FONT_FAMILY_BOLD),
+        ("JetBrains Mono", FONT_FAMILY_MONO, FONT_FAMILY_MONO_BOLD),
+    ]
+    for name, regular_path, bold_path in bundled:
+        fl = name.lower()
+        if fl not in font_map:
+            font_map[fl] = {"name": name, "regular": None, "bold": None}
+        if font_map[fl]["regular"] is None and os.path.exists(regular_path):
+            font_map[fl]["regular"] = regular_path
+        if font_map[fl]["bold"] is None and os.path.exists(bold_path):
+            font_map[fl]["bold"] = bold_path
+    return font_map
+
+
+def _scan_font_dirs(font_map):
+    """Fallback: scan common font directories for .ttf/.otf files."""
+    candidates = []
+    if sys.platform == "linux":
+        candidates = [
+            "/usr/share/fonts",
+            "/usr/local/share/fonts",
+            os.path.expanduser("~/.local/share/fonts"),
+            os.path.expanduser("~/.fonts"),
+        ]
+    elif sys.platform == "darwin":
+        candidates = [
+            "/System/Library/Fonts",
+            "/Library/Fonts",
+            os.path.expanduser("~/Library/Fonts"),
+        ]
+    if sys.platform in ("linux", "darwin"):
+        import subprocess
+        for d in candidates:
+            if not os.path.isdir(d):
+                continue
+            for root, dirs, files in os.walk(d):
+                for f in files:
+                    if f.lower().endswith((".ttf", ".otf")):
+                        path = os.path.join(root, f)
+                        try:
+                            r = subprocess.run(
+                                ["fc-scan", "--format=%{family}\n%{style}", path],
+                                capture_output=True, text=True, timeout=2
+                            )
+                            if r.returncode == 0:
+                                lines = r.stdout.strip().split("\n")
+                                if len(lines) >= 2:
+                                    families = [x.strip() for x in lines[0].split(",")]
+                                    style = lines[1].strip().lower()
+                                    for fam in families:
+                                        if not fam:
+                                            continue
+                                        fl = fam.lower()
+                                        if fl not in font_map:
+                                            font_map[fl] = {"name": fam, "regular": None, "bold": None}
+                                        is_bold = "bold" in style and "thin" not in style
+                                        if is_bold:
+                                            if font_map[fl]["bold"] is None:
+                                                font_map[fl]["bold"] = path
+                                        else:
+                                            if font_map[fl]["regular"] is None:
+                                                font_map[fl]["regular"] = path
+                        except Exception:
+                            pass
+
+
+def get_system_font_families():
+    """Return sorted list of available font family names (original casing)."""
+    global _system_fonts
+    if _system_fonts is None:
+        _system_fonts = _build_system_font_map()
+    return sorted(v["name"] for v in _system_fonts.values() if v.get("name"))
+
+
+def get_font_path(family: str, bold: bool = False) -> Optional[str]:
+    """Resolve a font family name to a file path."""
+    global _system_fonts
+    if _system_fonts is None:
+        _system_fonts = _build_system_font_map()
+    fl = family.lower().strip()
+    entry = _system_fonts.get(fl)
+    if entry:
+        if bold and entry.get("bold"):
+            return entry["bold"]
+        if entry.get("regular"):
+            if not bold:
+                return entry["regular"]
+    # Bold not found — try alternative family names (e.g. "Arial Bold" list entry)
+    if bold:
+        for alt in [f"{family} Bold", f"{family}-Bold", f"{family}Bold"]:
+            alt_fl = alt.lower()
+            alt_entry = _system_fonts.get(alt_fl)
+            if alt_entry:
+                if alt_entry.get("regular"):
+                    return alt_entry["regular"]
+                if alt_entry.get("bold"):
+                    return alt_entry["bold"]
+    return None
+
+
+def get_font(size: int, bold: bool = False, mono: bool = False,
+             family: str = None) -> ImageFont.FreeTypeFont:
+    key = (size, bold, mono, family)
     if key in _font_cache:
         return _font_cache[key]
+    if family is not None and family.lower().strip() not in ("roboto", "jetbrains mono"):
+        font_path = get_font_path(family, bold)
+        if font_path:
+            try:
+                font = ImageFont.truetype(font_path, size)
+                _font_cache[key] = font
+                return font
+            except Exception:
+                pass
     try:
         if mono:
             name = FONT_FAMILY_MONO_BOLD if bold else FONT_FAMILY_MONO
@@ -77,9 +291,10 @@ def get_font(size: int, bold: bool = False, mono: bool = False) -> ImageFont.Fre
 
 _number_texture_cache: dict = {}
 
-def render_number_texture(num: int, tile_size: int, font_size: int) -> Image.Image:
+def render_number_texture(num: int, tile_size: int, font_size: int,
+                          font_family: str = None, font_bold: bool = False) -> Image.Image:
     """Render a single number tile. Returns RGBA Image."""
-    key = (num, tile_size, font_size)
+    key = (num, tile_size, font_size, font_family, font_bold)
     cached = _number_texture_cache.get(key)
     if cached is not None:
         return cached
@@ -87,7 +302,7 @@ def render_number_texture(num: int, tile_size: int, font_size: int) -> Image.Ima
     draw = ImageDraw.Draw(im)
     if num != 0 and should_draw_numbers(tile_size, font_size):
         text = str(num)
-        tf = get_font(font_size)
+        tf = get_font(font_size, bold=font_bold, family=font_family)
         tb = draw.textbbox((0, 0), text, font=tf)
         text_w = max(1, tb[2] - tb[0])
         text_h = max(1, tb[3] - tb[1])
@@ -129,7 +344,10 @@ def render_dynamic_text(text: str, font, color=WHITE):
     return im
 
 
-def compute_font_size(width: int, height: int, tile_size: int) -> int:
+def compute_font_size(width: int, height: int, tile_size: int,
+                      font_size_override: Optional[int] = None) -> int:
+    if font_size_override is not None and font_size_override > 0:
+        return font_size_override
     if tile_size < MIN_NUMBER_TILE_SIZE:
         return 0
     # Sub-linear base: font grows proportionally up to 60px tile,
@@ -226,7 +444,8 @@ def round_canvas_height(h: int) -> int:
 
 def compute_layout(quality: int, puzzle_w: int, puzzle_h: int, grid_only: bool = False,
                    no_header: bool = False, no_details: bool = False,
-                   adjust_height: bool = False) -> dict:
+                   adjust_height: bool = False,
+                   font_size_override: Optional[int] = None) -> dict:
     """Compute layout parameters from a target video height preset.
     Canvas height is always the exact quality — no edge padding.
     pad = gap between puzzle grid and stats panel (small).
@@ -245,7 +464,7 @@ def compute_layout(quality: int, puzzle_w: int, puzzle_h: int, grid_only: bool =
     tile_size = avail_h // max_dim
     tile_size = max(MIN_TILE, tile_size)
 
-    font_size = compute_font_size(puzzle_w, puzzle_h, tile_size)
+    font_size = compute_font_size(puzzle_w, puzzle_h, tile_size, font_size_override)
 
     puzzle_px_w = puzzle_w * tile_size
     puzzle_px_h = puzzle_h * tile_size
@@ -344,6 +563,9 @@ class RenderOptions:
     saturation_max: float = 0.78
     brightness_min: float = 0.6
     brightness_max: float = 0.6
+    font_family: Optional[str] = None
+    font_bold: bool = False
+    font_size_override: Optional[int] = None
 
 
 @dataclass
