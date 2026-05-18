@@ -572,6 +572,13 @@ def render_frame(
                     tex = render_number_texture(num, tile_size, font_size)
                     canvas.paste(tex, (sx, sy), tex)
 
+    # ─── Grid edge borders (right + bottom for edge tiles) ────────
+    if should_draw_tile_border(tile_size) and not opts.no_border:
+        rx = grid_x + w * tile_size - 1
+        by = grid_y + h * tile_size - 1
+        draw.line([(rx, grid_y), (rx, by)], fill=TILE_BORDER_COLOR, width=TILE_BORDER_WIDTH)
+        draw.line([(grid_x, by), (rx, by)], fill=TILE_BORDER_COLOR, width=TILE_BORDER_WIDTH)
+
     # ─── Stats Panel ──────────────────────────────────────────────
     if not opts.grid_only and not opts.no_details:
         panel_y_start = 0 if (opts.no_header or opts.grid_only) else header_h

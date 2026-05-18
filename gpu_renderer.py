@@ -420,6 +420,14 @@ class GPURenderer:
                         canvas[:, canvas_y:canvas_y + n_rows * ts, gx:gx + pw] = tile_chunk_out
                         del tile_chunk, tile_rgb, tile_chunk_out
 
+                    # ── Grid edge borders (right + bottom for edge tiles) ──
+                    if should_draw_tile_border(ts) and not self.opts.no_border:
+                        border_val = torch.tensor(TILE_BORDER_COLOR, device=dev, dtype=torch.float32) / 255.0
+                        rx = gx + w * ts - 1
+                        by = gy + h * ts - 1
+                        canvas[:, gy:gy + h * ts, rx] = border_val.view(1, 1, 1, 3)
+                        canvas[:, by, gx:gx + w * ts] = border_val.view(1, 1, 3)
+
                 # ── Profile: tiles done ──
                 if _delta_applied:
                     _prof_delta_patch += _tick() - _pt0
