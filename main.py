@@ -1910,6 +1910,8 @@ class ReplayGUI(tb.Window):
                 if not self.cancel_flag:
                     self._item_progress[idx]["path"] = out_path
                     self.after(0, lambda p=out_path: self._add_to_list(p))
+                    self.after(0, lambda: self.detail_bar.configure(value=100))
+                    self.after(0, lambda: self.overall_bar.configure(value=100))
                     if self.upscale_var.get() and self._get_quality() < 1440:
                         stem, ext = os.path.splitext(out_path)
                         upscaled_path = f"{stem}_1440p60{ext}"
@@ -1920,6 +1922,8 @@ class ReplayGUI(tb.Window):
             except Exception as e:
                 log.error(f"_process_queue[{idx}]: FAILED: {e}", exc_info=True)
                 self._item_progress[idx]["error"] = str(e)
+                self.after(0, lambda: self.detail_bar.configure(value=100))
+                self.after(0, lambda: self.overall_bar.configure(value=100))
 
         # All items processed
         log.info("_process_queue: all items done")
