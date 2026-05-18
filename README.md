@@ -30,6 +30,7 @@ python main.py --solution R2D2L2U2 --no-header --no-details    # puzzle grid onl
 python main.py --solution R2D2L2U2 --saturation 0.5          # set both min/max saturation to 0.5
 python main.py --solution R2D2L2U2 --saturation-min 0.3 --saturation-max 0.9  # gradient across tiles
 python main.py --solution R2D2L2U2 --brightness-min 0.2 --brightness-max 0.8  # brightness gradient
+python main.py --settings my_settings.json --solution R2D2L2U2   # load settings from JSON
 ```
 
 ```
@@ -87,7 +88,71 @@ python main.py --image -f replay.txt --size 4x4 -o output.png    # explicit outp
 | | `--brightness-min` | | Brightness minimum for tile gradient (0–1, default: 0.6) |
 | | `--brightness-max` | | Brightness maximum for tile gradient (0–1, default: 0.6) |
 | **Hardware** | `--no-gpu` | `-g` | Disable GPU acceleration (GPU is auto-detected by default) |
+| **Settings** | `--settings` | | Load settings from a JSON file saved from the GUI. Explicit CLI flags override file values |
 | **Debug** | `--log` | `-l` | Enable debug logging to `logs/debug_\<timestamp\>.log` |
+
+## Settings Management
+
+The GUI includes three settings controls at the bottom of the Settings panel:
+
+- **Reset to Defaults** — resets all controls to their default values (render options, colors, sliders, etc.)
+- **Save Settings...** — exports all current settings to a JSON file. Output folder is excluded.
+- **Load Settings...** — imports settings from a previously saved JSON file and applies them to the GUI.
+
+### CLI `--settings`
+
+Use a settings file saved from the GUI directly on the command line:
+
+```
+python main.py --settings my_settings.json --solution R2D2L2U2 --size 4x4
+```
+
+Explicit CLI flags override values from the settings file, so you can use a base config and tweak individual parameters:
+
+```
+python main.py --settings base.json --solution R2D2L2U2 --fps 120 --hue-start 180
+```
+
+### JSON format
+
+Settings files use a simple flat JSON structure. Example:
+
+```json
+{
+  "quality": "1080p",
+  "fps": 60,
+  "compression": 18,
+  "speed_factor": "1",
+  "use_gpu": true,
+  "slow_render": false,
+  "upscale": false,
+  "encoder": "Auto",
+  "main_scheme": "fringe",
+  "force_main": false,
+  "no_layout": false,
+  "no_border": false,
+  "no_secondary_border": false,
+  "no_grid_bars": false,
+  "no_numbers": false,
+  "no_header": false,
+  "no_details": false,
+  "dynamic_md": false,
+  "cycles_detection": false,
+  "adjust_height": false,
+  "animate_moves": false,
+  "hue_start": 0.0,
+  "hue_end": 330.0,
+  "saturation_min": 78,
+  "saturation_max": 78,
+  "brightness_min": 60,
+  "brightness_max": 60,
+  "grid1_color": "C86767",
+  "grid2_color": "8DB3FF",
+  "tile_bg_color": "454545"
+}
+```
+
+Saturation and brightness values are stored at GUI scale (0–100), they are automatically converted to the 0–1 range when used via `--settings`.
 
 ## Encoder Options
 

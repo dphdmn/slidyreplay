@@ -1,3 +1,4 @@
+import json
 import tkinter as tk
 from tkinter import colorchooser, filedialog, scrolledtext, ttk
 import threading
@@ -261,6 +262,203 @@ def render_puzzle_image(
 
     img.save(output_path, "PNG")
     print(f"Image saved to: {output_path}")
+
+
+# ─── Settings persistence ─────────────────────────────────────────
+
+SETTINGS_DEFAULTS = {
+    "quality": "1080p",
+    "fps": 60,
+    "compression": 18,
+    "speed_factor": "1",
+    "use_gpu": None,
+    "slow_render": False,
+    "upscale": False,
+    "encoder": "Auto",
+    "main_scheme": "fringe",
+    "force_main": False,
+    "no_layout": False,
+    "no_border": False,
+    "no_secondary_border": False,
+    "no_grid_bars": False,
+    "no_numbers": False,
+    "no_header": False,
+    "no_details": False,
+    "dynamic_md": False,
+    "cycles_detection": False,
+    "adjust_height": False,
+    "animate_moves": False,
+    "hue_start": 0,
+    "hue_end": 330,
+    "saturation_min": 78,
+    "saturation_max": 78,
+    "brightness_min": 60,
+    "brightness_max": 60,
+    "grid1_color": "C86767",
+    "grid2_color": "8DB3FF",
+    "tile_bg_color": "454545",
+}
+
+
+def _gui_get_settings(gui):
+    d = {}
+    d["quality"] = gui.quality_preset_var.get()
+    d["fps"] = gui.fps_var.get()
+    d["compression"] = gui.compression_var.get()
+    d["speed_factor"] = gui.speed_factor_var.get()
+    d["use_gpu"] = gui.use_gpu_var.get()
+    d["slow_render"] = gui.slow_render_var.get()
+    d["upscale"] = gui.upscale_var.get()
+    d["encoder"] = gui.encoder_var.get()
+    d["main_scheme"] = gui.main_scheme_var.get()
+    d["force_main"] = gui.force_main_var.get()
+    d["no_layout"] = gui.no_layout_var.get()
+    d["no_border"] = gui.no_border_var.get()
+    d["no_secondary_border"] = gui.no_secondary_border_var.get()
+    d["no_grid_bars"] = gui.no_grid_bars_var.get()
+    d["no_numbers"] = gui.no_numbers_var.get()
+    d["no_header"] = gui.no_header_var.get()
+    d["no_details"] = gui.no_details_var.get()
+    d["dynamic_md"] = gui.dynamic_md_var.get()
+    d["cycles_detection"] = gui.cycles_detection_var.get()
+    d["adjust_height"] = gui.adjust_height_var.get()
+    d["animate_moves"] = gui.animate_moves_var.get()
+    d["hue_start"] = gui.hue_start_var.get()
+    d["hue_end"] = gui.hue_end_var.get()
+    d["saturation_min"] = gui.saturation_min_var.get()
+    d["saturation_max"] = gui.saturation_max_var.get()
+    d["brightness_min"] = gui.brightness_min_var.get()
+    d["brightness_max"] = gui.brightness_max_var.get()
+    d["grid1_color"] = gui._color_vars["grid1"].get()
+    d["grid2_color"] = gui._color_vars["grid2"].get()
+    d["tile_bg_color"] = gui._color_vars["tile_bg"].get()
+    return d
+
+
+def _gui_apply_settings(gui, d):
+    if "quality" in d and d["quality"] in gui._quality_presets:
+        gui.quality_preset_var.set(d["quality"])
+    if "fps" in d:
+        gui.fps_var.set(d["fps"])
+    if "compression" in d:
+        gui.compression_var.set(d["compression"])
+    if "speed_factor" in d:
+        gui.speed_factor_var.set(str(d["speed_factor"]))
+    if "use_gpu" in d:
+        gui.use_gpu_var.set(d["use_gpu"])
+    if "slow_render" in d:
+        gui.slow_render_var.set(d["slow_render"])
+    if "upscale" in d:
+        gui.upscale_var.set(d["upscale"])
+    if "encoder" in d:
+        gui.encoder_var.set(d["encoder"])
+    if "main_scheme" in d:
+        gui.main_scheme_var.set(d["main_scheme"])
+    if "force_main" in d:
+        gui.force_main_var.set(d["force_main"])
+    if "no_layout" in d:
+        gui.no_layout_var.set(d["no_layout"])
+    if "no_border" in d:
+        gui.no_border_var.set(d["no_border"])
+    if "no_secondary_border" in d:
+        gui.no_secondary_border_var.set(d["no_secondary_border"])
+    if "no_grid_bars" in d:
+        gui.no_grid_bars_var.set(d["no_grid_bars"])
+    if "no_numbers" in d:
+        gui.no_numbers_var.set(d["no_numbers"])
+    if "no_header" in d:
+        gui.no_header_var.set(d["no_header"])
+    if "no_details" in d:
+        gui.no_details_var.set(d["no_details"])
+    if "dynamic_md" in d:
+        gui.dynamic_md_var.set(d["dynamic_md"])
+    if "cycles_detection" in d:
+        gui.cycles_detection_var.set(d["cycles_detection"])
+    if "adjust_height" in d:
+        gui.adjust_height_var.set(d["adjust_height"])
+    if "animate_moves" in d:
+        gui.animate_moves_var.set(d["animate_moves"])
+    if "hue_start" in d:
+        gui.hue_start_var.set(d["hue_start"])
+    if "hue_end" in d:
+        gui.hue_end_var.set(d["hue_end"])
+    if "saturation_min" in d:
+        gui.saturation_min_var.set(d["saturation_min"])
+    if "saturation_max" in d:
+        gui.saturation_max_var.set(d["saturation_max"])
+    if "brightness_min" in d:
+        gui.brightness_min_var.set(d["brightness_min"])
+    if "brightness_max" in d:
+        gui.brightness_max_var.set(d["brightness_max"])
+    if "grid1_color" in d:
+        gui._color_vars["grid1"].set(d["grid1_color"])
+    if "grid2_color" in d:
+        gui._color_vars["grid2"].set(d["grid2_color"])
+    if "tile_bg_color" in d:
+        gui._color_vars["tile_bg"].set(d["tile_bg_color"])
+    gui._schedule_preview()
+
+
+def _gui_reset_defaults(gui):
+    d = dict(SETTINGS_DEFAULTS)
+    d["output_folder"] = os.path.join(script_dir, "replays")
+    d["use_gpu"] = gui._gpu_available
+    _gui_apply_settings(gui, d)
+
+
+_SETTINGS_TO_ARGS = {
+    "quality": ("quality", lambda v: {"720p": 720, "1080p": 1080, "1440p (2K)": 1440, "2160p (4K)": 2160}.get(v, 1080)),
+    "fps": ("fps", None),
+    "compression": ("compression", None),
+    "slow_render": ("slow_render", None),
+    "speed_factor": ("speedup", float),
+    "upscale": ("upscale", None),
+    "main_scheme": ("main_scheme", None),
+    "force_main": ("force_main", None),
+    "no_layout": ("no_layout", None),
+    "no_border": ("no_border", None),
+    "no_secondary_border": ("no_secondary_border", None),
+    "no_grid_bars": ("no_grid_bars", None),
+    "no_numbers": ("no_numbers", None),
+    "no_header": ("no_header", None),
+    "no_details": ("no_details", None),
+    "dynamic_md": ("dynamic_md", None),
+    "cycles_detection": ("cycles_detection", None),
+    "adjust_height": ("adjust_height", None),
+    "animate_moves": ("animate_moves", None),
+    "hue_start": ("hue_start", None),
+    "hue_end": ("hue_end", None),
+    "saturation_min": ("saturation_min", lambda v: v / 100.0),
+    "saturation_max": ("saturation_max", lambda v: v / 100.0),
+    "brightness_min": ("brightness_min", lambda v: v / 100.0),
+    "brightness_max": ("brightness_max", lambda v: v / 100.0),
+    "grid1_color": ("grid1_color", None),
+    "grid2_color": ("grid2_color", None),
+    "tile_bg_color": ("tile_bg_color", None),
+}
+
+
+def _apply_settings_to_args(args, settings, parser_defaults):
+    for json_key, (arg_dest, converter) in _SETTINGS_TO_ARGS.items():
+        if json_key not in settings:
+            continue
+        current = getattr(args, arg_dest, None)
+        if current != parser_defaults.get(arg_dest):
+            continue
+        val = settings[json_key]
+        if converter is not None:
+            val = converter(val)
+        setattr(args, arg_dest, val)
+
+
+def _save_settings_to_file(settings_dict, filepath):
+    with open(filepath, "w") as f:
+        json.dump(settings_dict, f, indent=2, ensure_ascii=False)
+
+
+def _load_settings_from_file(filepath):
+    with open(filepath, "r") as f:
+        return json.load(f)
 
 
 class ReplayGUI(tb.Window):
@@ -611,6 +809,27 @@ class ReplayGUI(tb.Window):
                        bootstyle="round-toggle").grid(row=3, column=2, sticky="w")
         tb.Checkbutton(d_grid, text="Animate moves", variable=self.animate_moves_var,
                        bootstyle="round-toggle").grid(row=4, column=2, sticky="w")
+
+        # ════════ SETTINGS MANAGEMENT ════════
+        tb.Label(settings, text="SETTINGS", font=_sec_font, bootstyle="secondary").grid(
+            row=r, column=0, sticky="w", padx=12, pady=(6, 0))
+        r += 1
+        tb.Separator(settings, bootstyle="secondary").grid(
+            row=r, column=0, sticky="ew", pady=(1, 4), padx=12)
+        r += 1
+
+        sbtn_row = tb.Frame(settings)
+        sbtn_row.grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
+        sbtn_row.grid_columnconfigure(0, weight=1)
+        sbtn_row.grid_columnconfigure(1, weight=1)
+        sbtn_row.grid_columnconfigure(2, weight=1)
+        tb.Button(sbtn_row, text="Reset to Defaults", command=self._reset_settings,
+                  bootstyle="secondary-outline").grid(row=0, column=0, padx=(0, 3))
+        tb.Button(sbtn_row, text="Save Settings...", command=self._save_settings_dialog,
+                  bootstyle="secondary-outline").grid(row=0, column=1, padx=3)
+        tb.Button(sbtn_row, text="Load Settings...", command=self._load_settings_dialog,
+                  bootstyle="secondary-outline").grid(row=0, column=2, padx=(3, 0))
+        r += 1
 
         # ════════ COLORS (moved to Preview section) ════════
 
@@ -1706,6 +1925,33 @@ class ReplayGUI(tb.Window):
         self.render_img_btn.config(state=st)
         self.cancel_btn.config(state="normal" if busy else "disabled")
 
+    def _reset_settings(self):
+        _gui_reset_defaults(self)
+
+    def _save_settings_dialog(self):
+        path = filedialog.asksaveasfilename(
+            title="Save Settings",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        settings = _gui_get_settings(self)
+        _save_settings_to_file(settings, path)
+
+    def _load_settings_dialog(self):
+        path = filedialog.askopenfilename(
+            title="Load Settings",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            settings = _load_settings_from_file(path)
+            _gui_apply_settings(self, settings)
+        except Exception as e:
+            self.progress_text.set(f"Failed to load settings: {e}")
+
     def _on_close(self):
         log.info("=== GUI CLOSING ===")
         self.cancel_flag = True
@@ -1809,8 +2055,24 @@ Examples:
     parser.add_argument("--brightness", type=float, default=None, help="Color brightness for both min and max (0-1)")
     parser.add_argument("--brightness-min", type=float, default=0.6, help="Color brightness min (0-1, default: 0.6)")
     parser.add_argument("--brightness-max", type=float, default=0.6, help="Color brightness max (0-1, default: 0.6)")
+    parser.add_argument("--settings", type=str, default=None,
+                        help="Load settings from a JSON file (saved from GUI). "
+                             "Explicit CLI flags override settings file values.")
+
+    parser_defaults = {}
+    for action in parser._actions:
+        if action.default is not argparse.SUPPRESS and action.dest != 'settings':
+            parser_defaults[action.dest] = action.default
 
     args = parser.parse_args()
+
+    if args.settings:
+        try:
+            settings_data = _load_settings_from_file(args.settings)
+            _apply_settings_to_args(args, settings_data, parser_defaults)
+        except Exception as e:
+            print(f"[Error] Failed to load settings file '{args.settings}': {e}", file=sys.stderr)
+            sys.exit(1)
 
     main_scheme = args.main_scheme
     force_main = args.force_main
@@ -1849,7 +2111,7 @@ Examples:
         saturation_min=args.saturation_min,
         saturation_max=args.saturation_max,
         brightness_min=args.brightness_min,
-        brightness_max=args.brightness,
+        brightness_max=args.brightness_max,
     )
 
     if args.speedup <= 0:
@@ -1873,6 +2135,12 @@ Examples:
         if getattr(sys, 'frozen', False):
             ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
         gui = ReplayGUI()
+        if args.settings:
+            try:
+                settings_data = _load_settings_from_file(args.settings)
+                _gui_apply_settings(gui, settings_data)
+            except Exception as e:
+                log.warning(f"Failed to apply settings to GUI: {e}")
         if log_path:
             log.info(f"=== GUI STARTED === log_path={log_path}")
         gui.mainloop()
