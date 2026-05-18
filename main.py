@@ -603,24 +603,7 @@ class ReplayGUI(tb.Window):
         _sec_font = (FONT_FAMILY, 9, "bold")
         _tog_font = (FONT_FAMILY, 9)
 
-        # ════════ OUTPUT ════════
-        tb.Label(settings, text="OUTPUT", font=_sec_font, bootstyle="secondary").grid(
-            row=r, column=0, sticky="w", padx=12, pady=(6, 0))
-        r += 1
-        tb.Separator(settings, bootstyle="secondary").grid(
-            row=r, column=0, sticky="ew", pady=(1, 4), padx=12)
-        r += 1
 
-        out_row = tb.Frame(settings)
-        out_row.grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
-        out_row.grid_columnconfigure(1, weight=1)
-        tb.Label(out_row, text="Output folder", font=(FONT_FAMILY, 9)).grid(
-            row=0, column=0, sticky="w", padx=(0, 6))
-        self.out_entry = tb.Entry(out_row, textvariable=self.out_folder_var)
-        self.out_entry.grid(row=0, column=1, sticky="ew", padx=(0, 4))
-        tb.Button(out_row, text="Browse...", command=self._browse_output,
-                  bootstyle="secondary-outline", width=9).grid(row=0, column=2)
-        r += 1
 
         # ════════ QUALITY ════════
         tb.Label(settings, text="QUALITY", font=_sec_font, bootstyle="secondary").grid(
@@ -800,43 +783,29 @@ class ReplayGUI(tb.Window):
         d_grid.grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
         d_grid.grid_columnconfigure(0, weight=1)
         d_grid.grid_columnconfigure(1, weight=1)
-        d_grid.grid_columnconfigure(2, weight=1)
         r += 1
 
         _col_hdr = {"font": (FONT_FAMILY, 9), "foreground": "#aaa", "anchor": "w"}
 
-        # Column 0: Puzzle
-        tb.Label(d_grid, text="Puzzle", **_col_hdr).grid(row=0, column=0, sticky="w", pady=(0, 2))
-        tb.Checkbutton(d_grid, text="No border", variable=self.no_border_var,
-                       bootstyle="round-toggle").grid(row=1, column=0, sticky="w")
-        tb.Checkbutton(d_grid, text="No sec border", variable=self.no_secondary_border_var,
-                       bootstyle="round-toggle").grid(row=2, column=0, sticky="w")
-        tb.Checkbutton(d_grid, text="No numbers", variable=self.no_numbers_var,
-                       bootstyle="round-toggle").grid(row=3, column=0, sticky="w")
-        tb.Checkbutton(d_grid, text="No grid bars", variable=self.no_grid_bars_var,
-                       bootstyle="round-toggle").grid(row=4, column=0, sticky="w")
- 
-        # Column 1: Layout
-        tb.Label(d_grid, text="Layout", **_col_hdr).grid(row=0, column=1, sticky="w", pady=(0, 2))
+        # Column 0: Layout
+        tb.Label(d_grid, text="Layout", **_col_hdr).grid(row=0, column=0, sticky="w", pady=(0, 2))
         tb.Checkbutton(d_grid, text="No header", variable=self.no_header_var,
-                       bootstyle="round-toggle").grid(row=1, column=1, sticky="w")
+                       bootstyle="round-toggle").grid(row=1, column=0, sticky="w")
         tb.Checkbutton(d_grid, text="No details", variable=self.no_details_var,
-                       bootstyle="round-toggle").grid(row=2, column=1, sticky="w")
+                       bootstyle="round-toggle").grid(row=2, column=0, sticky="w")
         tb.Checkbutton(d_grid, text="No layout", variable=self.no_layout_var,
-                       bootstyle="round-toggle").grid(row=3, column=1, sticky="w")
+                       bootstyle="round-toggle").grid(row=3, column=0, sticky="w")
         tb.Checkbutton(d_grid, text="Adjust height", variable=self.adjust_height_var,
-                       bootstyle="round-toggle").grid(row=4, column=1, sticky="w")
+                       bootstyle="round-toggle").grid(row=4, column=0, sticky="w")
 
-        # Column 2: Extra
-        tb.Label(d_grid, text="Extra", **_col_hdr).grid(row=0, column=2, sticky="w", pady=(0, 2))
+        # Column 1: Extra
+        tb.Label(d_grid, text="Extra", **_col_hdr).grid(row=0, column=1, sticky="w", pady=(0, 2))
         tb.Checkbutton(d_grid, text="Dynamic MD", variable=self.dynamic_md_var,
-                       bootstyle="round-toggle").grid(row=1, column=2, sticky="w")
-        tb.Checkbutton(d_grid, text="Force main", variable=self.force_main_var,
-                       bootstyle="round-toggle").grid(row=2, column=2, sticky="w")
+                       bootstyle="round-toggle").grid(row=1, column=1, sticky="w")
         tb.Checkbutton(d_grid, text="Cycle detect", variable=self.cycles_detection_var,
-                       bootstyle="round-toggle").grid(row=3, column=2, sticky="w")
+                       bootstyle="round-toggle").grid(row=2, column=1, sticky="w")
         tb.Checkbutton(d_grid, text="Animate moves", variable=self.animate_moves_var,
-                       bootstyle="round-toggle").grid(row=4, column=2, sticky="w")
+                       bootstyle="round-toggle").grid(row=3, column=1, sticky="w")
 
         # ════════ CURSOR ════════
         tb.Label(settings, text="CURSOR", font=_sec_font, bootstyle="secondary").grid(
@@ -1017,6 +986,17 @@ class ReplayGUI(tb.Window):
                                          values=["fringe", "rows", "columns"],
                                          state="readonly", width=9)
         main_scheme_combo.grid(row=0, column=1, sticky="ew")
+        tb.Checkbutton(scheme_row, text="Force main", variable=self.force_main_var,
+                       bootstyle="round-toggle").grid(row=0, column=2, padx=(8, 0))
+
+        for text, var in [("No border", self.no_border_var),
+                          ("No sec border", self.no_secondary_border_var),
+                          ("No numbers", self.no_numbers_var),
+                          ("No grid bars", self.no_grid_bars_var)]:
+            row = tb.Frame(sliders_frame)
+            row.pack(fill="x", padx=4, pady=(0, 1))
+            tb.Checkbutton(row, text=text, variable=var,
+                           bootstyle="round-toggle").pack(side="left")
 
         def _preview_pick_color(name):
             initial = self._color_vars[name].get()
@@ -1172,13 +1152,23 @@ class ReplayGUI(tb.Window):
         q_count.pack(side="right")
 
         q_render = tb.Frame(q_frame)
-        q_render.grid(row=2, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 6))
+        q_render.grid(row=2, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 2))
         self.gen_btn = tb.Button(q_render, text="Render", command=self._generate,
                                  bootstyle="success", width=12)
         self.gen_btn.pack(side="left", padx=(0, 6))
         self.cancel_btn = tb.Button(q_render, text="Cancel", command=self._cancel,
                                     bootstyle="secondary", state="disabled")
         self.cancel_btn.pack(side="left")
+
+        out_row = tb.Frame(q_frame)
+        out_row.grid(row=3, column=0, columnspan=2, sticky="ew", padx=6, pady=(2, 6))
+        out_row.grid_columnconfigure(1, weight=1)
+        tb.Label(out_row, text="Output folder", font=(FONT_FAMILY, 9)).grid(
+            row=0, column=0, sticky="w", padx=(0, 6))
+        self.out_entry = tb.Entry(out_row, textvariable=self.out_folder_var)
+        self.out_entry.grid(row=0, column=1, sticky="ew", padx=(0, 4))
+        tb.Button(out_row, text="Browse...", command=self._browse_output,
+                  bootstyle="secondary-outline", width=9).grid(row=0, column=2)
 
         # ── Generated replays ──
         lst_frame = tb.LabelFrame(right, text="Generated Replays")
@@ -1340,7 +1330,7 @@ class ReplayGUI(tb.Window):
                         init_matrix = apply_moves(init_matrix, reverse_solution(expand_solution(sol)))
 
                 if w > 16 or h > 16:
-                    info_text = f"{w}x{h} · {self.main_scheme_var.get().capitalize()} ({w}x{h} puzzle too large for a dynamic preview)"
+                    info_text = f"{w}x{h} · {self.main_scheme_var.get().capitalize()} ({w}x{h} puzzle too large for a preview)"
                     w = h = 4
                     sat_min = self.saturation_min_var.get() / 100.0
                     sat_max = self.saturation_max_var.get() / 100.0
@@ -1764,6 +1754,8 @@ class ReplayGUI(tb.Window):
             self.queue_listbox.insert("end", item["display_name"])
         n = len(self.render_queue)
         self.queue_count_var.set(f"{n} item{'s' if n != 1 else ''}")
+        self._preview_sel_idx = -1
+        self._schedule_preview()
 
     def _generate(self):
         if not self.render_queue:
@@ -2064,6 +2056,7 @@ class ReplayGUI(tb.Window):
             self._executor = None
         self._batch_futures = []
         self._current_item_idx = -1
+        self._schedule_preview()
 
     def _add_to_list(self, path):
         self.generated_files.append(path)

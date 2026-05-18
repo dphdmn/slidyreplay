@@ -1,5 +1,4 @@
 - batches optimization idea
 - batch mode stuff (relays and marathons with data) / concact bulk render results
-- [DONE] Cursor dancing
 - small resolution font size issues
-- reset preview after render finshed
+- sometimes progress bars are still being stuck at 99%
