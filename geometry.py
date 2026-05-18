@@ -340,8 +340,10 @@ class RenderOptions:
     animate_moves: bool = False
     hue_start: float = 0.0
     hue_end: float = 330.0
-    saturation: float = 0.78
-    brightness: float = 0.6
+    saturation_min: float = 0.78
+    saturation_max: float = 0.78
+    brightness_min: float = 0.6
+    brightness_max: float = 0.6
 
 
 @dataclass

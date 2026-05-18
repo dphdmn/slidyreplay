@@ -27,6 +27,9 @@ python main.py --solution R2D2L2U2 --no-header                 # hide timer bar,
 python main.py --solution R2D2L2U2 --no-details                # hide stats panel, keep timer
 python main.py --solution R2D2L2U2 --dynamic-md                # show right-side MD timer
 python main.py --solution R2D2L2U2 --no-header --no-details    # puzzle grid only (= --no-layout)
+python main.py --solution R2D2L2U2 --saturation 0.5          # set both min/max saturation to 0.5
+python main.py --solution R2D2L2U2 --saturation-min 0.3 --saturation-max 0.9  # gradient across tiles
+python main.py --solution R2D2L2U2 --brightness-min 0.2 --brightness-max 0.8  # brightness gradient
 ```
 
 ```
@@ -71,14 +74,18 @@ python main.py --image -f replay.txt --size 4x4 -o output.png    # explicit outp
 | | `--main-scheme` | | Color scheme: `fringe`, `rows`, or `columns` (default: `fringe`) |
 | | `--force-main` | | Force main scheme everywhere (disable grids detection) |
 | | `--animate-moves` | | Animate tile sliding between moves (smooth transitions) |
-| | `--grid1-color` | | Grid 1 (red sections) color as hex, e.g. `FF0000` |
+| | `--cycles-detection` | | EXPERIMENTAL: detect and display cycling tiles in grid stats (may increase analysis time) |
+| **Colors** | `--grid1-color` | | Grid 1 (red sections) color as hex, e.g. `FF0000` |
 | | `--grid2-color` | | Grid 2 (blue sections) color as hex, e.g. `0000FF` |
 | | `--tile-bg-color` | | Tile background color as hex, e.g. `969696` |
 | | `--hue-start` | | Hue range start (0–330, default: 0) |
 | | `--hue-end` | | Hue range end (0–330, default: 330) |
-| | `--saturation` | | Color saturation (0–1, default: 0.78) |
-| | `--brightness` | | Color brightness (0–1, default: 0.6) |
-| | `--cycles-detection` | | EXPERIMENTAL: detect and display cycling tiles in grid stats (may increase analysis time) |
+| | `--saturation` | | Saturation, sets both min and max (0–1). Overrides `--saturation-{min,max}` |
+| | `--saturation-min` | | Saturation minimum for tile gradient (0–1, default: 0.78) |
+| | `--saturation-max` | | Saturation maximum for tile gradient (0–1, default: 0.78) |
+| | `--brightness` | | Brightness, sets both min and max (0–1). Overrides `--brightness-{min,max}` |
+| | `--brightness-min` | | Brightness minimum for tile gradient (0–1, default: 0.6) |
+| | `--brightness-max` | | Brightness maximum for tile gradient (0–1, default: 0.6) |
 | **Hardware** | `--no-gpu` | `-g` | Disable GPU acceleration (GPU is auto-detected by default) |
 | **Debug** | `--log` | `-l` | Enable debug logging to `logs/debug_\<timestamp\>.log` |
 

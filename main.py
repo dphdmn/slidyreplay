@@ -219,8 +219,10 @@ def render_puzzle_image(
 
     all_fringe_schemes = get_all_fringe_schemes(
         grid_states, main_scheme,
-        saturation=opts.saturation,
-        lightness=opts.brightness,
+        saturation_min=opts.saturation_min,
+        saturation_max=opts.saturation_max,
+        lightness_min=opts.brightness_min,
+        lightness_max=opts.brightness_max,
         hue_start=opts.hue_start,
         hue_end=opts.hue_end,
     )
@@ -287,8 +289,10 @@ class ReplayGUI(tb.Window):
         self.force_main_var = tk.BooleanVar(value=False)
         self.hue_start_var = tk.DoubleVar(value=0)
         self.hue_end_var = tk.DoubleVar(value=330)
-        self.saturation_var = tk.IntVar(value=78)
-        self.brightness_var = tk.IntVar(value=60)
+        self.saturation_min_var = tk.IntVar(value=78)
+        self.saturation_max_var = tk.IntVar(value=78)
+        self.brightness_min_var = tk.IntVar(value=60)
+        self.brightness_max_var = tk.IntVar(value=60)
         self._preview_job = None
         self._preview_photo = None
         self._preview_sel_idx = -1
@@ -355,7 +359,7 @@ class ReplayGUI(tb.Window):
 
         # ── Three-column layout using grid ──
         root.grid_columnconfigure(0, weight=0, minsize=300)
-        root.grid_columnconfigure(1, weight=1, minsize=400)
+        root.grid_columnconfigure(1, weight=1, minsize=480)
         root.grid_columnconfigure(2, weight=1, minsize=300)
         root.grid_rowconfigure(0, weight=1)
 
@@ -665,26 +669,33 @@ class ReplayGUI(tb.Window):
         self.mid.grid_columnconfigure(0, weight=1)
         mid = self.mid
 
-        # Preview frame
+        # Preview frame – sliders left, preview image right
         self.preview_frame = tb.LabelFrame(mid, text="Preview")
         self.preview_frame.pack(fill="x", pady=(0, 4))
-        preview_inner = tb.Frame(self.preview_frame)
-        preview_inner.pack(pady=4)
-        self._preview_label = tb.Label(preview_inner)
+        preview_container = tb.Frame(self.preview_frame)
+        preview_container.pack(fill="x", pady=4, padx=2)
+        preview_container.grid_columnconfigure(0, weight=0)
+        preview_container.grid_columnconfigure(1, weight=1)
+
+        sliders_frame = tb.Frame(preview_container)
+        sliders_frame.grid(row=0, column=0, sticky="ns", padx=(0, 8))
+
+        preview_right = tb.Frame(preview_container)
+        preview_right.grid(row=0, column=1, sticky="nsew")
+        self._preview_right_frame = preview_right
+        self._preview_label = tb.Label(preview_right)
         self._preview_label.pack()
-        self._preview_info = tb.Label(self.preview_frame, text="4x4 · Fringe",
+        self._preview_info = tb.Label(preview_right, text="4x4 · Fringe",
                                        font=(FONT_FAMILY, 8), foreground="#888")
-        self._preview_info.pack(anchor="w", padx=4, pady=(0, 2))
-        tb.Label(self.preview_frame, text="Select a replay in the queue to preview",
-                 font=(FONT_FAMILY, 7), foreground="#666").pack(anchor="w", padx=4, pady=(0, 2))
+        self._preview_info.pack(anchor="w")
 
         def _add_slider(parent, label, var, from_, to, fmt="{:.0f}"):
             row = tb.Frame(parent)
-            row.pack(fill="x", padx=8, pady=(0, 2))
+            row.pack(fill="x", padx=4, pady=(0, 1))
             row.grid_columnconfigure(1, weight=1)
             tb.Label(row, text=label, font=(FONT_FAMILY, 8)).grid(row=0, column=0, sticky="w", padx=(0, 4))
-            tb.Scale(row, from_=from_, to=to, variable=var, orient="horizontal", bootstyle="primary").grid(
-                row=0, column=1, sticky="ew", padx=(0, 4))
+            tb.Scale(row, from_=from_, to=to, variable=var, orient="horizontal",
+                     bootstyle="primary").grid(row=0, column=1, sticky="ew", padx=(0, 4))
             val_lbl = tb.Label(row, text=fmt.format(var.get()), width=4, font=(FONT_FAMILY, 8, "bold"))
             val_lbl.grid(row=0, column=2, sticky="w")
             def _on_change(*_, v=var, lbl=val_lbl, f=fmt):
@@ -692,10 +703,12 @@ class ReplayGUI(tb.Window):
                 self._schedule_preview()
             var.trace_add("write", _on_change)
 
-        _add_slider(self.preview_frame, "Hue start:", self.hue_start_var, 0, 330, "{:.0f}")
-        _add_slider(self.preview_frame, "Hue end:", self.hue_end_var, 0, 330, "{:.0f}")
-        _add_slider(self.preview_frame, "Saturation:", self.saturation_var, 0, 100, "{}%")
-        _add_slider(self.preview_frame, "Brightness:", self.brightness_var, 0, 100, "{}%")
+        _add_slider(sliders_frame, "Hue start:", self.hue_start_var, 0, 330, "{:.0f}")
+        _add_slider(sliders_frame, "Hue end:", self.hue_end_var, 0, 330, "{:.0f}")
+        _add_slider(sliders_frame, "Sat min:", self.saturation_min_var, 0, 100, "{}%")
+        _add_slider(sliders_frame, "Sat max:", self.saturation_max_var, 0, 100, "{}%")
+        _add_slider(sliders_frame, "Bright min:", self.brightness_min_var, 0, 100, "{}%")
+        _add_slider(sliders_frame, "Bright max:", self.brightness_max_var, 0, 100, "{}%")
 
         # File selection
         tb.Label(mid, text="File:", font=(FONT_FAMILY, 9)).pack(anchor="w")
@@ -959,8 +972,10 @@ class ReplayGUI(tb.Window):
                     return
                 w = h = 4
                 info_text = "4x4 · Fringe"
-                sat = self.saturation_var.get() / 100.0
-                light = self.brightness_var.get() / 100.0
+                sat_min = self.saturation_min_var.get() / 100.0
+                sat_max = self.saturation_max_var.get() / 100.0
+                light_min = self.brightness_min_var.get() / 100.0
+                light_max = self.brightness_max_var.get() / 100.0
                 hue_start = self.hue_start_var.get()
                 hue_end = self.hue_end_var.get()
                 scheme = self.main_scheme_var.get()
@@ -996,8 +1011,10 @@ class ReplayGUI(tb.Window):
                 if w > 16 or h > 16:
                     info_text = f"{w}x{h} · {self.main_scheme_var.get().capitalize()} ({w}x{h} puzzle too large for a dynamic preview)"
                     w = h = 4
-                    sat = self.saturation_var.get() / 100.0
-                    light = self.brightness_var.get() / 100.0
+                    sat_min = self.saturation_min_var.get() / 100.0
+                    sat_max = self.saturation_max_var.get() / 100.0
+                    light_min = self.brightness_min_var.get() / 100.0
+                    light_max = self.brightness_max_var.get() / 100.0
                     hue_start = self.hue_start_var.get()
                     hue_end = self.hue_end_var.get()
                     scheme = self.main_scheme_var.get()
@@ -1008,8 +1025,10 @@ class ReplayGUI(tb.Window):
                     matrix[h-1][w-1] = 0
                 else:
                     info_text = f"{w}x{h} · {self.main_scheme_var.get().capitalize()}"
-                    sat = self.saturation_var.get() / 100.0
-                    light = self.brightness_var.get() / 100.0
+                    sat_min = self.saturation_min_var.get() / 100.0
+                    sat_max = self.saturation_max_var.get() / 100.0
+                    light_min = self.brightness_min_var.get() / 100.0
+                    light_max = self.brightness_max_var.get() / 100.0
                     hue_start = self.hue_start_var.get()
                     hue_end = self.hue_end_var.get()
                     scheme = self.main_scheme_var.get()
@@ -1037,8 +1056,10 @@ class ReplayGUI(tb.Window):
                 else:
                     info_text = f"{w}x{h} · {self.main_scheme_var.get().capitalize()}"
 
-                sat = self.saturation_var.get() / 100.0
-                light = self.brightness_var.get() / 100.0
+                sat_min = self.saturation_min_var.get() / 100.0
+                sat_max = self.saturation_max_var.get() / 100.0
+                light_min = self.brightness_min_var.get() / 100.0
+                light_max = self.brightness_max_var.get() / 100.0
                 hue_start = self.hue_start_var.get()
                 hue_end = self.hue_end_var.get()
                 scheme = self.main_scheme_var.get()
@@ -1049,7 +1070,7 @@ class ReplayGUI(tb.Window):
                 matrix = [[r * w + c + 1 for c in range(w)] for r in range(h)]
                 matrix[h-1][w-1] = 0
 
-            all_fringe_schemes = get_all_fringe_schemes(grid_states, scheme, sat, light, hue_start, hue_end)
+            all_fringe_schemes = get_all_fringe_schemes(grid_states, scheme, sat_min, sat_max, light_min, light_max, hue_start, hue_end)
 
             opts = RenderOptions(
                 grid_only=True,
@@ -1064,14 +1085,7 @@ class ReplayGUI(tb.Window):
 
             try:
                 self.update_idletasks()
-                avail_w = self.preview_frame.winfo_width() - 20
-                total_h = self._prev_root_h if self._prev_root_h > 0 else self.winfo_height()
-                file_row_h = max(1, self.file_row.winfo_height())
-                text_h = max(1, self.input_text.winfo_height())
-                ov_h = max(1, self.ov_frame.winfo_height())
-                other_h = 210
-                avail_h = max(50, total_h - file_row_h - text_h - ov_h - other_h)
-                avail = max(50, min(avail_w, avail_h))
+                avail = max(50, self._preview_right_frame.winfo_width() - 10)
             except Exception:
                 avail = 200
             tile_size = max(1, avail // max(w, h))
@@ -1114,8 +1128,10 @@ class ReplayGUI(tb.Window):
                 quality = self._get_quality()
                 scheme = self.main_scheme_var.get()
                 force_main = self.force_main_var.get()
-                sat = self.saturation_var.get() / 100.0
-                light = self.brightness_var.get() / 100.0
+                sat_min = self.saturation_min_var.get() / 100.0
+                sat_max = self.saturation_max_var.get() / 100.0
+                light_min = self.brightness_min_var.get() / 100.0
+                light_max = self.brightness_max_var.get() / 100.0
                 hue_start = self.hue_start_var.get()
                 hue_end = self.hue_end_var.get()
                 opts = RenderOptions(
@@ -1134,7 +1150,8 @@ class ReplayGUI(tb.Window):
                     tile_bg_color=parse_hex_color(self._color_vars["tile_bg"].get()),
                     animate_moves=self.animate_moves_var.get(),
                     hue_start=hue_start, hue_end=hue_end,
-                    saturation=sat, brightness=light,
+                    saturation_min=sat_min, saturation_max=sat_max,
+                    brightness_min=light_min, brightness_max=light_max,
                 )
                 opts = dataclasses.replace(opts, grid_only=True, adjust_height=True)
 
@@ -1446,8 +1463,10 @@ class ReplayGUI(tb.Window):
                     animate_moves=self.animate_moves_var.get(),
                     hue_start=self.hue_start_var.get(),
                     hue_end=self.hue_end_var.get(),
-                    saturation=self.saturation_var.get() / 100.0,
-                    brightness=self.brightness_var.get() / 100.0,
+                    saturation_min=self.saturation_min_var.get() / 100.0,
+                    saturation_max=self.saturation_max_var.get() / 100.0,
+                    brightness_min=self.brightness_min_var.get() / 100.0,
+                    brightness_max=self.brightness_max_var.get() / 100.0,
                 )
                 params = {
                     "main_scheme": self.main_scheme_var.get(),
@@ -1793,8 +1812,12 @@ Examples:
     parser.add_argument("--tile-bg-color", type=str, default=None, help="Tile background color as hex")
     parser.add_argument("--hue-start", type=float, default=0, help="Hue range start (0-360, default: 0)")
     parser.add_argument("--hue-end", type=float, default=330, help="Hue range end (0-330, default: 330)")
-    parser.add_argument("--saturation", type=float, default=0.78, help="Color saturation (0-1, default: 0.78)")
-    parser.add_argument("--brightness", type=float, default=0.6, help="Color brightness (0-1, default: 0.6)")
+    parser.add_argument("--saturation", type=float, default=None, help="Color saturation for both min and max (0-1)")
+    parser.add_argument("--saturation-min", type=float, default=0.78, help="Color saturation min (0-1, default: 0.78)")
+    parser.add_argument("--saturation-max", type=float, default=0.78, help="Color saturation max (0-1, default: 0.78)")
+    parser.add_argument("--brightness", type=float, default=None, help="Color brightness for both min and max (0-1)")
+    parser.add_argument("--brightness-min", type=float, default=0.6, help="Color brightness min (0-1, default: 0.6)")
+    parser.add_argument("--brightness-max", type=float, default=0.6, help="Color brightness max (0-1, default: 0.6)")
 
     args = parser.parse_args()
 
@@ -1811,6 +1834,10 @@ Examples:
         force_main = True
 
     from geometry import parse_hex_color
+    if args.saturation is not None:
+        args.saturation_min = args.saturation_max = args.saturation
+    if args.brightness is not None:
+        args.brightness_min = args.brightness_max = args.brightness
     opts = RenderOptions(
         grid_only=args.no_layout,
         no_border=args.no_border,
@@ -1828,8 +1855,10 @@ Examples:
         animate_moves=args.animate_moves,
         hue_start=args.hue_start,
         hue_end=args.hue_end,
-        saturation=args.saturation,
-        brightness=args.brightness,
+        saturation_min=args.saturation_min,
+        saturation_max=args.saturation_max,
+        brightness_min=args.brightness_min,
+        brightness_max=args.brightness,
     )
 
     if args.speedup <= 0:

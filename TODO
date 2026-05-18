@@ -9,7 +9,6 @@
 - small resolution font size issues
 - reset to default button
 - save settings preset to file
-
-- single frame render
-- remove initial tile size limit, or whatever is forcing puzzle preview to that small size
+- adjust better preview limits
 - ranges for brightness / saturation
+- fix puzzle override in gui updating preview on partial info
