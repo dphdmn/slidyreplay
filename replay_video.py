@@ -1556,43 +1556,49 @@ def _cubic_bezier_pt(p0, p1, p2, p3, t):
 
 def _precompute_cursor_paths(expanded_solution, initial_matrix, sol_len, w, h, tile_size):
     """Pre-compute Bézier control points for cursor path per move.
+    Cursor zips from blank center → tile near-edge on each move, so the tile
+    slides when the cursor enters its area, not at its center.
     Uses straight line when direction is unchanged, tight arc on direction change.
-    Returns list of (P0, P1, P2, P3) tuples in grid-relative pixel coords."""
+    Returns list of (P0, P1, P2, P3) tuples in grid-relative pixel coords.
+    Guarantees continuity: P0 of move N = P3 of move N-1."""
     cursor_paths = []
     br, bc = find_zero(initial_matrix, w, h)
     center = tile_size // 2
+    # First move starts at the blank's center
+    prev_px = bc * tile_size + center
+    prev_py = br * tile_size + center
     prev_move = None
     for mi in range(sol_len):
         move = expanded_solution[mi]
         dr, dc = _MOVE_DIRS[move]
-        dst_x = bc * tile_size + center
-        dst_y = br * tile_size + center
-        src_x = (bc + dc) * tile_size + center
-        src_y = (br + dr) * tile_size + center
+        # Cursor arrives at the near edge of the target tile (halfway to its center)
+        entry_x = bc * tile_size + center + dc * tile_size / 2
+        entry_y = br * tile_size + center + dr * tile_size / 2
         br += dr
         bc += dc
 
-        dx = src_x - dst_x
-        dy = src_y - dst_y
+        dx = entry_x - prev_px
+        dy = entry_y - prev_py
+
+        P0 = (prev_px, prev_py)
+        P3 = (entry_x, entry_y)
 
         if prev_move is not None and move == prev_move:
-            mx = (dst_x + src_x) / 2
-            my = (dst_y + src_y) / 2
-            P0 = (dst_x, dst_y)
+            mx = (prev_px + entry_x) / 2
+            my = (prev_py + entry_y) / 2
             P1 = (mx, my)
             P2 = (mx, my)
-            P3 = (src_x, src_y)
         else:
             length = math.hypot(dx, dy) or 1
             perp_x = -dy / length * tile_size * 0.20
             perp_y = dx / length * tile_size * 0.20
-            P0 = (dst_x, dst_y)
-            P3 = (src_x, src_y)
-            P1 = (dst_x + dx * 0.3 + perp_x, dst_y + dy * 0.3 + perp_y)
-            P2 = (src_x - dx * 0.3 + perp_x, src_y - dy * 0.3 + perp_y)
+            P1 = (prev_px + dx * 0.3 + perp_x, prev_py + dy * 0.3 + perp_y)
+            P2 = (entry_x - dx * 0.3 + perp_x, entry_y - dy * 0.3 + perp_y)
 
         cursor_paths.append((P0, P1, P2, P3))
         prev_move = move
+        prev_px, prev_py = entry_x, entry_y
+
     return cursor_paths
 
 
