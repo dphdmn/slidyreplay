@@ -1555,50 +1555,54 @@ def _cubic_bezier_pt(p0, p1, p2, p3, t):
 
 
 def _precompute_cursor_paths(expanded_solution, initial_matrix, sol_len, w, h, tile_size):
-    """Pre-compute Bézier control points for cursor path per move.
-    Cursor zips from blank center → tile near-edge on each move, so the tile
-    slides when the cursor enters its area, not at its center.
-    Uses straight line when direction is unchanged, tight arc on direction change.
-    Returns list of (P0, P1, P2, P3) tuples in grid-relative pixel coords.
-    Guarantees continuity: P0 of move N = P3 of move N-1."""
+    """Pre-compute cursor path per move.
+
+    Each segment: (P0, P1, P2, P3, settle_x, settle_y) where:
+      P0 = where cursor starts (prev tile edge, or blank center for 1st move)
+      P3 = tile near-edge — move triggers when cursor hits this
+      (settle_x, settle_y) = tile center — where cursor rests at idle
+
+    First segment: P0 == settle → direct Bézier center→edge.
+    Other segments: P0 = prev edge != settle → pre-settle edge→center (50%),
+                    then Bézier center→new edge (50%).  Constant speed.
+    After last move: guard returns (settle_x, settle_y) = final blank center."""
     cursor_paths = []
     br, bc = find_zero(initial_matrix, w, h)
     center = tile_size // 2
-    # First move starts at the blank's center
     prev_px = bc * tile_size + center
     prev_py = br * tile_size + center
     prev_move = None
     for mi in range(sol_len):
         move = expanded_solution[mi]
         dr, dc = _MOVE_DIRS[move]
-        # Cursor arrives at the near edge of the target tile (halfway to its center)
-        entry_x = bc * tile_size + center + dc * tile_size / 2
-        entry_y = br * tile_size + center + dr * tile_size / 2
+        settle_x = bc * tile_size + center
+        settle_y = br * tile_size + center
+        edge_x = bc * tile_size + center + dc * tile_size / 2
+        edge_y = br * tile_size + center + dr * tile_size / 2
         br += dr
         bc += dc
 
-        dx = entry_x - prev_px
-        dy = entry_y - prev_py
-
-        P0 = (prev_px, prev_py)
-        P3 = (entry_x, entry_y)
+        dx = edge_x - settle_x
+        dy = edge_y - settle_y
 
         if prev_move is not None and move == prev_move:
-            mx = (prev_px + entry_x) / 2
-            my = (prev_py + entry_y) / 2
+            mx = (settle_x + edge_x) / 2
+            my = (settle_y + edge_y) / 2
             P1 = (mx, my)
             P2 = (mx, my)
         else:
-            length = math.hypot(dx, dy) or 1
-            perp_x = -dy / length * tile_size * 0.20
-            perp_y = dx / length * tile_size * 0.20
-            P1 = (prev_px + dx * 0.3 + perp_x, prev_py + dy * 0.3 + perp_y)
-            P2 = (entry_x - dx * 0.3 + perp_x, entry_y - dy * 0.3 + perp_y)
+            perp_x = -dy * 0.20
+            perp_y = dx * 0.20
+            P1 = (settle_x + dx * 0.3 + perp_x, settle_y + dy * 0.3 + perp_y)
+            P2 = (edge_x - dx * 0.3 + perp_x, edge_y - dy * 0.3 + perp_y)
 
-        cursor_paths.append((P0, P1, P2, P3))
+        cursor_paths.append(((prev_px, prev_py), P1, P2, (edge_x, edge_y), settle_x, settle_y))
         prev_move = move
-        prev_px, prev_py = entry_x, entry_y
+        prev_px, prev_py = edge_x, edge_y
 
+    final_x = bc * tile_size + center
+    final_y = br * tile_size + center
+    cursor_paths.append(((final_x, final_y), (final_x, final_y), (final_x, final_y), (final_x, final_y), final_x, final_y))
     return cursor_paths
 
 
@@ -1611,13 +1615,25 @@ def _get_cursor_pixel_pos(frame_j, frame_state, cursor_paths, move_times,
         return cursor_paths[0][0]
     k = int(frame_state[frame_j]) if hasattr(frame_state, '__getitem__') else frame_state
     if k >= sol_len or k >= len(cursor_paths):
-        return cursor_paths[-1][3]
+        return (cursor_paths[-1][4], cursor_paths[-1][5])
     k = max(0, k)
     seg_start = preview_ms + (move_times[k - 1] if k > 0 else 0)
     seg_end = preview_ms + move_times[k]
     seg_dur = max(1.0, seg_end - seg_start)
     fraction = max(0.0, min(1.0, (t - seg_start) / seg_dur))
-    P0, P1, P2, P3 = cursor_paths[k]
+    P0, P1, P2, P3, settle_x, settle_y = cursor_paths[k]
+
+    # Pre-settle: if P0 != settle target, settle edge→center first (50%)
+    if P0[0] != settle_x or P0[1] != settle_y:
+        if fraction <= 0.5:
+            t = fraction * 2.0
+            cx = P0[0] + (settle_x - P0[0]) * t
+            cy = P0[1] + (settle_y - P0[1]) * t
+            return (cx, cy)
+        fraction = (fraction - 0.5) * 2.0
+        P0 = (settle_x, settle_y)
+
+    # Bézier from settle target (blank center) to P3 (tile edge)
     return _cubic_bezier_pt(P0, P1, P2, P3, fraction)
 
 
