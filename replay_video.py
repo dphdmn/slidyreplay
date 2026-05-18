@@ -1520,6 +1520,109 @@ def upscale_video(
     return output_path
 
 
+# ─── Cursor Dance ──────────────────────────────────────────────────────
+
+_cursor_image_cache: Dict[Tuple[str, int], Optional[Image.Image]] = {}
+
+
+def _load_cursor_image(path: str, tile_size: int) -> Optional[Image.Image]:
+    if not path:
+        return None
+    key = (os.path.abspath(path), tile_size)
+    if key in _cursor_image_cache:
+        return _cursor_image_cache[key]
+    try:
+        img = Image.open(path).convert("RGBA")
+        cursor_size = max(24, int(tile_size * 0.70))
+        w, h = img.size
+        scale = cursor_size / max(w, h)
+        new_w = max(1, int(w * scale))
+        new_h = max(1, int(h * scale))
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+        _cursor_image_cache[key] = img
+        return img
+    except Exception as e:
+        log.warning(f"Failed to load cursor image '{path}': {e}")
+        _cursor_image_cache[key] = None
+        return None
+
+
+def _cubic_bezier_pt(p0, p1, p2, p3, t):
+    u = 1 - t
+    x = u * u * u * p0[0] + 3 * u * u * t * p1[0] + 3 * u * t * t * p2[0] + t * t * t * p3[0]
+    y = u * u * u * p0[1] + 3 * u * u * t * p1[1] + 3 * u * t * t * p2[1] + t * t * t * p3[1]
+    return (x, y)
+
+
+def _precompute_cursor_paths(expanded_solution, initial_matrix, sol_len, w, h, tile_size):
+    """Pre-compute Bézier control points for cursor path per move.
+    Uses straight line when direction is unchanged, tight arc on direction change.
+    Returns list of (P0, P1, P2, P3) tuples in grid-relative pixel coords."""
+    cursor_paths = []
+    br, bc = find_zero(initial_matrix, w, h)
+    center = tile_size // 2
+    prev_move = None
+    for mi in range(sol_len):
+        move = expanded_solution[mi]
+        dr, dc = _MOVE_DIRS[move]
+        dst_x = bc * tile_size + center
+        dst_y = br * tile_size + center
+        src_x = (bc + dc) * tile_size + center
+        src_y = (br + dr) * tile_size + center
+        br += dr
+        bc += dc
+
+        dx = src_x - dst_x
+        dy = src_y - dst_y
+
+        if prev_move is not None and move == prev_move:
+            mx = (dst_x + src_x) / 2
+            my = (dst_y + src_y) / 2
+            P0 = (dst_x, dst_y)
+            P1 = (mx, my)
+            P2 = (mx, my)
+            P3 = (src_x, src_y)
+        else:
+            length = math.hypot(dx, dy) or 1
+            perp_x = -dy / length * tile_size * 0.20
+            perp_y = dx / length * tile_size * 0.20
+            P0 = (dst_x, dst_y)
+            P3 = (src_x, src_y)
+            P1 = (dst_x + dx * 0.3 + perp_x, dst_y + dy * 0.3 + perp_y)
+            P2 = (src_x - dx * 0.3 + perp_x, src_y - dy * 0.3 + perp_y)
+
+        cursor_paths.append((P0, P1, P2, P3))
+        prev_move = move
+    return cursor_paths
+
+
+def _get_cursor_pixel_pos(frame_j, frame_state, cursor_paths, move_times,
+                          preview_ms, frame_time_ms, sol_len):
+    if not cursor_paths:
+        return None
+    t = frame_j * frame_time_ms
+    if t < preview_ms:
+        return cursor_paths[0][0]
+    k = int(frame_state[frame_j]) if hasattr(frame_state, '__getitem__') else frame_state
+    if k >= sol_len or k >= len(cursor_paths):
+        return cursor_paths[-1][3]
+    k = max(0, k)
+    seg_start = preview_ms + (move_times[k - 1] if k > 0 else 0)
+    seg_end = preview_ms + move_times[k]
+    seg_dur = max(1.0, seg_end - seg_start)
+    fraction = max(0.0, min(1.0, (t - seg_start) / seg_dur))
+    P0, P1, P2, P3 = cursor_paths[k]
+    return _cubic_bezier_pt(P0, P1, P2, P3, fraction)
+
+
+def _overlay_cursor(pil_img, cursor_img, grid_pos_px, grid_x, grid_y):
+    if cursor_img is None or pil_img is None:
+        return
+    cx = int(grid_x + grid_pos_px[0] - cursor_img.width // 2)
+    cy = int(grid_y + grid_pos_px[1] - cursor_img.height // 2)
+    pil_img.paste(cursor_img, (cx, cy), cursor_img)
+
+
 def _get_anim_info(matrix_after, move_char, w, h):
     """Determine tile animation parameters from a state after a move.
 
@@ -2056,6 +2159,23 @@ def generate_frames(
     ANIM_TIME_BUDGET_MS = 67  # ~4 frames at 60fps, ~2 at 30fps, ~1 at 15fps
     PAUSE_THRESHOLD_MS = 200  # moves >= this are pauses → teleport
 
+    # ── Cursor dance setup ──
+    cursor_img = None
+    cursor_paths = None
+    if opts.cursor_dance_path:
+        cursor_img = _load_cursor_image(opts.cursor_dance_path, tile_size)
+        if cursor_img is not None:
+            cursor_paths = _precompute_cursor_paths(expanded, matrix, sol_len, w, h, tile_size)
+            log.info(f"  cursor_dance: loaded '{opts.cursor_dance_path}', {len(cursor_paths)} move paths")
+
+    # Pre-compute grid position for cursor overlay
+    _grid_x, _grid_y = compute_grid_position(
+        opts.grid_only, pad=layout["pad"], header_h=layout["header_h"],
+        canvas_h=layout["canvas_h"], puzzle_h=h * tile_size,
+        no_header=opts.no_header,
+        align_top=opts.adjust_height,
+    )
+
     # ── GPU path: render unique states, pipe via frame mapping ──
     if use_gpu and len(frame_params) > 1:
         puzzle_w = w * tile_size
@@ -2083,13 +2203,32 @@ def generate_frames(
         log.info(f"  GPU RENDER START: {len(unique_params)} unique frames to render")
         log_ram("before GPU render")
 
+        _cursor_frame_idx = [0]  # list for mutability in nested scope
+
+        def _write_with_cursor(pil_img, count, free_event=None):
+            nonlocal _cursor_frame_idx
+            base = pil_img
+            for _ in range(count):
+                if cursor_img is not None and cursor_paths is not None:
+                    frame = base.copy()
+                    pos = _get_cursor_pixel_pos(
+                        _cursor_frame_idx[0], frame_state, cursor_paths, move_times,
+                        preview_ms, frame_time_ms, sol_len,
+                    )
+                    if pos is not None:
+                        _overlay_cursor(frame, cursor_img, pos, _grid_x, _grid_y)
+                    writer.write(frame.tobytes(), 1, free_event)
+                else:
+                    writer.write(base.tobytes(), 1, free_event)
+                _cursor_frame_idx[0] += 1
+
         def handler(img, idx_in_unique, total, free_event=None):
             state_idx = states_needed[idx_in_unique]
             anim_written = False
+            anim_count = 0
             if opts.animate_moves and state_idx > 0:
                 prev_state_idx = states_needed[idx_in_unique - 1]
                 move_idx = state_idx - 1
-                anim_count = 0
                 if move_idx < len(move_times):
                     if move_idx == 0:
                         move_dur = move_times[0]
@@ -2115,21 +2254,20 @@ def generate_frames(
                             tile_size, composite_images, composite_lookup,
                             w, h, layout, opts, gpu_img=img,
                         )
-                        writer.write(anim_img.tobytes(), 1)
+                        _write_with_cursor(anim_img, 1)
                     anim_written = True
             if anim_written:
-                if isinstance(img, np.ndarray):
-                    data = memoryview(img)
-                else:
-                    data = img.tobytes()
-                writer.write(data, state_to_count[state_idx] - anim_count, free_event)
+                remaining = state_to_count[state_idx] - anim_count
             else:
-                count = state_to_count[state_idx]
-                if isinstance(img, np.ndarray):
-                    data = memoryview(img)
+                remaining = state_to_count[state_idx]
+            if remaining > 0:
+                if cursor_img is not None:
+                    pil = Image.fromarray(img) if isinstance(img, np.ndarray) else img
+                    _write_with_cursor(pil, remaining, free_event)
                 else:
-                    data = img.tobytes()
-                writer.write(data, count, free_event)
+                    data = memoryview(img) if isinstance(img, np.ndarray) else img.tobytes()
+                    writer.write(data, remaining, free_event)
+                    _cursor_frame_idx[0] += remaining
 
         _gpu_render_step = max(1, len(unique_params) // 100)
         _gpu_render_count = 0
@@ -2189,6 +2327,7 @@ def generate_frames(
     writer = _PipeWriter(ffmpeg_proc)
 
     _render_prog_step = max(1, num_needed // 100)
+    _cpu_cursor_frame_idx = 0
     try:
         written = 0
         prev_canvas = None
@@ -2227,8 +2366,16 @@ def generate_frames(
                             tile_size, composite_images, composite_lookup,
                             w, h, layout, opts,
                         )
+                        if cursor_img is not None and cursor_paths is not None:
+                            pos = _get_cursor_pixel_pos(
+                                _cpu_cursor_frame_idx, frame_state, cursor_paths, move_times,
+                                preview_ms, frame_time_ms, sol_len,
+                            )
+                            if pos is not None:
+                                _overlay_cursor(anim_img, cursor_img, pos, _grid_x, _grid_y)
                         writer.write(anim_img.tobytes(), 1)
                         written += 1
+                        _cpu_cursor_frame_idx += 1
                     anim_written = True
             p = frame_params[i]
             kw = {k: v for k, v in p.items() if k in _get_render_frame_args()}
@@ -2240,9 +2387,24 @@ def generate_frames(
             count = state_to_count[i]
             if anim_written:
                 count = state_to_count[i] - anim_count
-            data = img.tobytes()
-            writer.write(data, count)
-            written += count
+            if cursor_img is not None and cursor_paths is not None:
+                base_bytes = img.tobytes()
+                for _ in range(count):
+                    frame = Image.frombytes(img.mode, img.size, base_bytes)
+                    pos = _get_cursor_pixel_pos(
+                        _cpu_cursor_frame_idx, frame_state, cursor_paths, move_times,
+                        preview_ms, frame_time_ms, sol_len,
+                    )
+                    if pos is not None:
+                        _overlay_cursor(frame, cursor_img, pos, _grid_x, _grid_y)
+                    writer.write(frame.tobytes(), 1)
+                    written += 1
+                    _cpu_cursor_frame_idx += 1
+            else:
+                data = img.tobytes()
+                writer.write(data, count)
+                written += count
+                _cpu_cursor_frame_idx += count
 
             _render_prog_count = seq_idx + 1
             if progress_callback and (_render_prog_count % _render_prog_step == 0 or _render_prog_count == num_needed):

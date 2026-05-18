@@ -76,6 +76,7 @@ python main.py --image -f replay.txt --size 4x4 -o output.png    # explicit outp
 | | `--main-scheme` | | Color scheme: `fringe`, `rows`, or `columns` (default: `fringe`) |
 | | `--force-main` | | Force main scheme everywhere (disable grids detection) |
 | | `--animate-moves` | | Animate tile sliding between moves (smooth transitions) |
+| `--cursor-dance` | | Path to cursor image (PNG recommended) that dances along tile moves. Cursor traces the blank's path via Bézier arcs, timed by movetimes. Transparency is preserved. |
 | | `--cycles-detection` | | EXPERIMENTAL: detect and display cycling tiles in grid stats (may increase analysis time) |
 | **Font** | `--font-family` | | Tile number font family (system font name, e.g. `Arial`). Default: `Roboto` |
 | | `--font-bold` | | Use bold variant of the tile number font |
@@ -94,6 +95,24 @@ python main.py --image -f replay.txt --size 4x4 -o output.png    # explicit outp
 | **Hardware** | `--no-gpu` | `-g` | Disable GPU acceleration (GPU is auto-detected by default) |
 | **Settings** | `--settings` | | Load settings from a JSON file saved from the GUI. Explicit CLI flags override file values |
 | **Debug** | `--log` | `-l` | Enable debug logging to `logs/debug_\<timestamp\>.log` |
+
+## Cursor Dance
+
+The `--cursor-dance <path>` option places a cursor image over the puzzle that moves
+from tile to tile along the blank's path. The cursor follows a smooth Bézier arc,
+arriving at each tile at the exact moment that tile moves (or starts animating if
+`--animate-moves` is set). The cursor always moves in time with the move timings
+(movetimes speed).
+
+- The image is converted to RGBA — transparency is preserved.
+- If no cursor file is provided, no cursor is rendered.
+- The cursor scales proportionally to tile size (min 24px).
+- In the GUI, use the **CURSOR** section to Browse... or Clear the cursor image.
+
+### Example
+```
+python main.py --solution R2D2L2U2 --size 3x3 --tps 10 --cursor-dance my_cursor.png -o replay.mp4
+```
 
 ## Settings Management
 

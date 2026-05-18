@@ -14,7 +14,7 @@ import dataclasses
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 
-from replay_video import ReplayVideoGenerator, CancelError, _quick_infer_size, _get_available_encoders, render_frame, get_all_fringe_schemes
+from replay_video import ReplayVideoGenerator, CancelError, _quick_infer_size, _get_available_encoders, render_frame, get_all_fringe_schemes, _load_cursor_image
 from grids_analysis import generate_grids_stats
 from sliding_puzzles import parse_replay_url
 from replay_generator import count_moves
@@ -288,6 +288,7 @@ SETTINGS_DEFAULTS = {
     "cycles_detection": False,
     "adjust_height": False,
     "animate_moves": False,
+    "cursor_dance": "",
     "hue_start": 0,
     "hue_end": 330,
     "saturation_min": 78,
@@ -326,6 +327,7 @@ def _gui_get_settings(gui):
     d["cycles_detection"] = gui.cycles_detection_var.get()
     d["adjust_height"] = gui.adjust_height_var.get()
     d["animate_moves"] = gui.animate_moves_var.get()
+    d["cursor_dance"] = gui.cursor_dance_var.get()
     d["hue_start"] = gui.hue_start_var.get()
     d["hue_end"] = gui.hue_end_var.get()
     d["saturation_min"] = gui.saturation_min_var.get()
@@ -384,6 +386,8 @@ def _gui_apply_settings(gui, d):
         gui.adjust_height_var.set(d["adjust_height"])
     if "animate_moves" in d:
         gui.animate_moves_var.set(d["animate_moves"])
+    if "cursor_dance" in d:
+        gui.cursor_dance_var.set(d["cursor_dance"])
     if "hue_start" in d:
         gui.hue_start_var.set(d["hue_start"])
     if "hue_end" in d:
@@ -438,6 +442,7 @@ _SETTINGS_TO_ARGS = {
     "cycles_detection": ("cycles_detection", None),
     "adjust_height": ("adjust_height", None),
     "animate_moves": ("animate_moves", None),
+    "cursor_dance": ("cursor_dance", None),
     "hue_start": ("hue_start", None),
     "hue_end": ("hue_end", None),
     "saturation_min": ("saturation_min", lambda v: v / 100.0),
@@ -550,6 +555,7 @@ class ReplayGUI(tb.Window):
         self.cycles_detection_var = tk.BooleanVar(value=False)
         self.adjust_height_var = tk.BooleanVar(value=False)
         self.animate_moves_var = tk.BooleanVar(value=False)
+        self.cursor_dance_var = tk.StringVar(value="")
 
         from geometry import get_system_font_families
         self._system_font_families = get_system_font_families()
@@ -831,6 +837,39 @@ class ReplayGUI(tb.Window):
                        bootstyle="round-toggle").grid(row=3, column=2, sticky="w")
         tb.Checkbutton(d_grid, text="Animate moves", variable=self.animate_moves_var,
                        bootstyle="round-toggle").grid(row=4, column=2, sticky="w")
+
+        # ════════ CURSOR ════════
+        tb.Label(settings, text="CURSOR", font=_sec_font, bootstyle="secondary").grid(
+            row=r, column=0, sticky="w", padx=12, pady=(6, 0))
+        r += 1
+        tb.Separator(settings, bootstyle="secondary").grid(
+            row=r, column=0, sticky="ew", pady=(1, 4), padx=12)
+        r += 1
+
+        cursor_row = tb.Frame(settings)
+        cursor_row.grid(row=r, column=0, sticky="ew", pady=(2, 4), padx=12)
+        cursor_row.grid_columnconfigure(0, weight=1)
+
+        self.cursor_entry = tb.Entry(cursor_row, textvariable=self.cursor_dance_var,
+                                     state="readonly")
+        self.cursor_entry.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+
+        def _select_cursor_file():
+            path = filedialog.askopenfilename(
+                title="Select cursor image",
+                filetypes=[("Image files", "*.png *.gif *.bmp *.cur *.ico"),
+                           ("All files", "*.*")])
+            if path:
+                self.cursor_dance_var.set(path)
+
+        def _clear_cursor_file():
+            self.cursor_dance_var.set("")
+
+        tb.Button(cursor_row, text="Browse...", command=_select_cursor_file,
+                  bootstyle="secondary-outline").grid(row=0, column=1, padx=(0, 2))
+        tb.Button(cursor_row, text="Clear", command=_clear_cursor_file,
+                  bootstyle="secondary-outline").grid(row=0, column=2)
+        r += 1
 
         # ════════ FONT ════════
         tb.Label(settings, text="FONT", font=_sec_font, bootstyle="secondary").grid(
@@ -1181,6 +1220,7 @@ class ReplayGUI(tb.Window):
         self.font_family_var.trace_add("write", lambda *_: self._schedule_preview())
         self.font_bold_var.trace_add("write", lambda *_: self._schedule_preview())
         self.font_size_override_var.trace_add("write", lambda *_: self._schedule_preview())
+        self.cursor_dance_var.trace_add("write", lambda *_: self._schedule_preview())
 
         # Initial preview
         self.after(100, self._render_preview)
@@ -1414,6 +1454,17 @@ class ReplayGUI(tb.Window):
                 total_moves=0, total_time_ms=0, total_tps=0,
                 opts=opts,
             )
+
+            cursor_path = self.cursor_dance_var.get().strip()
+            if cursor_path:
+                cursor_img = _load_cursor_image(cursor_path, tile_size)
+                if cursor_img is not None:
+                    from sliding_puzzles import find_zero
+                    br, bc = find_zero(matrix, w, h)
+                    if br >= 0:
+                        cx = int(bc * tile_size + tile_size // 2 - cursor_img.width // 2)
+                        cy = int(br * tile_size + tile_size // 2 - cursor_img.height // 2)
+                        img.paste(cursor_img, (cx, cy), cursor_img)
 
             img.thumbnail((avail, avail), Image.LANCZOS)
             self._preview_photo = ImageTk.PhotoImage(img)
@@ -1785,6 +1836,7 @@ class ReplayGUI(tb.Window):
                     grid2_color=parse_hex_color(self._color_vars["grid2"].get()),
                     tile_bg_color=parse_hex_color(self._color_vars["tile_bg"].get()),
                     animate_moves=self.animate_moves_var.get(),
+                    cursor_dance_path=self.cursor_dance_var.get() or None,
                     hue_start=self.hue_start_var.get(),
                     hue_end=self.hue_end_var.get(),
                     saturation_min=self.saturation_min_var.get() / 100.0,
@@ -2161,6 +2213,9 @@ Examples:
                              "Aligns puzzle to the top (no centering) and removes bottom gap.")
     parser.add_argument("--animate-moves", action="store_true", default=False,
                         help="Animate tile sliding between moves (smooth transitions)")
+    parser.add_argument("--cursor-dance", type=str, default=None,
+                        help="Path to cursor image (PNG with transparency) that dances along tile moves. "
+                             "Cursor follows the blank's path via Bézier arcs, timed by movetimes.")
     parser.add_argument("--grid1-color", type=str, default=None, help="Grid 1 color as hex (e.g. FF0000)")
     parser.add_argument("--grid2-color", type=str, default=None, help="Grid 2 color as hex (e.g. 0000FF)")
     parser.add_argument("--tile-bg-color", type=str, default=None, help="Tile background color as hex")
@@ -2230,6 +2285,7 @@ Examples:
         grid2_color=parse_hex_color(args.grid2_color),
         tile_bg_color=parse_hex_color(args.tile_bg_color),
         animate_moves=args.animate_moves,
+        cursor_dance_path=args.cursor_dance,
         hue_start=args.hue_start,
         hue_end=args.hue_end,
         saturation_min=args.saturation_min,

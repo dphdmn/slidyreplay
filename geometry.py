@@ -566,6 +566,7 @@ class RenderOptions:
     font_family: Optional[str] = None
     font_bold: bool = False
     font_size_override: Optional[int] = None
+    cursor_dance_path: Optional[str] = None
 
 
 @dataclass
