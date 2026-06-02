@@ -10,11 +10,11 @@ only-include = [
 ]
 
 [project.scripts]
-slidyreplay = "main:main"
+slidyreplay = "slidyreplay.main:main"
 
 [project]
 name = "slidyreplay"
-version = "8.0.3"
+version = "8.0.4"
 description = "Replay video generator for sliding puzzles"
 readme = "README.md"
 requires-python = ">=3.9"
