@@ -2,6 +2,11 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/slidyreplay)](https://pypi.org/project/slidyreplay/)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)](https://pypi.org/project/slidyreplay/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CUDA](https://img.shields.io/badge/CUDA-enabled-76B900?logo=nvidia)](https://pytorch.org)
+[![FFmpeg](https://img.shields.io/badge/FFmpeg-powered-007808?logo=ffmpeg)](https://ffmpeg.org)
+[![Windows](https://img.shields.io/badge/Windows-0078D6?logo=windows)](https://github.com/dphdmn/slidyreplay)
+[![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)](https://github.com/dphdmn/slidyreplay)
 
 Generates MP4 videos of sliding puzzle replays from [slidysim](https://slidysim.github.io/) replay URLs, input files, or manual solution strings.
 

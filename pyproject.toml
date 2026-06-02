@@ -10,13 +10,14 @@ slidyreplay = "slidyreplay.main:main"
 
 [project]
 name = "slidyreplay"
-version = "8.0.7"
+version = "8.0.8"
 description = "Replay video generator for sliding puzzles"
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [
     {name = "dphdmn"}
 ]
+license = "MIT"
 dependencies = [
     "ttkbootstrap",
     "Pillow",
