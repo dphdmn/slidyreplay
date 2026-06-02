@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "slidyreplay"
+version = "8.0.0"
+description = "Replay video generator for sliding puzzles"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    {name = "dphdmn"}
+]
+dependencies = [
+    "ttkbootstrap",
+    "Pillow",
+    "tabulate",
+    "numpy",
+    "psutil",
+]
+
+[project.urls]
+Homepage = "https://github.com/dphdmn/slidyreplay"
