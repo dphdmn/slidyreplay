@@ -754,7 +754,7 @@ class ReplayGUI(tb.Window):
                 if self._gpu_available:
                     self.gpu_status.config(text=f"ON — {self._gpu_name}", bootstyle="success")
                 else:
-                    self.gpu_status.config(text="Not available — install CUDA", bootstyle="secondary")
+                    self.gpu_status.config(text="GPU requires torch (pip install torch)", bootstyle="secondary")
             else:
                 self.gpu_status.config(text="OFF (CPU)", bootstyle="secondary")
                 self.slow_render_var.set(True)
@@ -2140,14 +2140,16 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Sliding Puzzle Replay Video Generator",
+        description="Sliding Puzzle Replay Video Generator  |  pip install slidyreplay  |  slidyreplay --help",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py --solution R2D2L2U2 --size 3x3 --tps 10 -o replay.mp4
-  python main.py -u "https://slidysim.github.io/?replay=..." -o replay.mp4
-  python main.py -b urls.txt
-  python main.py                    # launch GUI
+  slidyreplay --solution R2D2L2U2 --size 3x3 --tps 10 -o replay.mp4
+  slidyreplay -u "https://slidysim.github.io/?replay=..." -o replay.mp4
+  slidyreplay -b urls.txt
+  slidyreplay                         # launch GUI
+
+GPU acceleration: pip install torch --index-url https://download.pytorch.org/whl/cu124
         """
     )
     parser.add_argument("--solution", help="Solution string (e.g. R2D2L2U2)")

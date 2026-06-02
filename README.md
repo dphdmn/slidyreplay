@@ -1,13 +1,24 @@
 # SlidyReplay
 
+[![PyPI version](https://img.shields.io/pypi/v/slidyreplay)](https://pypi.org/project/slidyreplay/)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)](https://pypi.org/project/slidyreplay/)
+
 Generates MP4 videos of sliding puzzle replays from [slidysim](https://slidysim.github.io/) replay URLs, input files, or manual solution strings.
+
+## Installation
+
+```
+pip install slidyreplay
+pip install torch --index-url https://download.pytorch.org/whl/cu124   # optional GPU
+```
+
 
 ## Quick Start
 
 ### GUI
 
 ```
-python main.py
+slidyreplay
 ```
 
 Launches a fully functional GUI with nearly all custom options, backed by the same CLI interface.
@@ -15,31 +26,31 @@ Launches a fully functional GUI with nearly all custom options, backed by the sa
 ### CLI
 
 ```
-python main.py --solution R2D2L2U2 --size 3x3 --tps 10          # auto-named in replays/
-python main.py -u "https://slidysim.github.io/?replay=..."     # auto-named in replays/
-python main.py -f input.txt                                     # auto-named in replays/
-python main.py -b solutions.txt -q 2160                         # batch, auto-named in replays/
-python main.py --solution R2D2L2U2 --time 30 -c 28 --slow-render -o small.mp4
-python main.py --solution R2D2L2U2 --no-layout --no-numbers -o clean.mp4
-python main.py --solution R2D2L2U2 --upscale --encoder libx265 -o high_quality.mp4
-python main.py --solution R2D2L2U2 -q 720 -s 2.0 -o fast.mp4
-python main.py --solution R2D2L2U2 --no-header                 # hide timer bar, keep stats panel
-python main.py --solution R2D2L2U2 --no-details                # hide stats panel, keep timer
-python main.py --solution R2D2L2U2 --dynamic-md                # show right-side MD timer
-python main.py --solution R2D2L2U2 --no-header --no-details    # puzzle grid only (= --no-layout)
-python main.py --solution R2D2L2U2 --saturation 0.5          # set both min/max saturation to 0.5
-python main.py --solution R2D2L2U2 --saturation-min 0.3 --saturation-max 0.9  # gradient across tiles
-python main.py --solution R2D2L2U2 --brightness-min 0.2 --brightness-max 0.8  # brightness gradient
-python main.py --settings my_settings.json --solution R2D2L2U2   # load settings from JSON
-python main.py --solution R2D2L2U2 --font-family Arial --font-bold --font-size 36  # custom tile font
+slidyreplay --solution R2D2L2U2 --size 3x3 --tps 10          # auto-named in replays/
+slidyreplay -u "https://slidysim.github.io/?replay=..."     # auto-named in replays/
+slidyreplay -f input.txt                                     # auto-named in replays/
+slidyreplay -b solutions.txt -q 2160                         # batch, auto-named in replays/
+slidyreplay --solution R2D2L2U2 --time 30 -c 28 --slow-render -o small.mp4
+slidyreplay --solution R2D2L2U2 --no-layout --no-numbers -o clean.mp4
+slidyreplay --solution R2D2L2U2 --upscale --encoder libx265 -o high_quality.mp4
+slidyreplay --solution R2D2L2U2 -q 720 -s 2.0 -o fast.mp4
+slidyreplay --solution R2D2L2U2 --no-header                 # hide timer bar, keep stats panel
+slidyreplay --solution R2D2L2U2 --no-details                # hide stats panel, keep timer
+slidyreplay --solution R2D2L2U2 --dynamic-md                # show right-side MD timer
+slidyreplay --solution R2D2L2U2 --no-header --no-details    # puzzle grid only (= --no-layout)
+slidyreplay --solution R2D2L2U2 --saturation 0.5          # set both min/max saturation to 0.5
+slidyreplay --solution R2D2L2U2 --saturation-min 0.3 --saturation-max 0.9  # gradient across tiles
+slidyreplay --solution R2D2L2U2 --brightness-min 0.2 --brightness-max 0.8  # brightness gradient
+slidyreplay --settings my_settings.json --solution R2D2L2U2   # load settings from JSON
+slidyreplay --solution R2D2L2U2 --font-family Arial --font-bold --font-size 36  # custom tile font
 ```
 
 ```
-python main.py --image --size 4x4                                 # solved puzzle image
-python main.py --image --size 4x4 --scramble "4 1 2/7 8 3/6 5 0" # custom scramble image
-python main.py --image --solution R2D2L2U2 --size 3x3            # scrambled + solved images
-python main.py --image --size 5x5 --no-numbers --main-scheme rows
-python main.py --image -f replay.txt --size 4x4 -o output.png    # explicit output path
+slidyreplay --image --size 4x4                                 # solved puzzle image
+slidyreplay --image --size 4x4 --scramble "4 1 2/7 8 3/6 5 0" # custom scramble image
+slidyreplay --image --solution R2D2L2U2 --size 3x3            # scrambled + solved images
+slidyreplay --image --size 5x5 --no-numbers --main-scheme rows
+slidyreplay --image -f replay.txt --size 4x4 -o output.png    # explicit output path
 ```
 
 ## CLI Reference
@@ -111,7 +122,7 @@ arriving at each tile at the exact moment that tile moves (or starts animating i
 
 ### Example
 ```
-python main.py --solution R2D2L2U2 --size 3x3 --tps 10 --cursor-dance my_cursor.png -o replay.mp4
+slidyreplay --solution R2D2L2U2 --size 3x3 --tps 10 --cursor-dance my_cursor.png -o replay.mp4
 ```
 
 ## Settings Management
@@ -127,13 +138,13 @@ The GUI includes three settings controls at the bottom of the Settings panel:
 Use a settings file saved from the GUI directly on the command line:
 
 ```
-python main.py --settings my_settings.json --solution R2D2L2U2 --size 4x4
+slidyreplay --settings my_settings.json --solution R2D2L2U2 --size 4x4
 ```
 
 Explicit CLI flags override values from the settings file, so you can use a base config and tweak individual parameters:
 
 ```
-python main.py --settings base.json --solution R2D2L2U2 --fps 120 --hue-start 180
+slidyreplay --settings base.json --solution R2D2L2U2 --fps 120 --hue-start 180
 ```
 
 ### JSON format
@@ -202,8 +213,8 @@ Available encoders are auto-detected in priority order — the first supported e
 Debug logging is **disabled by default**. Pass `--log` (`-l`) to enable:
 
 ```
-python main.py -l                               # GUI with logging
-python main.py --solution R2D2L2U2 -l          # CLI with logging
+slidyreplay -l                               # GUI with logging
+slidyreplay --solution R2D2L2U2 -l          # CLI with logging
 ```
 
 Logs are written to `logs/debug_YYYYMMDD_HHMMSS.log`.
