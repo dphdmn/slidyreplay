@@ -17,6 +17,9 @@ pip install slidyreplay
 pip install torch --index-url https://download.pytorch.org/whl/cu124   # optional GPU
 ```
 
+Make sure that you have [ffmpeg](https://ffmpeg.org/) installed in your system.
+
+On Windows you can use [latest release](https://github.com/dphdmn/slidyreplay/releases) with ffmpeg already bundled in (no CUDA support)
 
 ## Quick Start
 
