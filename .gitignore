@@ -55,3 +55,4 @@ big_test/*
 replays/*
 slidyreplay.spec
 presets/*
+pypi_dist/*

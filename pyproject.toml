@@ -14,7 +14,7 @@ slidyreplay = "main:main"
 
 [project]
 name = "slidyreplay"
-version = "8.0.1"
+version = "8.0.2"
 description = "Replay video generator for sliding puzzles"
 readme = "README.md"
 requires-python = ">=3.9"

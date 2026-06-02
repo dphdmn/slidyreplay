@@ -8,6 +8,7 @@ on:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
+    environment: pypi
     permissions:
       id-token: write
       contents: read
@@ -21,11 +22,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install build tools
-        run: pip install build
-
-      - name: Build package
-        run: python -m build
+      - name: Run build script
+        run: python build_package.py
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: pypi_dist/
