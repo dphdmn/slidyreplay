@@ -2125,10 +2125,6 @@ class ReplayGUI(tb.Window):
             self._executor.shutdown(wait=False)
         self.destroy()
 
-
-if __name__ == "__main__":
-    main()
-
 def main():
     import multiprocessing
     multiprocessing.freeze_support()
@@ -2590,3 +2586,6 @@ GPU acceleration: pip install torch --index-url https://download.pytorch.org/whl
         traceback.print_exc()
         print(f"\n[CRITICAL ERROR] {e}", file=sys.stderr)
         sys.exit(1)
+
+if __name__ == "__main__":
+    main()
